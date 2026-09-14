@@ -1,0 +1,26 @@
+[project]
+name = "dian-automation"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "TechRider" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "playwright>=1.62.0",
+    "playwright-stealth>=2.0.3",
+    "pytest>=9.1.1",
+    "python-dotenv>=1.2.3",
+]
+
+[project.scripts]
+dian-automation = "dian_automation:main"
+
+[build-system]
+requires = ["uv_build>=0.12.13,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+

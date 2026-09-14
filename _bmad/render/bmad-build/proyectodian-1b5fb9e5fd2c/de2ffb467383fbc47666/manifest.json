@@ -1,0 +1,81 @@
+{
+  "generation_hash": "de2ffb467383fbc47666",
+  "inputs": {
+    "jinja2_version": "3.1.6",
+    "project_root": "C:\\Users\\dazad\\OneDrive\\Documentos\\ProyectoDian",
+    "renderer_sha256": "6a0e7c8ecfafbe2808925e200d61a1604475b97e220f9bc603c10f1766ad49cd",
+    "resolved_values": {
+      "config.modules.bmm.implementation_artifacts": "C:\\Users\\dazad\\OneDrive\\Documentos\\ProyectoDian/_bmad-output/implementation-artifacts",
+      "config.modules.bmm.planning_artifacts": "C:\\Users\\dazad\\OneDrive\\Documentos\\ProyectoDian/_bmad-output/planning-artifacts",
+      "customization.workflow.activation_steps_append": [],
+      "customization.workflow.activation_steps_prepend": [],
+      "customization.workflow.implementation_handoff": "Launch a subagent with no prior conversation context, with this prompt:\n\n> Read {spec_file} fully and implement it — the spec is the sole source of truth. Load every file listed in its frontmatter `context:` before you start.\n>\n> When done, report what you changed, how you verified it, and anything left incomplete or risky.\n",
+      "customization.workflow.on_complete": "",
+      "customization.workflow.oneshot_review_layers": [
+        {
+          "id": "blind-hunter",
+          "instruction": "Launch a context-free subagent with this prompt:\n\nConduct a review of CONTENT.\nLook for what's missing, not only what's wrong.\nCompute your finding floor N from the size of the changes: N = min(floor(sqrt(kB) + 1), 10), where kB is the changed content's size in kilobytes. State the arithmetic in one line, then find at least N issues to fix or improve.\nOutput a Markdown list of findings only — no severity, priority, or ranking.\nIf the content is empty, stop and say so.\nIf you have zero findings, re-check and keep thinking; do not stop with an empty list.\n\nCONTENT:\nThe changed files in the current worktree. Inspect them directly before reviewing.\n\nDo not invoke any skill, and do not spawn subagents of your own — you are the reviewer. Return your findings as text in your final message; do not route them through any findings-reporting tool the host may offer.\n\n",
+          "name": "Blind Hunter"
+        }
+      ],
+      "customization.workflow.open_spec": "",
+      "customization.workflow.persistent_facts": [],
+      "customization.workflow.review_layers": [
+        {
+          "id": "blind-hunter",
+          "instruction": "Launch a context-free subagent with this prompt:\n\nConduct a review of CONTENT.\nLook for what's missing, not only what's wrong.\nCompute your finding floor N from the diff file's size: N = min(floor(sqrt(kB) + 1), 10), where kB is the file's size in kilobytes. State the arithmetic in one line, then find at least N issues to fix or improve.\nOutput a Markdown list of findings only — no severity, priority, or ranking.\nIf the content is empty, stop and say so.\nIf you have zero findings, re-check and keep thinking; do not stop with an empty list.\n\nCONTENT: the unified diff at `{diff_file}`. Read that file — it is the content under review.\n\nDo not invoke any skill, and do not spawn subagents of your own — you are the reviewer. Return your findings as text in your final message; do not route them through any findings-reporting tool the host may offer.\n\n",
+          "name": "Blind Hunter"
+        },
+        {
+          "id": "edge-case-hunter",
+          "instruction": "Launch a context-free subagent with this prompt:\n\nRead `{skill-root}/review-prompts/edge-case-hunter.md` completely and follow it as your review instructions.\n\nclaims_file (leave unread until your instructions call for it): {claims_file}\n\nReview content: the unified diff at `{diff_file}`. Read that file — it is the content under review.\n\nDo not invoke any skill, and do not spawn subagents of your own — you are the reviewer. If the instruction file is unreadable, report that exact failure and stop. Return your findings as text in your final message; do not route them through any findings-reporting tool the host may offer.\n\n",
+          "name": "Edge Case Hunter"
+        },
+        {
+          "id": "verification-gap",
+          "instruction": "Launch a context-free subagent with this prompt:\n\nRead `{skill-root}/review-prompts/verification-gap.md` completely and follow it as your review instructions.\n\nReview content: the unified diff at `{diff_file}`. Read that file — it is the content under review.\n\nDo not invoke any skill, and do not spawn subagents of your own — you are the reviewer. If the instruction file is unreadable, report that exact failure and stop. Return your findings as text in your final message; do not route them through any findings-reporting tool the host may offer.\n\n",
+          "name": "Verification Gap Reviewer"
+        }
+      ],
+      "customization.workflow.route_selection": "Decide whether to use a coding subagent (full) or implement directly (oneshot).\nUsing the information already gathered, with no further reading and minimal\nextra reasoning, estimate the lines of code to add or modify.\n100 lines or fewer: oneshot. Otherwise: full.\nIf the change touches more than five files and is not simple or mechanical,\nconsider upgrading to full.\n"
+    },
+    "skill_root": "C:\\Users\\dazad\\OneDrive\\Documentos\\ProyectoDian\\.agents\\skills\\bmad-build",
+    "source_sha256": {
+      "compile-epic-context.md": "6793b15ae85766cee529e6b349e45f2c6ec9e3212019611c29e8c77b4dc4b924",
+      "references/claims-check.md": "50ea17cb89a78ef815286dde2dabfd09f1dc9841d07a10857f88b39ab7b9bd2a",
+      "references/deletion-check.md": "0f1f124e4e957147e89164a272b10bedc694ad0d9ad2618c8610ac74ee9cb0da",
+      "review-prompts/edge-case-hunter.md": "8fc046af1cbf4ecc928207cec75e29c3c260adb86cc7da77537ade3b3a3b9448",
+      "review-prompts/verification-gap.md": "45ab0b8c4c56c5c055c97a293a8591a67e256d0b1a2058ce1f093cd866be8d03",
+      "spec-template.md": "880133e2c55d8e2aee713ba99c82f5cdd871210053c42fe01181ea147ed9132d",
+      "step-01-clarify-and-route.md": "d7bbfbfcf5475fcacbe505f564e059b31fc1c6527ebf31744b9d19a65eddf2c9",
+      "step-02-plan.md": "2628a7b92a7362d254b83a68ac8f3bd3089ba4f5d0ec5dac8c369415e0e53dac",
+      "step-03-implement.md": "3c12e5e226cdeb0a2d1085c55e7cafac40d1437bc6916587059fd18578b5aef1",
+      "step-04-review.md": "b23cd1a6d9dc15dd6214c9a7d54e2b1ee75e528580b2cc7ae18b143ae6c46d8f",
+      "step-05-present.md": "d236088f33bf3e7e227389f88989343fbc538eacd396e6d01cd605d0f8e27225",
+      "step-oneshot.md": "3b4f5a8c5471448a345fe34828e6b59aa85549893cbf1d254c55df7b305599fa",
+      "sync-sprint-status.md": "7590316aae7bc9d5a1aec1fb94e078c1081189949466f68c2448a184f1729cfa",
+      "workflow.md": "8cf1f044829f164a7639fe51b4a8bcffcc2afc7046cfdb79efd9bfc843e78edc"
+    }
+  },
+  "outputs": {
+    "compile-epic-context.md": "6793b15ae85766cee529e6b349e45f2c6ec9e3212019611c29e8c77b4dc4b924",
+    "references/claims-check.md": "50ea17cb89a78ef815286dde2dabfd09f1dc9841d07a10857f88b39ab7b9bd2a",
+    "references/deletion-check.md": "0f1f124e4e957147e89164a272b10bedc694ad0d9ad2618c8610ac74ee9cb0da",
+    "review-prompts/edge-case-hunter.md": "8fc046af1cbf4ecc928207cec75e29c3c260adb86cc7da77537ade3b3a3b9448",
+    "review-prompts/verification-gap.md": "45ab0b8c4c56c5c055c97a293a8591a67e256d0b1a2058ce1f093cd866be8d03",
+    "spec-template.md": "880133e2c55d8e2aee713ba99c82f5cdd871210053c42fe01181ea147ed9132d",
+    "step-01-clarify-and-route.md": "97efa0b3df683fa81d5c52563d5e42e1e26bd9a0f48a5f6ff6b2d32d425a8891",
+    "step-02-plan.md": "7c4182c1ad2071362bf9a347a9b8958f9a5d8f30fee20993816bab184324eb1b",
+    "step-03-implement.md": "f9640bc138c4735560184df0445cd683d9df46c6ee4db8a52baf668dda4608a5",
+    "step-04-review.md": "bf8fc5ac107ef7478b17d6fe821156c58b3e12114f1ae7f6c61e0ff86386df3d",
+    "step-05-present.md": "5c91ffddcdcd4c8c6cacfd7d0bb31392723bd040a95ddd91e93351d02f86ac67",
+    "step-oneshot.md": "affbd138d595a5fe25dbdd048e2f30e1994ac4c1f6eee846e7a5e2cf4422b019",
+    "sync-sprint-status.md": "43d950872d2f30ecd3dc7b35f375b2743d730dedfa53dca963a6e3ddfc9c2dc5",
+    "workflow.md": "8990103b81693a7b0bc822398784fc1097f2c1d4798a79009739452a3f8dd2cd"
+  },
+  "project_root": "C:\\Users\\dazad\\OneDrive\\Documentos\\ProyectoDian",
+  "project_slug": "proyectodian",
+  "root_hash": "1b5fb9e5fd2c",
+  "schema_version": 1,
+  "skill": "bmad-build"
+}
