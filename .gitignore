@@ -1,24 +1,82 @@
-# Python-generated files
+# Python-generated files & caches
 __pycache__/
-*.py[oc]
+*.py[cod]
+*$py.class
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
+*.egg
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
 
 # Virtual environments
 .venv/
 env/
 venv/
+ENV/
+env.bak/
+venv.bak/
 
 # Local secrets & persistent browser profile
 .env
+.env.local
+.env.*.local
+!*.example
+!*.template
 .browser_profile/
 
 # Downloads & sensitive fiscal data
 downloads/*
 !downloads/.gitkeep
 
+# AI Agents, Skills & Assistant Artifacts
+.agents/
+skills/
+_bmad/
+_bmad-output/
+graphify-out/
+.gemini/
+.antigravity/
+
+# Scratch & Temporary Testing Files
+scratch/
+*.tmp
+*.temp
+*.bak
+*~
+
+# Debug Screenshots & Visual Dumps
+screenshot_*.png
+token_check.png
+*.webm
+
 # Logs
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor & IDE configurations
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+
+# Operating System Junk
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
