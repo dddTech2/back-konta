@@ -17,7 +17,7 @@ services:
     environment:
       FRONTEND_DIR: /frontend
     ports:
-      - "8000:8000"
+      - "8020:8000"
     volumes:
       - kontable_data:/data
       - ../ProyectoDianFront:/frontend:ro

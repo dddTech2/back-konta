@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Punto de entrada compartido por los 3 servicios. El nombre del proceso llega como
 # primer argumento (ver `command:` de cada servicio en docker-compose.yml).
 set -e
