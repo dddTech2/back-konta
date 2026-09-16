@@ -1,0 +1,5 @@
+# Los scripts de shell deben viajar siempre con finales de linea LF, sin importar
+# la configuracion core.autocrlf de quien los edite en Windows -- si no, el shebang
+# (#!/bin/sh) queda corrupto como "/bin/sh\r" y el contenedor Linux no lo encuentra
+# (error "exec /entrypoint.sh: no such file or directory").
+*.sh text eol=lf
