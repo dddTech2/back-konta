@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+.git/
+.pytest_cache/
+.env
+.env.local
+kontable.db
+downloads/
+.browser_profile/
+screenshot_*.png
+token_check.png
+scratch/
+_bmad/
+_bmad-output/
+graphify-out/
+docs/

@@ -1,0 +1,50 @@
+# Despliegue de prueba en un solo servidor: 3 contenedores (api, bot, worker) + 2 volumenes
+# compartidos (datos y perfil persistente de Chrome). Requiere que, en el servidor, la carpeta
+# ProyectoDianFront exista como hermana de esta (../ProyectoDianFront), igual que en local.
+#
+# Uso:
+#   cp .env.example .env   # y completar TELEGRAM_BOT_TOKEN, ADMIN_TELEGRAM_CHAT_ID, etc.
+#   docker compose up -d --build
+#   docker compose logs -f bot      # confirmar "Conectado con éxito como: @tu_bot"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: ["api"]
+    env_file: .env
+    environment:
+      FRONTEND_DIR: /frontend
+    ports:
+      - "8000:8000"
+    volumes:
+      - kontable_data:/data
+      - ../ProyectoDianFront:/frontend:ro
+    restart: unless-stopped
+
+  bot:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: ["bot"]
+    env_file: .env
+    volumes:
+      - kontable_data:/data
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: ["worker"]
+    env_file: .env
+    volumes:
+      - kontable_data:/data
+      - browser_profile:/app/.browser_profile
+    restart: unless-stopped
+    shm_size: "1gb"
+
+volumes:
+  kontable_data:
+  browser_profile:
