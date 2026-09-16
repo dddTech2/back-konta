@@ -1,8 +1,20 @@
 # 🤖 DianAutomation - Extractor Desatendido de Listados DIAN VPFE
 
+[![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.14-blue.svg)](https://python.org)
+[![Playwright Stealth](https://img.shields.io/badge/browser-Playwright%20Stealth-green.svg)](https://playwright.dev)
+[![Architecture](https://img.shields.io/badge/docs-C4%20Architecture-orange.svg)](docs/ARCHITECTURE.md)
+[![ADRs](https://img.shields.io/badge/decisions-ADR%20Records-purple.svg)](docs/decisions/README.md)
+[![Tests](https://img.shields.io/badge/tests-13%20passed-brightgreen.svg)](#-ejecución-de-pruebas-unitarias)
+
 Automatización end-to-end de alta fidelidad para el portal de Facturación Electrónica de la **DIAN (VPFE)** en Colombia (ambientes de **Habilitación** y **Producción**). 
 
 Permite iniciar sesión como **Persona Natural** o **Empresa (Representante Legal)**, resolver automáticamente la verificación de **Cloudflare Turnstile**, capturar en tiempo real el correo con el **enlace mágico de acceso (Token)** desde un servidor **Stalwart IMAP**, solicitar la exportación de documentos para cualquier mes y descargar de forma completamente desatendida el archivo **ZIP/Excel** generado.
+
+> ⏱️ **Inicio Rápido en 30 Segundos:**
+> ```bash
+> uv run dian-automation --tipo empresa --mes 2026-08
+> ```
+> *(Lee credenciales directamente desde `.env` y descarga el listado a `./downloads/`)*.
 
 ---
 
@@ -38,6 +50,8 @@ Permite iniciar sesión como **Persona Natural** o **Empresa (Representante Lega
 ---
 
 ## 🏛️ Arquitectura y Funcionamiento
+
+> 📘 **Documentación de Arquitectura Completa**: Puedes consultar los diagramas **C4 (Contexto, Contenedores y Componentes)** en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ```mermaid
 sequenceDiagram
@@ -137,6 +151,8 @@ Antes de ejecutar el proyecto, asegúrate de contar con:
 ---
 
 ## ⚙️ Configuración (.env)
+
+> 📋 **Auditoría Completa de Variables:** Para consultar la tabla detallada de todas las variables consumidas en el código fuente, valores por defecto y estados, revisa [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md).
 
 Copia el archivo de ejemplo para crear tu configuración local:
 
@@ -300,9 +316,16 @@ tests\test_mail_parser.py .....                                          [100%]
 
 ```
 ProyectoDian/
-├── .agents/                        # Habilidades y agentes del framework BMad
+├── .agents/                        # Habilidades y agentes del framework BMad y Antigravity
 ├── _bmad-output/                   # Artefactos y especificaciones BMad
 │   └── implementation-artifacts/   # Especificaciones de implementación (spec-*.md)
+├── docs/                           # Documentación formal de ingeniería
+│   ├── ARCHITECTURE.md             # Especificación C4 (Contexto, Contenedor, Componentes)
+│   ├── ENVIRONMENT.md              # Auditoría completa de variables de entorno
+│   └── decisions/                  # Registros de Decisiones de Arquitectura (ADRs)
+│       ├── README.md               # Índice de ADRs
+│       ├── ADR-001-*.md            # Evasión de Cloudflare Turnstile vía CDP
+│       └── ADR-002-*.md            # Bypass de Magic Link con Stalwart IMAP
 ├── downloads/                      # Directorio destino de los archivos ZIP descargados
 ├── src/
 │   └── dian_automation/
@@ -322,16 +345,24 @@ ProyectoDian/
 
 ---
 
+## 🛠️ Runbooks de Operación Frecuente
+
+| Tarea Operativa | Comando PowerShell | Descripción |
+| :--- | :--- | :--- |
+| **Limpiar instancias Chrome zombie** | `Get-Process chrome -ErrorAction SilentlyContinue \| Where-Object { $_.CommandLine -like "*9222*" } \| Stop-Process -Force` | Libera el puerto de depuración 9222 si un proceso quedó colgado. |
+| **Limpiar descargas previas** | `Remove-Item -Path .\downloads\*.zip -Force` | Elimina descargas antiguas para evitar confusiones de reportes. |
+| **Ejecución rápida de prueba** | `uv run pytest -v` | Ejecuta la suite de 13 pruebas unitarias sin tocar internet. |
+| **Descarga directa con Token** | `uv run dian-automation --token-url "<URL>" --mes 2026-08` | Salta el login si ya tienes un enlace activo de la DIAN. |
+
+---
+
 ## ❓ Preguntas Frecuentes y Solución de Problemas
 
 ### 1. ¿Por qué se utiliza Google Chrome nativo en lugar del Chromium empaquetado de Playwright?
-Cloudflare Turnstile analiza firmas en el motor JavaScript (como `navigator.webdriver`, prototipos de plugins y propiedades de pantalla). Las versiones estándar de Chromium automatizado disparan el error `600010`. Lanzando Google Chrome nativo con CDP y conectándose a él, Turnstile identifica el entorno como un navegador 100% humano y se valida automáticamente.
+Cloudflare Turnstile analiza firmas en el motor JavaScript (como `navigator.webdriver`, prototipos de plugins y propiedades de pantalla). Las versiones estándar de Chromium automatizado disparan el error `600010`. Conectando Playwright vía CDP a una instancia de Google Chrome nativo con un perfil persistente, Turnstile valida el entorno como un navegador 100% humano y se resuelve en 3 a 5 segundos (ver detalle en [ADR-001](docs/decisions/ADR-001-evasion-cloudflare-turnstile-cdp.md)).
 
 ### 2. Error: `Target page, context or browser has been closed`
-Ocurre si el navegador fue cerrado manualmente mientras el script estaba ejecutándose, o si otra instancia de Chrome ya estaba escuchando en el puerto `9222`. Para solucionarlo, cierra todas las ventanas de Chrome o ejecuta:
-```powershell
-Get-Process chrome -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*9222*" } | Stop-Process -Force
-```
+Ocurre si el navegador fue cerrado manualmente mientras el script estaba ejecutándose, o si otra instancia de Chrome ya estaba escuchando en el puerto `9222`. Para solucionarlo, ejecuta el comando de limpieza del Runbook arriba.
 
 ### 3. ¿Qué ocurre si el correo con el token tarda más de 60 segundos?
 Puedes incrementar el tiempo de espera configurando la variable `EMAIL_TIMEOUT_SECONDS=120` en tu archivo `.env`.
@@ -341,3 +372,8 @@ Para periodos con miles de facturas (o en horas de alta concurrencia fiscal), la
 
 ### 5. ¿Es compatible tanto con el ambiente de Habilitación como con Producción?
 Sí. El bot detecta automáticamente el dominio del token suministrado (`catalogo-vpfe-hab.dian.gov.co` o `catalogo-vpfe.dian.gov.co`) y dirige la navegación de exportación y descarga al host correcto sin perder la sesión.
+
+---
+
+> 📅 **Última revisión técnica:** Septiembre 2026 | **Compatibilidad:** Python 3.11+, 3.14 (Certificado), Google Chrome 120+, Playwright 1.62+
+

@@ -1,0 +1,379 @@
+"""Bot de Telegram para Contribuyentes (Clientes).
+
+Permite a los clientes consultar en tiempo real desde Telegram:
+- /resumen: Facturación mensual, variación porcentual, IVA generado/descontable y balance a pagar o a favor.
+- /facturas: Últimas 4 facturas electrónicas emitidas.
+- /vencimientos: Calendario de obligaciones tributarias DIAN según el último dígito del NIT.
+- /ayuda: Menú interactivo de comandos disponibles.
+
+Incluye control de acceso mediante verificación de vinculación y estado de suscripción.
+"""
+
+import re
+import logging
+from datetime import datetime, date
+from typing import Optional, Dict, Any, Tuple, List
+from sqlalchemy.orm import Session
+
+from dian_automation.config import config
+from dian_automation.db.models import User, Business, MonthlyTaxSummary, Invoice, DIANTaxCalendar, Subscription
+
+logger = logging.getLogger("client_bot")
+
+
+class ClientTelegramBot:
+    """Procesador de consultas tributarias y facturación para contribuyentes."""
+
+    @classmethod
+    def get_authenticated_client(
+        cls, sender_chat_id: int, db: Session
+    ) -> Tuple[Optional[User], Optional[Business], Optional[str], Optional[str]]:
+        """Valida que el chat_id corresponda a un cliente activo, vinculado y sin bloqueo de suscripción.
+        
+        Returns:
+            Tuple (User, Business, error_code, error_message)
+        """
+        user = (
+            db.query(User)
+            .filter(
+                User.telegram_chat_id == sender_chat_id,
+                User.is_telegram_linked.is_(True),
+                User.is_active.is_(True),
+            )
+            .first()
+        )
+
+        if not user:
+            return (
+                None,
+                None,
+                "UNLINKED",
+                "⛔ *Cuenta no vinculada*\n\n"
+                "No encontramos ninguna cuenta de Kontable asociada a este chat de Telegram.\n\n"
+                "📲 Si acabas de adquirir tu plan, pulsa en el enlace de invitación de un solo uso "
+                "que te envió tu administradora comercial para activar tu acceso.",
+            )
+
+        # Verificar bloqueo de suscripción (Epic 3 hook)
+        blocked_sub = (
+            db.query(Subscription)
+            .filter(
+                Subscription.client_id == user.id,
+                Subscription.status == "BLOQUEADO",
+            )
+            .first()
+        )
+        if blocked_sub:
+            return (
+                user,
+                None,
+                "SUBSCRIPTION_BLOCKED",
+                "⚠️ *Servicio Suspendido*\n\n"
+                "Tu suscripción se encuentra suspendida temporalmente por pago pendiente. "
+                "Comunícate con Katerinn para reactivar tus reportes.",
+            )
+
+        # Obtener el negocio principal asociado al cliente
+        business = (
+            db.query(Business)
+            .filter(Business.client_id == user.id, Business.is_active.is_(True))
+            .first()
+        )
+
+        if not business:
+            return (
+                user,
+                None,
+                "NO_BUSINESS",
+                "⚠️ *Sin empresa registrada*\n\n"
+                "Tu usuario está activo pero aún no tiene una empresa o negocio asociado. "
+                "Por favor comunícate con soporte.",
+            )
+
+        return user, business, None, None
+
+    @classmethod
+    def handle_resumen(
+        cls, sender_chat_id: int, db: Session, target_period: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Procesa el comando /resumen: total facturado, variación %, IVA generado, descontable y saldo neto."""
+        user, business, err_code, err_msg = cls.get_authenticated_client(sender_chat_id, db)
+        if err_code:
+            return {"success": False, "reason": err_code, "message": err_msg}
+
+        query = db.query(MonthlyTaxSummary).filter(MonthlyTaxSummary.business_id == business.id)
+        if target_period:
+            summary = query.filter(MonthlyTaxSummary.period_year_month == target_period).first()
+        else:
+            summary = query.order_by(MonthlyTaxSummary.period_year_month.desc()).first()
+
+        if not summary:
+            return {
+                "success": True,
+                "has_data": False,
+                "message": (
+                    f"📊 *Resumen Fiscal - {business.commercial_name}*\n"
+                    f"🏢 NIT: `{business.nit}-{business.dv}`\n\n"
+                    "ℹ️ Aún no dispones de resúmenes fiscales liquidados en la plataforma.\n"
+                    "Tan pronto como la DIAN sincronice los documentos electrónicos del mes, "
+                    "podrás consultar tus cifras actualizadas aquí."
+                ),
+            }
+
+        # Formatear balance de IVA (A pagar vs A favor)
+        iva_bal = float(summary.iva_balance)
+        if iva_bal > 0:
+            balance_str = f"🔴 *Saldo a Pagar DIAN:* ${iva_bal:,.0f} COP"
+        elif iva_bal < 0:
+            balance_str = f"🟢 *Saldo a Favor:* ${abs(iva_bal):,.0f} COP"
+        else:
+            balance_str = "⚪ *Saldo Neto de IVA:* $0 COP"
+
+        # Variación % vs mes anterior
+        if summary.variation_vs_previous_pct is not None:
+            var_val = float(summary.variation_vs_previous_pct)
+            var_arrow = "📈 +" if var_val > 0 else ("📉 " if var_val < 0 else "➡️ ")
+            var_str = f"{var_arrow}{var_val:.1f}%"
+        else:
+            var_str = "N/D (Periodo inicial)"
+
+        message = (
+            f"📊 *RESUMEN FISCAL DEL MES ({summary.period_year_month})*\n"
+            f"🏢 *Empresa:* {business.commercial_name} (`NIT {business.nit}-{business.dv}`)\n"
+            "───────────────────────────────\n"
+            f"💵 *Total Facturado:* ${float(summary.total_invoiced_net):,.0f} COP\n"
+            f"📊 *Variación vs Mes Anterior:* {var_str}\n"
+            f"📑 *Documentos Procesados:* {summary.total_invoices_count}\n"
+            "───────────────────────────────\n"
+            "🏛️ *LIQUIDACIÓN DE IVA:*\n"
+            f"  • *IVA Generado (Ventas):* ${float(summary.iva_generado):,.0f} COP\n"
+            f"  • *IVA Descontable (Compras):* ${float(summary.iva_descontable):,.0f} COP\n"
+            f"  • {balance_str}\n"
+            "───────────────────────────────\n"
+            "⚖️ *RETENCIONES EN LA FUENTE:*\n"
+            f"  • *ReteIVA:* ${float(summary.rete_iva_total):,.0f} COP\n"
+            f"  • *ReteRenta:* ${float(summary.rete_renta_total):,.0f} COP\n"
+            f"  • *ReteICA:* ${float(summary.rete_ica_total):,.0f} COP\n\n"
+            f"🕒 _Calculado automáticamente el {summary.calculated_at.strftime('%d/%m/%Y %H:%M')}_"
+        )
+
+        return {
+            "success": True,
+            "has_data": True,
+            "period": summary.period_year_month,
+            "total_invoiced": float(summary.total_invoiced_net),
+            "iva_balance": iva_bal,
+            "message": message,
+        }
+
+    @classmethod
+    def handle_facturas(
+        cls, sender_chat_id: int, db: Session, limit: int = 4
+    ) -> Dict[str, Any]:
+        """Procesa el comando /facturas: devuelve las últimas 4 facturas electrónicas emitidas."""
+        user, business, err_code, err_msg = cls.get_authenticated_client(sender_chat_id, db)
+        if err_code:
+            return {"success": False, "reason": err_code, "message": err_msg}
+
+        invoices = (
+            db.query(Invoice)
+            .filter(
+                Invoice.business_id == business.id,
+                Invoice.group_type == "Emitido",
+            )
+            .order_by(Invoice.issue_date.desc())
+            .limit(limit)
+            .all()
+        )
+
+        if not invoices:
+            return {
+                "success": True,
+                "count": 0,
+                "message": (
+                    f"🧾 *Últimas Facturas Emitidas - {business.commercial_name}*\n"
+                    f"🏢 NIT: `{business.nit}-{business.dv}`\n\n"
+                    "ℹ️ No se registran facturas electrónicas emitidas en tu historial reciente."
+                ),
+            }
+
+        lines = [
+            f"🧾 *ÚLTIMAS FACTURAS EMITIDAS ({len(invoices)})*",
+            f"🏢 *{business.commercial_name}* (NIT `{business.nit}-{business.dv}`)",
+            "───────────────────────────────",
+        ]
+
+        for i, inv in enumerate(invoices, 1):
+            inv_code = f"{inv.prefix or ''}-{inv.folio or ''}".strip("-")
+            date_str = inv.issue_date.strftime("%d/%m/%Y")
+            total_str = f"${float(inv.total):,.0f} COP"
+            client_name = inv.receiver_name[:30] + "..." if len(inv.receiver_name) > 30 else inv.receiver_name
+
+            lines.append(f"{i}️⃣ *Factura:* `{inv_code}`")
+            lines.append(f"   👤 *Cliente:* {client_name}")
+            lines.append(f"   📅 *Fecha:* {date_str} | 💰 *Total:* {total_str}")
+            if inv.dian_status:
+                lines.append(f"   🏛️ *Estado DIAN:* {inv.dian_status}")
+            lines.append("")
+
+        lines.append("ℹ️ _Usa /resumen para ver el balance mensual consolidado de impuestos._")
+
+        return {
+            "success": True,
+            "count": len(invoices),
+            "message": "\n".join(lines).strip(),
+        }
+
+    @classmethod
+    def handle_vencimientos(
+        cls, sender_chat_id: int, db: Session, reference_date: Optional[date] = None
+    ) -> Dict[str, Any]:
+        """Procesa el comando /vencimientos: lista las obligaciones tributarias según el último dígito del NIT."""
+        user, business, err_code, err_msg = cls.get_authenticated_client(sender_chat_id, db)
+        if err_code:
+            return {"success": False, "reason": err_code, "message": err_msg}
+
+        # Extraer el último dígito del NIT (sin el DV)
+        clean_nit = "".join(filter(str.isdigit, business.nit))
+        if not clean_nit:
+            last_digit = 0
+        else:
+            last_digit = int(clean_nit[-1])
+
+        ref_date = reference_date or date.today()
+
+        # Consultar calendario para este dígito
+        calendar_entries = (
+            db.query(DIANTaxCalendar)
+            .filter(DIANTaxCalendar.nit_last_digit == last_digit)
+            .order_by(DIANTaxCalendar.deadline_date.asc())
+            .all()
+        )
+
+        if not calendar_entries:
+            return {
+                "success": True,
+                "count": 0,
+                "message": (
+                    f"🗓️ *Calendario Tributario DIAN*\n"
+                    f"🏢 *{business.commercial_name}* (NIT `{business.nit}-{business.dv}`, Dígito: `{last_digit}`)\n\n"
+                    "ℹ️ No hay obligaciones tributarias registradas actualmente para tu terminación de NIT."
+                ),
+            }
+
+        lines = [
+            "🗓️ *CALENDARIO DE VENCIMIENTOS DIAN*",
+            f"🏢 *{business.commercial_name}*",
+            f"🆔 *NIT:* `{business.nit}-{business.dv}` (Último dígito: *{last_digit}*)",
+            "───────────────────────────────",
+        ]
+
+        # Filtrar o clasificar próximas obligaciones
+        for entry in calendar_entries:
+            days_diff = (entry.deadline_date - ref_date).days
+            if days_diff < 0:
+                status_tag = f"⚠️ Venció hace {abs(days_diff)} días"
+                icon = "🔴"
+            elif days_diff == 0:
+                status_tag = "🚨 ¡VENCE HOY!"
+                icon = "🔥"
+            elif days_diff <= 5:
+                status_tag = f"⏳ En {days_diff} días"
+                icon = "🟡"
+            else:
+                status_tag = f"📅 En {days_diff} días"
+                icon = "🟢"
+
+            lines.append(f"{icon} *{entry.tax_type}* ({entry.period_label})")
+            lines.append(f"   Fecha Límite: *{entry.deadline_date.strftime('%d/%m/%Y')}* — _{status_tag}_")
+            if entry.description:
+                lines.append(f"   _{entry.description}_")
+            lines.append("")
+
+        lines.append("💡 *Tip Kontable:* Presenta y paga con anticipación para evitar sanciones e intereses de mora.")
+
+        return {
+            "success": True,
+            "count": len(calendar_entries),
+            "last_digit": last_digit,
+            "message": "\n".join(lines).strip(),
+        }
+
+    @classmethod
+    def handle_dashboard(cls, sender_chat_id: int, db: Session) -> Dict[str, Any]:
+        """Procesa el comando /dashboard: entrega el enlace al prototipo web/móvil con datos reales."""
+        user, business, err_code, err_msg = cls.get_authenticated_client(sender_chat_id, db)
+        if err_code:
+            return {"success": False, "reason": err_code, "message": err_msg}
+
+        link = f"{config.kontable_web_url}?nit={business.nit}"
+        message = (
+            f"📱 *Tu Dashboard Kontable — {business.commercial_name}*\n\n"
+            f"{link}\n\n"
+            "_Se abre directamente con tus cifras reales de facturación e IVA, sin necesidad de iniciar sesión._"
+        )
+        return {"success": True, "link": link, "message": message}
+
+    @classmethod
+    def handle_help(cls, sender_chat_id: int, db: Session) -> str:
+        """Devuelve el menú de ayuda y bienvenida para el cliente."""
+        user, business, err_code, err_msg = cls.get_authenticated_client(sender_chat_id, db)
+        if err_code and err_code != "NO_BUSINESS":
+            return err_msg
+
+        biz_name = business.commercial_name if business else "tu empresa"
+
+        return (
+            f"👋 *¡Hola, bienvenido a Kontable Bot!*\n"
+            f"Asistente tributario inteligente para *{biz_name}*.\n\n"
+            "Puedes consultar tu información fiscal en cualquier momento con estos comandos:\n\n"
+            "📊 */resumen* — Facturación mensual, IVA generado/descontable y saldo a pagar o a favor.\n"
+            "🧾 */facturas* — Últimas 4 facturas electrónicas emitidas con clientes y montos.\n"
+            "🗓️ */vencimientos* — Fechas límite de tus obligaciones tributarias según tu NIT.\n"
+            "📱 */dashboard* — Enlace a tu panel web/móvil con gráficos e historial completo.\n"
+            "ℹ️ */ayuda* — Muestra este menú de opciones.\n\n"
+            "🔒 _Tus datos provienen directamente del repositorio oficial de la DIAN._"
+        )
+
+    @classmethod
+    def handle_client_message(
+        cls, sender_chat_id: int, text: str, db: Session
+    ) -> str:
+        """Enrutador de mensajes recibidos en Telegram desde clientes contribuyentes."""
+        user, business, err_code, err_msg = cls.get_authenticated_client(sender_chat_id, db)
+        if err_code == "SUBSCRIPTION_BLOCKED":
+            return err_msg
+
+        text_clean = text.strip().lower()
+
+        if text_clean.startswith("/resumen"):
+            # Permite consultar un periodo específico si se envía como /resumen 2026-08
+            parts = text.strip().split()
+            target_period = parts[1] if len(parts) > 1 and re.match(r"^\d{4}-\d{2}$", parts[1]) else None
+            res = cls.handle_resumen(sender_chat_id, db, target_period=target_period)
+            return res["message"]
+
+        elif text_clean.startswith("/facturas"):
+            res = cls.handle_facturas(sender_chat_id, db, limit=4)
+            return res["message"]
+
+        elif text_clean.startswith("/vencimientos"):
+            res = cls.handle_vencimientos(sender_chat_id, db)
+            return res["message"]
+
+        elif text_clean.startswith("/dashboard"):
+            res = cls.handle_dashboard(sender_chat_id, db)
+            return res["message"]
+
+        elif text_clean.startswith("/ayuda") or text_clean.startswith("/help") or text_clean == "/start":
+            return cls.handle_help(sender_chat_id, db)
+
+        return (
+            "🤖 No reconozco ese comando.\n\n"
+            "Comandos disponibles:\n"
+            "• /resumen — Resumen fiscal del mes e IVA\n"
+            "• /facturas — Últimas 4 facturas emitidas\n"
+            "• /vencimientos — Calendario de impuestos DIAN\n"
+            "• /dashboard — Enlace a tu panel web/móvil\n"
+            "• /ayuda — Menú de ayuda"
+        )

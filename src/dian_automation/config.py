@@ -43,6 +43,10 @@ class AppConfig:
     email_timeout_seconds: int = int(os.getenv("EMAIL_TIMEOUT_SECONDS", "60"))
     export_download_timeout_seconds: int = int(os.getenv("EXPORT_DOWNLOAD_TIMEOUT_SECONDS", "300"))
     download_dir: str = os.getenv("DOWNLOAD_DIR", "./downloads")
+
+    # Frontend web/móvil (para servir el prototipo y enlazarlo desde Telegram)
+    frontend_dir: str = os.getenv("FRONTEND_DIR", "")
+    kontable_web_url: str = os.getenv("KONTABLE_WEB_URL", "http://127.0.0.1:8000/app/kontable-prototipo_1.html")
     
     selectors: DianSelectors = DianSelectors()
 

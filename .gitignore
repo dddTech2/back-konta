@@ -34,6 +34,11 @@ venv.bak/
 downloads/*
 !downloads/.gitkeep
 
+# Bases de datos locales (pueden contener datos fiscales reales de pruebas)
+*.db
+*.sqlite
+*.sqlite3
+
 # AI Agents, Skills & Assistant Artifacts
 .agents/
 skills/

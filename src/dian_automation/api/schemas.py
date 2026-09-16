@@ -1,0 +1,134 @@
+"""Esquemas Pydantic para los endpoints REST de Kontable."""
+
+from typing import List, Optional
+from pydantic import BaseModel, Field
+
+
+class BusinessInfo(BaseModel):
+    """Información del negocio activo."""
+    id: str
+    commercial_name: str
+    legal_name: str
+    nit: str
+    dv: str
+    economic_activity: Optional[str] = None
+    taxpayer_type: str = "PERSONA_NATURAL"
+
+
+class MetricSummary(BaseModel):
+    """Resumen consolidado de facturación e impuestos del mes activo."""
+    total: float
+    ivaAcumulado: float
+    numFacturas: int
+    variacion: float
+    periodo: str
+
+
+class MonthlyBar(BaseModel):
+    """Elemento del histórico de facturación para el gráfico de barras."""
+    mes: str
+    period_year_month: str
+    total: float
+
+
+class RecentInvoice(BaseModel):
+    """Factura reciente mostrada en el Dashboard."""
+    id: str
+    num: str
+    fecha: str
+    cliente: str
+    valor: float
+    iva: float
+    tipo: str = "Emitido"
+
+
+class NextTaxAlert(BaseModel):
+    """Alerta de próximo vencimiento tributario."""
+    dias: Optional[int] = None
+    etiqueta: str
+    limite: str
+    estado: str = "proximo"
+
+
+class SubscriptionInfo(BaseModel):
+    """Estado de la suscripción y periodo de gracia."""
+    estado: str
+    plan: str
+    has_warning_banner: bool = False
+    days_left_in_grace: Optional[int] = None
+    cutoff_date: Optional[str] = None
+    grace_period_end: Optional[str] = None
+
+
+class DashboardResponse(BaseModel):
+    """Payload completo consumido por la pantalla Dashboard del prototipo."""
+    business: BusinessInfo
+    resumen: MetricSummary
+    historico: List[MonthlyBar]
+    facturasRecientes: List[RecentInvoice]
+    alertaProximoVencimiento: NextTaxAlert
+    suscripcion: SubscriptionInfo
+
+
+class PeriodInvoiceItem(BaseModel):
+    """Factura asociada a un periodo de IVA."""
+    fecha: str
+    cliente: str
+    valor: float
+    iva: float
+    tipo: str
+
+
+class IvaPeriodItem(BaseModel):
+    """Periodo fiscal de IVA (bimestral o mensual) con desglose de ring SVG."""
+    period_key: str
+    etiqueta: str
+    generado: float
+    descontable: float
+    saldo: float  # >0 Saldo a pagar, <0 Saldo a favor
+    pct: float  # Proporción descontable/generado (0.0 a 1.0)
+    estado: str  # en_curso, presentado
+    limite: str
+    dias: Optional[int] = None
+    facturas: List[PeriodInvoiceItem] = Field(default_factory=list)
+
+
+class IvaDetailResponse(BaseModel):
+    """Payload completo consumido por la pantalla de Detalle de IVA."""
+    business_id: str
+    nit: str
+    nombre: str
+    periodos: List[IvaPeriodItem]
+
+
+class InvoiceDetailItem(BaseModel):
+    """Factura detallada en el historial general."""
+    id: str
+    cufe: str
+    num: str
+    issue_date: str
+    fecha_corta: str
+    cliente: str
+    nit_contraparte: str
+    valor: float
+    iva: float
+    tipo_documento: str
+    group_type: str  # Emitido, Recibido
+
+
+class InvoicesListResponse(BaseModel):
+    """Payload de historial de facturas con paginación."""
+    total_count: int
+    invoices: List[InvoiceDetailItem]
+    limit: int
+    offset: int
+
+
+class LockoutErrorDetail(BaseModel):
+    """Estructura de error 403 Forbidden cuando la cuenta está suspendida."""
+    status_code: int = 403
+    error: str = "SUBSCRIPTION_BLOCKED"
+    message: str
+    redirect_url: str = "/servicio-suspendido"
+    plan: Optional[str] = None
+    amount_due: Optional[float] = None
