@@ -1,0 +1,139 @@
+"""Endpoints internos para el worker remoto (ej. corriendo en una red residencial,
+fuera del VPS cuya IP la DIAN bloquea).
+
+Diseño: la base de datos (SQLite/Postgres) NUNCA se expone directamente a internet.
+El worker remoto solo habla con estos 3 endpoints, protegidos con un token compartido
+(INTERNAL_WORKER_TOKEN) via header `Authorization: Bearer <token>`:
+  - GET  /internal/jobs/next            -> toma y reserva el siguiente job pendiente
+  - POST /internal/jobs/{job_id}/complete -> sube el ZIP descargado; el servidor lo parsea
+  - POST /internal/jobs/{job_id}/fail      -> reporta un fallo (con captura opcional)
+
+Todas las escrituras a la base de datos (incluida la ingesta del XLSX) las sigue haciendo
+únicamente el proceso de la API en el VPS, igual que hace el worker local en worker.py.
+"""
+
+import logging
+import os
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Header, status
+from sqlalchemy.orm import Session
+
+from dian_automation.config import config
+from dian_automation.db.database import get_db, SessionLocal
+from dian_automation.db.models import DIANExtractionJob, Business
+from dian_automation.queue.manager import ExtractionQueueManager
+from dian_automation.extraction.xlsx_parser import DIANXLSXParser, DIANParseError
+from dian_automation.telegram.tech_ops_bot import TechOpsAlertBot, create_tech_ops_on_failure_callback
+
+logger = logging.getLogger("internal_worker_api")
+
+router = APIRouter(prefix="/internal/jobs", tags=["Internal Worker"])
+
+
+def require_worker_token(authorization: Optional[str] = Header(default=None)) -> None:
+    """Valida el header `Authorization: Bearer <INTERNAL_WORKER_TOKEN>`."""
+    if not config.internal_worker_token:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="INTERNAL_WORKER_TOKEN no está configurado en el servidor.",
+        )
+    expected = f"Bearer {config.internal_worker_token}"
+    if not authorization or authorization != expected:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token de worker inválido.")
+
+
+@router.get("/next", dependencies=[Depends(require_worker_token)])
+def get_next_job(db: Session = Depends(get_db)):
+    """Toma y reserva (PROCESSING) el siguiente job pendiente, con todo lo que el
+    worker remoto necesita para llamar a dian_flow.run_flow() sin tocar la base de datos."""
+    job = ExtractionQueueManager.get_next_runnable_job(db=db)
+    if not job:
+        return {"job": None}
+
+    business = db.query(Business).filter(Business.id == job.business_id).first()
+    if not business:
+        raise HTTPException(status_code=500, detail=f"Negocio '{job.business_id}' no encontrado para el job {job.id}")
+
+    job = ExtractionQueueManager.mark_job_processing(job_id=job.id, db=db)
+
+    login_type = "empresa" if business.taxpayer_type == "PERSONA_JURIDICA" else "persona"
+    return {
+        "job": {
+            "job_id": job.id,
+            "business_id": business.id,
+            "target_period": job.target_period,
+            "login_type": login_type,
+            "representative_code": business.legal_rep_doc if login_type == "empresa" else None,
+            "company_nit": business.nit if login_type == "empresa" else None,
+            "person_code": business.nit if login_type == "persona" else None,
+        }
+    }
+
+
+@router.post("/{job_id}/complete", dependencies=[Depends(require_worker_token)])
+async def complete_job(job_id: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Recibe el ZIP descargado por el worker remoto, lo guarda y lo parsea (ingesta)."""
+    job = db.query(DIANExtractionJob).filter(DIANExtractionJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' no encontrado")
+
+    download_dir = os.getenv("DOWNLOAD_DIR", "./downloads")
+    os.makedirs(download_dir, exist_ok=True)
+    zip_path = os.path.join(download_dir, f"{job_id}.zip")
+    contents = await file.read()
+    with open(zip_path, "wb") as f:
+        f.write(contents)
+
+    try:
+        parse_result = DIANXLSXParser.parse_zip(zip_path=zip_path, business_id=job.business_id, db=db, job_id=job.id)
+    except DIANParseError as e:
+        raise HTTPException(status_code=422, detail=f"El ZIP se recibió pero no se pudo parsear: {e}")
+
+    job = ExtractionQueueManager.mark_job_success(job_id=job_id, zip_path=zip_path, db=db)
+    logger.info(f"Job {job_id} completado por worker remoto. Ingesta: {parse_result}")
+    return {"status": "SUCCESS", "job_id": job_id, "parse_result": parse_result}
+
+
+@router.post("/{job_id}/fail", dependencies=[Depends(require_worker_token)])
+async def fail_job(
+    job_id: str,
+    error_code: str = Form(...),
+    error_detail: str = Form(...),
+    screenshot: Optional[UploadFile] = File(default=None),
+    db: Session = Depends(get_db),
+):
+    """Reporta el fallo de un job procesado remotamente (con captura de pantalla opcional)."""
+    existing = db.query(DIANExtractionJob).filter(DIANExtractionJob.id == job_id).first()
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' no encontrado")
+
+    screenshot_path = None
+    if screenshot is not None:
+        download_dir = os.getenv("DOWNLOAD_DIR", "./downloads")
+        os.makedirs(download_dir, exist_ok=True)
+        screenshot_path = os.path.join(download_dir, f"evidence_{job_id}.png")
+        contents = await screenshot.read()
+        with open(screenshot_path, "wb") as f:
+            f.write(contents)
+
+    job = ExtractionQueueManager.mark_job_failed(
+        job_id=job_id,
+        error_code=error_code,
+        error_detail=error_detail,
+        screenshot_path=screenshot_path,
+        db=db,
+    )
+
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_TECH_OPS_BOT_TOKEN")
+    if bot_token:
+        callback = create_tech_ops_on_failure_callback(bot=TechOpsAlertBot(bot_token=bot_token), db_session_factory=SessionLocal)
+        try:
+            callback(job, error_code, error_detail, screenshot_path)
+        except Exception as e:
+            logger.error(f"Error notificando a Tech Ops sobre fallo remoto: {e}")
+
+    return {
+        "status": "FAILED" if job.status == "FAILED" else "RETRY_SCHEDULED",
+        "job_id": job_id,
+        "attempt_count": job.attempt_count,
+    }

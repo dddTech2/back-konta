@@ -47,6 +47,9 @@ class AppConfig:
     # Frontend web/móvil (para servir el prototipo y enlazarlo desde Telegram)
     frontend_dir: str = os.getenv("FRONTEND_DIR", "")
     kontable_web_url: str = os.getenv("KONTABLE_WEB_URL", "http://127.0.0.1:8000/app/kontable-prototipo_1.html")
+
+    # Worker remoto (ej. corriendo en una red residencial fuera de la IP bloqueada del VPS)
+    internal_worker_token: str = os.getenv("INTERNAL_WORKER_TOKEN", "")
     
     selectors: DianSelectors = DianSelectors()
 

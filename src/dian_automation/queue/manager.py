@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import asc
 
 from dian_automation.db.models import DIANExtractionJob, Business
+from dian_automation.queue.redis_signal import notify_job_ready
 
 
 class ExtractionQueueManager:
@@ -41,6 +42,7 @@ class ExtractionQueueManager:
         db.add(job)
         db.commit()
         db.refresh(job)
+        notify_job_ready(job.id)
         return job
 
     @classmethod
