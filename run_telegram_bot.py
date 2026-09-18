@@ -23,7 +23,7 @@ if hasattr(sys.stdout, "reconfigure"):
 # Cargar variables de entorno
 load_dotenv()
 
-from dian_automation.db.database import SessionLocal, init_db
+from dian_automation.db.database import SessionLocal
 from dian_automation.db.models import User, Business, Subscription
 from dian_automation.telegram.admin_bot import AdminTelegramBot
 from dian_automation.telegram.client_bot import ClientTelegramBot
@@ -315,7 +315,6 @@ class TelegramBotRunner:
 
     def run(self):
         """Bucle principal de Long Polling."""
-        init_db()
 
         print("\n" + "=" * 75)
         print("🤖 INICIANDO SERVIDOR BOT TELEGRAM KONTABLE (LONG POLLING)")

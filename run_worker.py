@@ -26,7 +26,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 load_dotenv()
 
-from dian_automation.db.database import init_db, SessionLocal
+from dian_automation.db.database import SessionLocal
 from dian_automation.queue.worker import ExtractionWorker
 from dian_automation.telegram.tech_ops_bot import TechOpsAlertBot, create_tech_ops_on_failure_callback
 
@@ -39,8 +39,6 @@ logger = logging.getLogger("worker_runner")
 
 
 def main():
-    init_db()
-
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_TECH_OPS_BOT_TOKEN")
     on_failure_callback = None
     if bot_token:
