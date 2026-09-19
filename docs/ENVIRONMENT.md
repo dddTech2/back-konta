@@ -44,13 +44,15 @@ uv run alembic upgrade head
 docker compose run --rm api alembic upgrade head
 ```
 
-**Base existente creada con `create_all` (p. ej. el volumen `kontable_data`).** Se adopta con `stamp`, nunca con `upgrade` (fallaría con "already exists"). Es un paso manual y no se ejecuta al arrancar:
+**Base existente creada con `create_all` antes de Alembic (p. ej. el volumen `kontable_data`).** Esa base tiene el esquema de la revisión base `0001`, así que se adopta con `stamp 0001` (nunca `stamp head`, que marcaría como aplicadas revisiones posteriores cuyas tablas no existen, como `sales`) y luego `upgrade head` para aplicar las revisiones pendientes. Es un paso manual y no se ejecuta al arrancar:
 
 1. Detén el bot y el worker y haz una copia de la base. En Docker (el servicio `api` monta `kontable_data` en `/data`): `docker compose run --rm -v "${PWD}:/backup" api cp /data/kontable.db /backup/kontable_copia.db`.
-2. Compara el esquema de la copia con `models.py`, desde la raíz del proyecto con una ruta absoluta (en PowerShell: `$env:DATABASE_URL="sqlite:///C:/ruta/kontable_copia.db"`; en bash: `DATABASE_URL=sqlite:////ruta/kontable_copia.db uv run ...`): `uv run alembic stamp head` y luego `uv run alembic check` (debe decir que no hay operaciones nuevas; una diferencia solo de longitud de `VARCHAR`, como `dian_extraction_jobs.target_period` 7 vs 30 en bases antiguas, es inocua en SQLite, que no aplica longitudes; cualquier otra diferencia hay que revisarla antes de continuar).
-3. Si la copia coincide, repite `alembic stamp head` sobre la base real (con la copia del paso 1 como respaldo). Solo agrega la tabla `alembic_version`; no modifica tablas ni filas.
+2. Ensaya sobre la copia, desde la raíz del proyecto y con una ruta absoluta (en PowerShell: `$env:DATABASE_URL="sqlite:///C:/ruta/kontable_copia.db"`; en bash: `DATABASE_URL=sqlite:////ruta/kontable_copia.db uv run ...`): `uv run alembic stamp 0001`, `uv run alembic upgrade head` y `uv run alembic check` (debe decir que no hay operaciones nuevas; una diferencia solo de longitud de `VARCHAR`, como `dian_extraction_jobs.target_period` 7 vs 30 en bases antiguas, es inocua en SQLite, que no aplica longitudes; cualquier otra diferencia hay que revisarla antes de continuar).
+3. Si la copia coincide, repite `alembic stamp 0001` y `alembic upgrade head` sobre la base real (con la copia del paso 1 como respaldo). `stamp` solo agrega la tabla `alembic_version`; `upgrade head` crea únicamente las tablas nuevas.
 
-Si un `upgrade head` sobre una base nueva falla a la mitad (SQLite no revierte el DDL), borra el archivo de la base y vuelve a ejecutarlo; nunca hagas `stamp head` sobre un esquema parcial. Ojo: `alembic downgrade base` elimina las 9 tablas con todos sus datos; no lo ejecutes sobre una base real.
+Si la base ya contiene las tablas de una revisión posterior (por ejemplo `sales`, creada por un script que llama `init_db()`), `upgrade head` fallará con "already exists": estampa entonces la revisión que corresponda a su esquema real (`alembic stamp <revisión>`) tras compararlo con `models.py`.
+
+Si un `upgrade head` sobre una base nueva falla a la mitad (SQLite no revierte el DDL), borra el archivo de la base y vuelve a ejecutarlo; nunca hagas `stamp` sobre un esquema parcial. Ojo: `alembic downgrade base` elimina todas las tablas con todos sus datos; no lo ejecutes sobre una base real.
 
 Para cambios de esquema futuros: `uv run alembic revision --autogenerate -m "<mensaje>"`, revisar y limpiar la revisión, y `uv run alembic upgrade head` a mano. `tests/test_alembic_baseline.py` falla si `models.py` diverge de las revisiones.
 

@@ -15,6 +15,8 @@ from sqlalchemy import (
     ForeignKey,
     Text,
     UniqueConstraint,
+    CheckConstraint,
+    Index,
 )
 from sqlalchemy.orm import relationship
 from dian_automation.db.database import Base
@@ -216,3 +218,22 @@ class DIANTaxCalendar(Base):
     description = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
+
+
+class Sale(Base):
+    """Venta declarada por el cliente (total y descripción opcional), desde Telegram o Web."""
+
+    __tablename__ = "sales"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    business_id = Column(String(36), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False)
+    total_amount = Column(Numeric(14, 2), nullable=False)
+    description = Column(String(500), nullable=True)
+    recorded_via = Column(String(20), nullable=False)  # TELEGRAM, WEB
+    recorded_by_user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("total_amount > 0", name="ck_sales_total_positive"),
+        Index("idx_sales_business_created", "business_id", "created_at"),
+    )

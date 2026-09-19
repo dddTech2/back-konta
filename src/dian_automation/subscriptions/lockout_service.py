@@ -50,6 +50,16 @@ class SubscriptionLockoutService:
     )
 
     @classmethod
+    def is_client_blocked(cls, db: Session, user_id: str) -> bool:
+        """Regla de bloqueo de Telegram: el usuario tiene alguna suscripción en estado BLOQUEADO."""
+        return (
+            db.query(Subscription.id)
+            .filter(Subscription.client_id == user_id, Subscription.status == "BLOQUEADO")
+            .first()
+            is not None
+        )
+
+    @classmethod
     def verify_user_web_access(
         cls, user_id: str, db: Session, reference_date: Optional[date] = None
     ) -> Dict[str, Any]:

@@ -4,6 +4,7 @@ Permite a los clientes consultar en tiempo real desde Telegram:
 - /resumen: Facturación mensual, variación porcentual, IVA generado/descontable y balance a pagar o a favor.
 - /facturas: Últimas 4 facturas electrónicas emitidas.
 - /vencimientos: Calendario de obligaciones tributarias DIAN según el último dígito del NIT.
+- /registrar_venta: Registra una venta (total y descripción opcional) vía core/sales_service.py.
 - /ayuda: Menú interactivo de comandos disponibles.
 
 Incluye control de acceso mediante verificación de vinculación y estado de suscripción.
@@ -16,7 +17,9 @@ from typing import Optional, Dict, Any, Tuple, List
 from sqlalchemy.orm import Session
 
 from dian_automation.config import config
-from dian_automation.db.models import User, Business, MonthlyTaxSummary, Invoice, DIANTaxCalendar, Subscription
+from dian_automation.core import sales_service
+from dian_automation.db.models import User, Business, MonthlyTaxSummary, Invoice, DIANTaxCalendar
+from dian_automation.subscriptions.lockout_service import SubscriptionLockoutService
 
 logger = logging.getLogger("client_bot")
 
@@ -55,15 +58,7 @@ class ClientTelegramBot:
             )
 
         # Verificar bloqueo de suscripción (Epic 3 hook)
-        blocked_sub = (
-            db.query(Subscription)
-            .filter(
-                Subscription.client_id == user.id,
-                Subscription.status == "BLOQUEADO",
-            )
-            .first()
-        )
-        if blocked_sub:
+        if SubscriptionLockoutService.is_client_blocked(db, user.id):
             return (
                 user,
                 None,
@@ -314,6 +309,66 @@ class ClientTelegramBot:
         )
         return {"success": True, "link": link, "message": message}
 
+    REGISTRAR_VENTA_HELP = (
+        "📝 *Registrar venta*\n\n"
+        "Formato: `/registrar_venta <total> | <descripción opcional>`\n"
+        "Ejemplo: `/registrar_venta 150000 | 3 tortas de chocolate`\n\n"
+        "El total va sin `$`, sin comas ni puntos de miles y con máximo 2 decimales (punto decimal)."
+    )
+
+    @staticmethod
+    def parse_registrar_venta_command(text: str) -> Tuple[str, Optional[str]]:
+        """Separa `/registrar_venta <total> [| <descripción>]` en (total crudo, descripción cruda).
+
+        El primer `|` separa total y descripción; todo lo posterior es descripción. Solo sintaxis:
+        la validación de ambos valores vive en core/sales_service.py.
+        """
+        body = re.sub(r"^\s*/registrar_venta(?:@\w+)?", "", text.strip(), flags=re.IGNORECASE)
+        raw_total, separator, description = body.partition("|")
+        return raw_total.strip(), (description if separator else None)
+
+    @staticmethod
+    def _escape_markdown(text: str) -> str:
+        """Escapa los caracteres especiales del Markdown legado de Telegram en texto del usuario."""
+        return re.sub(r"([_*`\[])", r"\\\1", text)
+
+    @classmethod
+    def handle_registrar_venta(cls, sender_chat_id: int, db: Session, text: str) -> Dict[str, Any]:
+        """Procesa /registrar_venta: guardia de cliente, luego servicio compartido de ventas."""
+        user, business, err_code, err_msg = cls.get_authenticated_client(sender_chat_id, db)
+        if err_code:
+            return {"success": False, "reason": err_code, "message": err_msg}
+
+        raw_total, raw_description = cls.parse_registrar_venta_command(text)
+
+        try:
+            sale = sales_service.register_sale(
+                db,
+                user=user,
+                business=business,
+                total=raw_total,
+                description=raw_description,
+                recorded_via=sales_service.RECORDED_VIA_TELEGRAM,
+            )
+        except sales_service.SalesError as exc:
+            if exc.code == sales_service.SalesError.BUSINESS_BLOCKED:
+                message = SubscriptionLockoutService.BLOCKED_TELEGRAM_MESSAGE
+            elif exc.code in (
+                sales_service.SalesError.NON_POSITIVE_TOTAL,
+                sales_service.SalesError.DESCRIPTION_TOO_LONG,
+            ):
+                message = f"❌ {exc.message}\n\n{cls.REGISTRAR_VENTA_HELP}"
+            else:
+                message = cls.REGISTRAR_VENTA_HELP
+            return {"success": False, "reason": exc.code, "message": message}
+
+        amount = sale.total_amount
+        amount_str = f"${amount:,.2f}" if amount % 1 else f"${amount:,.0f}"
+        message = f"✅ Venta registrada: {amount_str} COP"
+        if sale.description:
+            message += f" — {cls._escape_markdown(sale.description)}"
+        return {"success": True, "sale_id": sale.id, "message": message}
+
     @classmethod
     def handle_help(cls, sender_chat_id: int, db: Session) -> str:
         """Devuelve el menú de ayuda y bienvenida para el cliente."""
@@ -331,6 +386,7 @@ class ClientTelegramBot:
             "🧾 */facturas* — Últimas 4 facturas electrónicas emitidas con clientes y montos.\n"
             "🗓️ */vencimientos* — Fechas límite de tus obligaciones tributarias según tu NIT.\n"
             "📱 */dashboard* — Enlace a tu panel web/móvil con gráficos e historial completo.\n"
+            "📝 */registrar_venta* — Registra una venta: `/registrar_venta 150000 | descripción opcional`.\n"
             "ℹ️ */ayuda* — Muestra este menú de opciones.\n\n"
             "🔒 _Tus datos provienen directamente del repositorio oficial de la DIAN._"
         )
@@ -365,6 +421,10 @@ class ClientTelegramBot:
             res = cls.handle_dashboard(sender_chat_id, db)
             return res["message"]
 
+        elif re.match(r"^/registrar_venta(?:@\w+)?(?:\s|$)", text_clean):
+            res = cls.handle_registrar_venta(sender_chat_id, db, text)
+            return res["message"]
+
         elif text_clean.startswith("/ayuda") or text_clean.startswith("/help") or text_clean == "/start":
             return cls.handle_help(sender_chat_id, db)
 
@@ -375,5 +435,6 @@ class ClientTelegramBot:
             "• /facturas — Últimas 4 facturas emitidas\n"
             "• /vencimientos — Calendario de impuestos DIAN\n"
             "• /dashboard — Enlace a tu panel web/móvil\n"
+            "• /registrar_venta — Registra una venta (total y descripción opcional)\n"
             "• /ayuda — Menú de ayuda"
         )

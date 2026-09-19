@@ -13,13 +13,13 @@ from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import Column, MetaData, String, create_engine, inspect, text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from dian_automation.db import models  # noqa: F401  (registra las tablas en Base)
 from dian_automation.db.database import Base
 
 ROOT = Path(__file__).resolve().parent.parent
-EXPECTED_TABLES = {
+BASELINE_TABLES = {
     "users",
     "businesses",
     "invoices",
@@ -30,6 +30,7 @@ EXPECTED_TABLES = {
     "payment_records",
     "dian_tax_calendar",
 }
+EXPECTED_TABLES = BASELINE_TABLES | {"sales"}  # esquema en head: base + revisiones posteriores
 
 
 @pytest.fixture
@@ -87,10 +88,43 @@ def _count_users(engine) -> int:
         return conn.execute(text("SELECT COUNT(*) FROM users")).scalar_one()
 
 
-def test_single_head_is_baseline(alembic_cfg):
+def test_history_is_a_single_chain_rooted_at_the_baseline(alembic_cfg):
     script = ScriptDirectory.from_config(alembic_cfg)
-    assert script.get_heads() == ["0001"]
+    assert len(script.get_heads()) == 1
     assert script.get_revision("0001").down_revision is None
+    assert script.get_revision("0002").down_revision == "0001"
+
+
+def test_baseline_revision_creates_only_the_nine_original_tables(alembic_cfg, engine):
+    command.upgrade(alembic_cfg, "0001")
+
+    assert _tables(engine) == BASELINE_TABLES | {"alembic_version"}
+    assert _version_rows(engine) == ["0001"]
+
+
+def test_sales_revision_upgrade_and_downgrade_one_step(alembic_cfg, engine):
+    command.upgrade(alembic_cfg, "head")
+    assert "sales" in _tables(engine)
+    assert {i["name"] for i in inspect(engine).get_indexes("sales")} == {"idx_sales_business_created"}
+
+    command.downgrade(alembic_cfg, "-1")
+
+    assert _tables(engine) == BASELINE_TABLES | {"alembic_version"}
+    assert _version_rows(engine) == ["0001"]
+
+
+def test_migrated_sales_table_enforces_positive_total(alembic_cfg, engine):
+    command.upgrade(alembic_cfg, "head")
+    insert = text(
+        "INSERT INTO sales (id, business_id, total_amount, recorded_via, recorded_by_user_id, created_at)"
+        " VALUES (:id, 'b', :total, 'TELEGRAM', 'u', '2026-01-01 00:00:00')"
+    )
+
+    with engine.begin() as conn:
+        conn.execute(insert, {"id": "ok", "total": "10.00"})
+    with pytest.raises(IntegrityError):
+        with engine.begin() as conn:
+            conn.execute(insert, {"id": "zero", "total": "0"})
 
 
 def test_upgrade_on_empty_db_creates_all_tables_without_divergence(alembic_cfg, engine):
