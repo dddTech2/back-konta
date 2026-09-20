@@ -1,6 +1,6 @@
 """Pruebas del servicio compartido de ventas (Story 2.4): validación, persistencia y bloqueo."""
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -152,8 +152,26 @@ def test_blocked_client_fails_with_block_error_and_no_row(db):
 
 def test_check_constraint_rejects_non_positive_total_at_database_level(db):
     db.add(Sale(business_id="biz-ok", total_amount=Decimal("0"), recorded_via="TELEGRAM",
-                recorded_by_user_id="usr-ok"))
+                recorded_by_user_id="usr-ok", sale_date=date(2026, 1, 1)))
 
     with pytest.raises(IntegrityError):
         db.commit()
     db.rollback()
+
+
+def test_register_sale_now_at_0430_utc_stores_previous_day_bogota_date(db):
+    # 04:30 UTC del 2026-09-21 = 23:30 Bogotá del 2026-09-20
+    now = datetime(2026, 9, 21, 4, 30)
+    sale = _register(db, total="50000", now=now)
+
+    assert sale.created_at == now
+    assert sale.sale_date == date(2026, 9, 20)
+
+
+def test_register_sale_now_at_0510_utc_stores_same_day_bogota_date(db):
+    # 05:10 UTC del 2026-09-21 = 00:10 Bogotá del 2026-09-21
+    now = datetime(2026, 9, 21, 5, 10)
+    sale = _register(db, total="60000", now=now)
+
+    assert sale.created_at == now
+    assert sale.sale_date == date(2026, 9, 21)

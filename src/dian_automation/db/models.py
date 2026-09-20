@@ -313,9 +313,11 @@ class Sale(Base):
     description = Column(String(500), nullable=True)
     recorded_via = Column(String(20), nullable=False)  # TELEGRAM, WEB
     recorded_by_user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
+    sale_date = Column(Date, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     __table_args__ = (
         CheckConstraint("total_amount > 0", name="ck_sales_total_positive"),
         Index("idx_sales_business_created", "business_id", "created_at"),
+        Index("idx_sales_business_sale_date", "business_id", "sale_date"),
     )

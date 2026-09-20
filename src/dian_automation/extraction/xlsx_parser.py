@@ -17,6 +17,14 @@ class DIANParseError(Exception):
     pass
 
 
+def is_credit_note(document_type: str) -> bool:
+    """True si el texto en minúsculas contiene 'credito' o 'crédito' con tilde."""
+    if not document_type:
+        return False
+    doc_lower = document_type.lower()
+    return "crédito" in doc_lower or "credito" in doc_lower
+
+
 def _to_decimal(val: Any) -> Decimal:
     """Convierte un valor a Decimal con 2 dígitos de precisión, tratando nulos como 0.00."""
     if val is None or val == "":
@@ -277,9 +285,7 @@ class DIANXLSXParser:
         rete_ica_total = Decimal("0.00")
 
         for inv in period_invoices:
-            doc_lower = inv.document_type.lower()
-            is_credit_note = "crédito" in doc_lower or "credito" in doc_lower
-            multiplier = Decimal("-1.00") if is_credit_note else Decimal("1.00")
+            multiplier = Decimal("-1.00") if is_credit_note(inv.document_type) else Decimal("1.00")
 
             if inv.group_type == "Emitido":
                 total_invoiced_net += inv.total * multiplier

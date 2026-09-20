@@ -6,8 +6,10 @@ autenticado; el canal de origen se distingue con `recorded_via`.
 """
 
 import re
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional, Union
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
@@ -92,6 +94,7 @@ def register_sale(
     total: Union[str, int, Decimal, None],
     description: Optional[str] = None,
     recorded_via: str,
+    now: Optional[datetime] = None,
 ) -> Sale:
     """Valida y persiste una venta del cliente autenticado.
 
@@ -108,12 +111,19 @@ def register_sale(
     total_amount = parse_total(total)
     clean_description = normalize_description(description)
 
+    if now is None:
+        now = datetime.utcnow()
+
+    sale_date = now.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("America/Bogota")).date()
+
     sale = Sale(
         business_id=business.id,
         total_amount=total_amount,
         description=clean_description,
         recorded_via=recorded_via,
         recorded_by_user_id=user.id,
+        sale_date=sale_date,
+        created_at=now,
     )
     db.add(sale)
     db.commit()

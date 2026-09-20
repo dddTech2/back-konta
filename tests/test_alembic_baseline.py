@@ -99,6 +99,7 @@ def test_history_is_a_single_chain_rooted_at_the_baseline(alembic_cfg):
     assert script.get_revision("0004").down_revision == "0003"
     assert script.get_revision("0005").down_revision == "0004"
     assert script.get_revision("0006").down_revision == "0005"
+    assert script.get_revision("0007").down_revision == "0006"
 
 
 def test_baseline_revision_creates_only_the_nine_original_tables(alembic_cfg, engine):
@@ -263,8 +264,8 @@ def test_calendar_ranges_downgrade_restores_old_schema_and_keeps_only_single_dig
 def test_migrated_sales_table_enforces_positive_total(alembic_cfg, engine):
     command.upgrade(alembic_cfg, "head")
     insert = text(
-        "INSERT INTO sales (id, business_id, total_amount, recorded_via, recorded_by_user_id, created_at)"
-        " VALUES (:id, 'b', :total, 'TELEGRAM', 'u', '2026-01-01 00:00:00')"
+        "INSERT INTO sales (id, business_id, total_amount, recorded_via, recorded_by_user_id, sale_date, created_at)"
+        " VALUES (:id, 'b', :total, 'TELEGRAM', 'u', '2026-01-01', '2026-01-01 00:00:00')"
     )
 
     with engine.begin() as conn:
@@ -459,3 +460,45 @@ def test_business_income_source_revision_downgrade_drops_the_columns_and_keeps_r
     assert {"income_source", "iva_periodicity", "is_withholding_agent"}.isdisjoint(_business_columns(engine))
     with engine.connect() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM businesses")).scalar_one() == 1
+
+
+def test_sales_sale_date_revision_backfills_and_downgrades(alembic_cfg, engine):
+    command.upgrade(alembic_cfg, "0006")
+    _insert_business(engine, "biz-mig")
+
+    # Venta insertada bajo el esquema previo (sin sale_date)
+    # 2026-09-21 04:30:00 UTC corresponde a las 23:30 del 2026-09-20 en América/Bogotá (UTC-5)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO sales (id, business_id, total_amount, recorded_via, recorded_by_user_id, created_at)"
+                " VALUES ('sale-mig', 'biz-mig', 50000.00, 'TELEGRAM', 'u-biz-mig', '2026-09-21 04:30:00')"
+            )
+        )
+
+    command.upgrade(alembic_cfg, "0007")
+
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT sale_date FROM sales WHERE id = 'sale-mig'")).one()
+    assert str(row[0]) == "2026-09-20"
+
+    columns = {c["name"]: c for c in inspect(engine).get_columns("sales")}
+    assert "sale_date" in columns
+    assert columns["sale_date"]["nullable"] is False
+
+    indexes = {i["name"]: i for i in inspect(engine).get_indexes("sales")}
+    assert "idx_sales_business_sale_date" in indexes
+    assert indexes["idx_sales_business_sale_date"]["column_names"] == ["business_id", "sale_date"]
+
+    assert _diff(engine, Base.metadata) == []
+
+    command.downgrade(alembic_cfg, "-1")
+
+    assert _version_rows(engine) == ["0006"]
+    columns_after = {c["name"]: c for c in inspect(engine).get_columns("sales")}
+    assert "sale_date" not in columns_after
+    indexes_after = {i["name"]: i for i in inspect(engine).get_indexes("sales")}
+    assert "idx_sales_business_sale_date" not in indexes_after
+
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM sales")).scalar_one() == 1
