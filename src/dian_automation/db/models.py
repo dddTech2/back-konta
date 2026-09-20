@@ -11,6 +11,7 @@ from sqlalchemy import (
     Date,
     Numeric,
     Integer,
+    SmallInteger,
     BigInteger,
     ForeignKey,
     Text,
@@ -224,17 +225,50 @@ class PaymentRecord(Base):
     subscription = relationship("Subscription", back_populates="payments")
 
 
+def _default_key_from_nit_digit(context) -> int:
+    """Filas heredadas (solo `nit_last_digit`): la llave de un dígito es ese mismo dígito.
+
+    Sin `nit_last_digit` devuelve None y el NOT NULL de la columna rechaza la fila, en lugar de guardarla
+    en silencio como la terminación 0.
+    """
+    return context.get_current_parameters().get("nit_last_digit")
+
+
 class DIANTaxCalendar(Base):
+    """Fecha límite de una obligación del calendario tributario DIAN (Story 4.1a).
+
+    Cada fila cubre un rango inclusivo de terminaciones del NIT (`key_from`..`key_to`) de `key_length`
+    dígitos (0 = aplica sin importar el NIT). `installment` (0 = sin cuotas) y `jurisdiction`
+    ('' = nacional) son centinelas y no NULL para que el índice único funcione.
+    """
+
     __tablename__ = "dian_tax_calendar"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    tax_type = Column(String(50), nullable=False, index=True)  # IVA_BIMESTRAL, IVA_CUATRIMESTRAL, RETEFUENTE, RENTA
+    tax_type = Column(String(50), nullable=False, index=True)  # IVA_BIMESTRAL, IVA_CUATRIMESTRAL, RETEFUENTE, RENTA_*...
     fiscal_year = Column(Integer, nullable=False, index=True)
     period_label = Column(String(100), nullable=False)  # 'Jul – Ago 2026'
-    nit_last_digit = Column(Integer, nullable=False, index=True)  # 0-9
+    period_start = Column(Date, nullable=True)  # periodo que cubre el vencimiento
+    period_end = Column(Date, nullable=True)
+    key_length = Column(SmallInteger, nullable=False, default=1)  # 0, 1 o 2 dígitos de la terminación del NIT
+    key_from = Column(SmallInteger, nullable=False, default=_default_key_from_nit_digit)
+    key_to = Column(SmallInteger, nullable=False, default=_default_key_from_nit_digit)
+    installment = Column(SmallInteger, nullable=False, default=0)  # 0 = sin cuotas
+    jurisdiction = Column(String(60), nullable=False, default="")  # '' = nacional; municipio para ICA
+    nit_last_digit = Column(Integer, nullable=True, index=True)  # 0-9; heredada, la usa el bot hasta la Story 4.1b
     deadline_date = Column(Date, nullable=False)
     description = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index(
+            "uq_dian_tax_calendar_obligation",
+            "tax_type", "fiscal_year", "period_label", "installment", "jurisdiction",
+            "key_length", "key_from", "key_to",
+            unique=True,
+        ),
+        Index("idx_dian_tax_calendar_lookup", "tax_type", "fiscal_year", "key_length", "key_from", "key_to"),
+    )
 
 
 

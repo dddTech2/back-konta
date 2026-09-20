@@ -4,6 +4,7 @@ contra Base.metadata. Todo corre sobre SQLite temporal; nunca se toca kontable.d
 import os
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import Column, MetaData, String, create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.orm import sessionmaker
 
 from dian_automation.db import models  # noqa: F401  (registra las tablas en Base)
 from dian_automation.db.database import Base
@@ -94,6 +96,7 @@ def test_history_is_a_single_chain_rooted_at_the_baseline(alembic_cfg):
     assert script.get_revision("0001").down_revision is None
     assert script.get_revision("0002").down_revision == "0001"
     assert script.get_revision("0003").down_revision == "0002"
+    assert script.get_revision("0004").down_revision == "0003"
 
 
 def test_baseline_revision_creates_only_the_nine_original_tables(alembic_cfg, engine):
@@ -115,7 +118,7 @@ def test_sales_revision_upgrade_and_downgrade_one_step(alembic_cfg, engine):
 
 
 def test_otp_codes_revision_upgrade_and_downgrade_one_step(alembic_cfg, engine):
-    command.upgrade(alembic_cfg, "head")
+    command.upgrade(alembic_cfg, "0003")
     assert "otp_codes" in _tables(engine)
     assert {i["name"] for i in inspect(engine).get_indexes("otp_codes")} == {"idx_otp_user_created"}
 
@@ -123,6 +126,121 @@ def test_otp_codes_revision_upgrade_and_downgrade_one_step(alembic_cfg, engine):
 
     assert _tables(engine) == BASELINE_TABLES | {"sales", "alembic_version"}
     assert _version_rows(engine) == ["0002"]
+
+
+def _insert_calendar_row(engine, row_id: str = "c-1", digit: int = 9):
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO dian_tax_calendar (id, tax_type, fiscal_year, period_label, nit_last_digit,"
+                " deadline_date, description, created_at) VALUES (:id, 'IVA BIMESTRAL', 2026,"
+                " 'Jul – Ago 2026', :digit, '2026-09-10', 'Formulario 300', '2026-01-01 00:00:00')"
+            ),
+            {"id": row_id, "digit": digit},
+        )
+
+
+def _calendar_columns(engine) -> dict:
+    return {c["name"]: c for c in inspect(engine).get_columns("dian_tax_calendar")}
+
+
+def test_calendar_ranges_revision_backfills_existing_rows_and_matches_model(alembic_cfg, engine):
+    command.upgrade(alembic_cfg, "0003")
+    _insert_calendar_row(engine)
+
+    command.upgrade(alembic_cfg, "head")
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT key_length, key_from, key_to, installment, jurisdiction, period_start, period_end,"
+                " nit_last_digit FROM dian_tax_calendar"
+            )
+        ).one()
+    assert tuple(row) == (1, 9, 9, 0, "", None, None, 9)
+    columns = _calendar_columns(engine)
+    assert columns["nit_last_digit"]["nullable"] is True
+    for name in ("key_length", "key_from", "key_to", "installment", "jurisdiction"):
+        assert columns[name]["nullable"] is False, name
+        assert columns[name]["default"] is None, name  # los defaults temporales no quedan en el esquema
+    indexes = {i["name"]: i for i in inspect(engine).get_indexes("dian_tax_calendar")}
+    assert indexes["uq_dian_tax_calendar_obligation"]["unique"] == 1
+    assert indexes["uq_dian_tax_calendar_obligation"]["column_names"] == [
+        "tax_type", "fiscal_year", "period_label", "installment", "jurisdiction",
+        "key_length", "key_from", "key_to",
+    ]
+    assert indexes["idx_dian_tax_calendar_lookup"]["column_names"] == [
+        "tax_type", "fiscal_year", "key_length", "key_from", "key_to",
+    ]
+    assert {"ix_dian_tax_calendar_nit_last_digit", "ix_dian_tax_calendar_tax_type",
+            "ix_dian_tax_calendar_fiscal_year"} <= set(indexes)
+    assert _diff(engine, Base.metadata) == []
+
+
+def test_calendar_ranges_revision_keeps_one_row_when_legacy_rows_repeat_a_key(alembic_cfg, engine):
+    command.upgrade(alembic_cfg, "0003")
+    _insert_calendar_row(engine, "a", 9)
+    _insert_calendar_row(engine, "b", 9)  # mismo dígito y periodo: la tabla anterior lo permitía
+    _insert_calendar_row(engine, "c", 4)
+
+    command.upgrade(alembic_cfg, "head")
+
+    with engine.connect() as conn:
+        rows = conn.execute(text("SELECT id, key_from FROM dian_tax_calendar ORDER BY id")).all()
+    assert [tuple(r) for r in rows] == [("a", 9), ("c", 4)]
+    assert _version_rows(engine) == [_head(alembic_cfg)]
+
+
+def test_calendar_row_without_any_key_is_rejected_instead_of_defaulting_to_ending_zero(engine):
+    Base.metadata.create_all(bind=engine)
+    session = sessionmaker(bind=engine)()
+    session.add(models.DIANTaxCalendar(tax_type="X", fiscal_year=2026, period_label="P",
+                                       deadline_date=date(2026, 2, 10)))
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.close()
+
+
+def test_calendar_ranges_unique_index_rejects_a_repeated_obligation(alembic_cfg, engine):
+    command.upgrade(alembic_cfg, "head")
+    insert = text(
+        "INSERT INTO dian_tax_calendar (id, tax_type, fiscal_year, period_label, key_length, key_from, key_to,"
+        " installment, jurisdiction, deadline_date, created_at) VALUES (:id, 'RETEFUENTE', 2026, 'Enero',"
+        " 1, 1, 1, 0, '', '2026-02-10', '2026-01-01 00:00:00')"
+    )
+
+    with engine.begin() as conn:
+        conn.execute(insert, {"id": "a"})
+    with pytest.raises(IntegrityError):
+        with engine.begin() as conn:
+            conn.execute(insert, {"id": "b"})
+
+
+def test_calendar_ranges_downgrade_restores_old_schema_and_keeps_only_single_digit_rows(alembic_cfg, engine):
+    command.upgrade(alembic_cfg, "0003")
+    _insert_calendar_row(engine, "legacy", 4)
+    command.upgrade(alembic_cfg, "head")
+    insert = text(
+        "INSERT INTO dian_tax_calendar (id, tax_type, fiscal_year, period_label, key_length, key_from, key_to,"
+        " installment, jurisdiction, deadline_date, created_at) VALUES (:id, :tax, 2026, 'P', :kl, :kf, :kt,"
+        " :inst, '', '2026-03-10', '2026-01-01 00:00:00')"
+    )
+    with engine.begin() as conn:
+        conn.execute(insert, {"id": "digit", "tax": "IVA", "kl": 1, "kf": 3, "kt": 3, "inst": 0})  # cabe
+        conn.execute(insert, {"id": "pair", "tax": "RENTA", "kl": 2, "kf": 1, "kt": 2, "inst": 0})  # no cabe
+        conn.execute(insert, {"id": "quota", "tax": "RENTA", "kl": 1, "kf": 5, "kt": 5, "inst": 2})  # no cabe
+
+    command.downgrade(alembic_cfg, "-1")
+
+    assert _version_rows(engine) == ["0003"]
+    assert set(_calendar_columns(engine)) == {
+        "id", "tax_type", "fiscal_year", "period_label", "nit_last_digit", "deadline_date", "description",
+        "created_at",
+    }
+    assert _calendar_columns(engine)["nit_last_digit"]["nullable"] is False
+    with engine.connect() as conn:
+        rows = conn.execute(text("SELECT id, nit_last_digit FROM dian_tax_calendar ORDER BY id")).all()
+    assert [tuple(r) for r in rows] == [("digit", 3), ("legacy", 4)]
 
 
 def test_migrated_sales_table_enforces_positive_total(alembic_cfg, engine):
