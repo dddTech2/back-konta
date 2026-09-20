@@ -145,10 +145,67 @@ El motor de calendario (`GET /api/calendar`, `/vencimientos` del bot, el pill de
 
 En el VPS, con `ProyectoDianFront` como carpeta hermana de `ProyectoDianBack`:
 
-1. `cp .env.example .env` y completa al menos `TELEGRAM_BOT_TOKEN`, `ADMIN_BOOTSTRAP_CHAT_IDS`, `JWT_SECRET`, `INTERNAL_WORKER_TOKEN` y `REDIS_PASSWORD`.
+1. `cp .env.example .env` y completa al menos:
+   - `POSTGRES_PASSWORD`: contraseña de PostgreSQL (usa solo letras y números para que la URL de conexión no requiera escapes de caracteres, ej. `openssl rand -hex 24`).
+   - `REDIS_PASSWORD`: contraseña segura para el servidor Redis.
+   - `TELEGRAM_BOT_TOKEN`, `ADMIN_BOOTSTRAP_CHAT_IDS`, `JWT_SECRET`, `INTERNAL_WORKER_TOKEN`.
 2. Compila la SPA, que la API sirve desde `../ProyectoDianFront/dist`: `cd ../ProyectoDianFront && npm ci && npm run build`.
-3. `docker compose up -d --build`. El servicio `migrate` aplica `alembic upgrade head` (crea las tablas en un volumen nuevo o actualiza uno existente) y termina; `api`, `bot` y `scheduler` arrancan cuando acaba bien. Si falla, `docker compose logs migrate` dice por qué y el resto no arranca.
+3. `docker compose up -d --build`.
+   - **Orden de arranque y dependencias:** el contenedor `postgres` inicia primero y ejecuta su comprobación de salud (`pg_isready`). Una vez sano, se ejecuta el servicio de un solo uso `migrate` (`alembic upgrade head`) para crear o actualizar el esquema. Tras completarse la migración con éxito, arrancan los servicios `api`, `bot`, `scheduler` y `backup`. Si la migración falla, `docker compose logs migrate` explica el motivo y los servicios de aplicación no inician.
+   - **Aislamiento de base de datos:** el servicio `postgres` no publica puertos hacia el exterior en el host; la comunicación se realiza exclusivamente por la red interna de Docker.
 4. Carga el calendario una sola vez: `docker compose exec api python -m dian_automation.core.calendar_loader data/calendario_dian_2026.csv`. Sin él, la API responde 409 en `/api/calendar` y el bot avisa que no está cargado (sección 8 para el año siguiente).
 5. Deja `SCHEDULER_ENABLED=false` hasta que el worker remoto arranque solo.
 
-Dentro de la red de compose, Redis es el host `redis`: `docker-compose.yml` fija `REDIS_URL` de cada contenedor y no usa el del `.env`. El Docker no incluye worker ni Chrome: la descarga la hace siempre el worker remoto de las secciones 1 a 3.
+`POSTGRES_PASSWORD` solo se lee cuando el volumen `postgres_data` se crea por primera vez: cambiarla después en el `.env` no cambia la contraseña de la base ya creada (habría que cambiarla dentro de PostgreSQL con `ALTER USER`, o recrear el volumen). Dentro de la red de compose, Redis es el host `redis` y PostgreSQL es el host `postgres`: `docker-compose.yml` fija sus conexiones para cada contenedor y no usa las del `.env`. El Docker no incluye worker ni Chrome: la descarga la hace siempre el worker remoto de las secciones 1 a 3.
+
+### Copias de seguridad automáticas y retención
+
+El servicio `backup` (`docker/pg-backup.sh`) genera una copia de seguridad cada 24 horas usando `pg_dump --format=custom`.
+- Los respaldos se guardan en `./backups/` con una política de retención de 14 días (`BACKUP_KEEP_DAYS=14`).
+- **Aviso importante:** Los respaldos se almacenan en el disco del mismo servidor. Se deben copiar o sincronizar periódicamente hacia una ubicación externa (almacenamiento en la nube o servidor secundario) para prevenir pérdidas por desastre.
+
+### Procedimiento de restauración
+
+Para restaurar una copia de seguridad:
+
+1. Detén los servicios dependientes:
+   ```bash
+   docker compose stop api bot scheduler
+   ```
+2. Restaura el archivo deseado sobre la base de datos:
+   ```bash
+   docker compose exec -T postgres pg_restore -U kontable -d kontable --clean --if-exists --no-owner < backups/<archivo>.dump
+   ```
+   *(Alternativamente, si la base estuviera corrupta, créala vacía antes de restaurar).*
+3. Inicia de nuevo los servicios:
+   ```bash
+   docker compose start api bot scheduler
+   ```
+4. **Validación:** Se debe ensayar la restauración en un entorno controlado al menos una vez para verificar la validez de las copias.
+
+### Traslado de datos desde un SQLite existente
+
+Para migrar la información de un `kontable.db` previo a PostgreSQL sin perder transaccionalidad:
+
+1. Asegura que la base destino en PostgreSQL tenga el esquema en `head`:
+   ```bash
+   docker compose run --rm migrate
+   ```
+2. Asegura que la base SQLite origen esté en la revisión `head`:
+   ```bash
+   DATABASE_URL=sqlite:///./kontable.db uv run alembic upgrade head
+   ```
+3. Detén los servicios en producción:
+   ```bash
+   docker compose stop api bot scheduler
+   ```
+4. Ejecuta el script dentro del contenedor `migrate`, que ya trae `DATABASE_URL` hacia PostgreSQL (por eso no se pasa `--postgres`); el SQLite se monta de solo lectura:
+   ```bash
+   docker compose run --rm -v "$PWD/kontable.db:/data/kontable.db:ro" migrate python scripts/migrate_sqlite_to_postgres.py --sqlite /data/kontable.db
+   ```
+   El script cancela sin tocar nada si el destino ya tiene datos o si las revisiones de esquema difieren; usa `--truncate` solo si el destino tiene datos de prueba que quieres sobrescribir. Imprime únicamente nombres de tabla y conteos. PostgreSQL no publica puertos, por eso el script corre dentro de la red de Docker y no desde el host.
+5. Arranca los servicios apuntando a PostgreSQL:
+   ```bash
+   docker compose start api bot scheduler
+   ```
+

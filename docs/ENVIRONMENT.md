@@ -14,7 +14,7 @@ Este catálogo consolida todas las variables de entorno consumidas en el código
 
 | Variable | Descripción / Rol | Valor por Defecto / Ejemplo | Archivos donde se consume | Estado |
 | :--- | :--- | :--- | :--- | :--- |
-| `DATABASE_URL` | URL SQLAlchemy de la base; la usan la app y Alembic (`alembic/env.py`) | `sqlite:///./kontable.db` (en Docker: `sqlite:////data/kontable.db`) | `src/dian_automation/db/database.py:7`, `alembic/env.py` | ✅ Documentada |
+| `DATABASE_URL` | URL SQLAlchemy de la base; la usan la app y Alembic (`alembic/env.py`) | `sqlite:///./kontable.db` (en desarrollo por defecto; en Docker es `postgresql+psycopg://kontable:${POSTGRES_PASSWORD}@postgres:5432/kontable`, fijada por `docker-compose.yml`) | `src/dian_automation/db/database.py:7`, `alembic/env.py` | ✅ Documentada |
 | `DIAN_COMPANY_NIT` |  | —, `901008579` (ejemplo) | `src/dian_automation/config.py:35` | ✅ Documentada |
 | `DIAN_COMPANY_URL` |  | `https://catalogo-vpfe-hab.dian.gov.co/User/CompanyLogin`, `https://catalogo-vpfe-hab.dian.gov.co/User/CompanyLogin` (ejemplo) | `src/dian_automation/config.py:32` | ✅ Documentada |
 | `DIAN_LOGIN_TYPE` | Modalidad de ingreso por defecto: 'persona' o 'empresa' | `persona`, `persona` (ejemplo) | `src/dian_automation/config.py:30` | ✅ Documentada |
@@ -50,13 +50,13 @@ Alembic es el dueño del esquema: ni el bot ni el worker crean tablas al arranca
 
 ```bash
 uv run alembic upgrade head
-# En Docker (usa DATABASE_URL=sqlite:////data/kontable.db del entrypoint):
-docker compose run --rm api alembic upgrade head
+# En Docker con PostgreSQL (servicio migrate en docker-compose.yml):
+docker compose run --rm migrate
 ```
 
-**Base existente creada con `create_all` antes de Alembic (p. ej. el volumen `kontable_data`).** Esa base tiene el esquema de la revisión base `0001`, así que se adopta con `stamp 0001` (nunca `stamp head`, que marcaría como aplicadas revisiones posteriores cuyas tablas no existen, como `sales`) y luego `upgrade head` para aplicar las revisiones pendientes. Es un paso manual y no se ejecuta al arrancar:
+**Base existente creada con `create_all` antes de Alembic (aplica solo a un SQLite heredado, p. ej. una copia previa de `kontable.db`).** Esa base tiene el esquema de la revisión base `0001`, así que se adopta con `stamp 0001` (nunca `stamp head`, que marcaría como aplicadas revisiones posteriores cuyas tablas no existen, como `sales`) y luego `upgrade head` para aplicar las revisiones pendientes. Es un paso manual y no se ejecuta al arrancar:
 
-1. Detén el bot y el worker y haz una copia de la base. En Docker (el servicio `api` monta `kontable_data` en `/data`): `docker compose run --rm -v "${PWD}:/backup" api cp /data/kontable.db /backup/kontable_copia.db`.
+1. Detén el bot y el worker y haz una copia de la base SQLite.
 2. Ensaya sobre la copia, desde la raíz del proyecto y con una ruta absoluta (en PowerShell: `$env:DATABASE_URL="sqlite:///C:/ruta/kontable_copia.db"`; en bash: `DATABASE_URL=sqlite:////ruta/kontable_copia.db uv run ...`): `uv run alembic stamp 0001`, `uv run alembic upgrade head` y `uv run alembic check` (debe decir que no hay operaciones nuevas; una diferencia solo de longitud de `VARCHAR`, como `dian_extraction_jobs.target_period` 7 vs 30 en bases antiguas, es inocua en SQLite, que no aplica longitudes; cualquier otra diferencia hay que revisarla antes de continuar).
 3. Si la copia coincide, repite `alembic stamp 0001` y `alembic upgrade head` sobre la base real (con la copia del paso 1 como respaldo). `stamp` solo agrega la tabla `alembic_version`; `upgrade head` crea únicamente las tablas nuevas.
 
@@ -65,6 +65,30 @@ Si la base ya contiene las tablas de una revisión posterior (por ejemplo `sales
 Si un `upgrade head` sobre una base nueva falla a la mitad (SQLite no revierte el DDL), borra el archivo de la base y vuelve a ejecutarlo; nunca hagas `stamp` sobre un esquema parcial. Ojo: `alembic downgrade base` elimina todas las tablas con todos sus datos; no lo ejecutes sobre una base real.
 
 Para cambios de esquema futuros: `uv run alembic revision --autogenerate -m "<mensaje>"`, revisar y limpiar la revisión, y `uv run alembic upgrade head` a mano. `tests/test_alembic_baseline.py` falla si `models.py` diverge de las revisiones.
+
+### Probar contra PostgreSQL
+
+Para correr la suite de pruebas contra una instancia de PostgreSQL en lugar de SQLite:
+
+1. Levanta una instancia temporal desechable:
+   ```bash
+   docker run --rm -d --name kt-pg -e POSTGRES_PASSWORD=prueba -p 5433:5432 postgres:16-alpine
+   ```
+2. Ejecuta la suite pasando `TEST_DATABASE_URL`:
+   - En Linux / macOS / Bash:
+     ```bash
+     TEST_DATABASE_URL=postgresql+psycopg://postgres:prueba@localhost:5433/postgres uv run python -m pytest -q
+     ```
+   - En Windows (PowerShell):
+     ```powershell
+     $env:TEST_DATABASE_URL="postgresql+psycopg://postgres:prueba@localhost:5433/postgres"
+     uv run python -m pytest -q
+     ```
+   *(Nota: La suite tarda varios minutos en completarse porque ejecuta una conexión por operación y corre los ciclos de migración completos).*
+3. Detén la instancia al terminar:
+   ```bash
+   docker stop kt-pg
+   ```
 
 ---
 
