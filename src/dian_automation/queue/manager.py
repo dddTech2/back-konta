@@ -3,9 +3,11 @@
 from datetime import datetime, timedelta
 from typing import Optional, List
 from sqlalchemy.orm import Session
-from sqlalchemy import asc
+from sqlalchemy import asc, or_
 
+from dian_automation.config import config
 from dian_automation.db.models import DIANExtractionJob, Business
+from dian_automation.queue.exceptions import STALE_PROCESSING_CODE, is_slow_error
 from dian_automation.queue.redis_signal import notify_job_ready
 
 
@@ -14,6 +16,7 @@ class ExtractionQueueManager:
 
     SUCCESS_PACING_SECONDS = 900  # 15 minutos de espaciado obligatorio tras éxito
     FAILURE_BACKOFF_SECONDS = 3600  # 1 hora de pausa ante fallos
+    SLOW_RETRY_SECONDS = 21600  # 6 horas de reintento para descargas lentas (solo ese trabajo)
 
     @classmethod
     def enqueue_job(
@@ -127,8 +130,13 @@ class ExtractionQueueManager:
         db: Session,
         screenshot_path: Optional[str] = None,
         backoff_seconds: Optional[int] = None,
+        slow_retry_seconds: Optional[int] = None,
     ) -> DIANExtractionJob:
-        """Gestiona el fallo de un trabajo, incrementando reintentos y aplicando backoff."""
+        """Gestiona el fallo de un trabajo, incrementando reintentos y aplicando backoff.
+
+        Un fallo lento (is_slow_error) reprograma solo ese trabajo a +6 h; un fallo duro aplica el
+        backoff de 1 h y pausa también los demás trabajos encolados.
+        """
         job = db.query(DIANExtractionJob).filter(DIANExtractionJob.id == job_id).first()
         if not job:
             raise ValueError(f"Trabajo con ID '{job_id}' no encontrado")
@@ -139,6 +147,17 @@ class ExtractionQueueManager:
         job.error_detail = error_detail
         job.screenshot_path = screenshot_path
         job.finished_at = now
+
+        if is_slow_error(error_code):
+            delay = slow_retry_seconds if slow_retry_seconds is not None else cls.SLOW_RETRY_SECONDS
+            if job.attempt_count < job.max_attempts:
+                job.status = "ENQUEUED"
+                job.next_run_at = now + timedelta(seconds=delay)
+            else:
+                job.status = "FAILED"
+            db.commit()
+            db.refresh(job)
+            return job
 
         backoff = backoff_seconds if backoff_seconds is not None else cls.FAILURE_BACKOFF_SECONDS
         earliest_next_run = now + timedelta(seconds=backoff)
@@ -165,3 +184,31 @@ class ExtractionQueueManager:
         db.commit()
         db.refresh(job)
         return job
+
+    @classmethod
+    def recover_stale_jobs(cls, db: Session, stale_seconds: Optional[int] = None) -> List[DIANExtractionJob]:
+        """Libera los trabajos PROCESSING sin respuesta: los trata como fallo lento STALE_PROCESSING.
+
+        Sin esto, un worker apagado o una subida fallida dejan un PROCESSING que bloquea la cola para
+        siempre (get_next_runnable_job devuelve None mientras exista uno). Devuelve los recuperados.
+        """
+        threshold = stale_seconds if stale_seconds is not None else config.stale_processing_seconds
+        cutoff = datetime.utcnow() - timedelta(seconds=threshold)
+        stale_ids = [
+            row[0]
+            for row in db.query(DIANExtractionJob.id)
+            .filter(
+                DIANExtractionJob.status == "PROCESSING",
+                or_(DIANExtractionJob.started_at.is_(None), DIANExtractionJob.started_at < cutoff),
+            )
+            .all()
+        ]
+        return [
+            cls.mark_job_failed(
+                job_id=job_id,
+                error_code=STALE_PROCESSING_CODE,
+                error_detail=f"Sin respuesta del worker tras {threshold} s en PROCESSING; se reprograma.",
+                db=db,
+            )
+            for job_id in stale_ids
+        ]

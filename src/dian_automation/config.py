@@ -42,6 +42,10 @@ class AppConfig:
     headless: bool = os.getenv("HEADLESS", "False").lower() in ("true", "1", "yes")
     email_timeout_seconds: int = int(os.getenv("EMAIL_TIMEOUT_SECONDS", "60"))
     export_download_timeout_seconds: int = int(os.getenv("EXPORT_DOWNLOAD_TIMEOUT_SECONDS", "300"))
+    # Un trabajo PROCESSING con más de esto sin respuesta se recupera como fallo lento (Story 1.6)
+    stale_processing_seconds: int = int(
+        os.getenv("STALE_PROCESSING_SECONDS") or (int(os.getenv("EXPORT_DOWNLOAD_TIMEOUT_SECONDS") or "300") + 600)
+    )
     download_dir: str = os.getenv("DOWNLOAD_DIR", "./downloads")
 
     # Frontend web/móvil (para servir el prototipo y enlazarlo desde Telegram)

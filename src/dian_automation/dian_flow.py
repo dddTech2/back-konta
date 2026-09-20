@@ -17,6 +17,7 @@ from playwright.async_api import async_playwright, Page, BrowserContext
 
 from .config import config
 from .mail_client import StalwartMailClient
+from .queue.exceptions import ExportTimeoutError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -422,7 +423,7 @@ async def wait_and_download_export(
     except Exception:
         pass
 
-    raise TimeoutError(
+    raise ExportTimeoutError(
         f"Se superó el tiempo máximo de espera ({timeout_seconds}s) sin que el reporte para "
         f"Desde {start_fmt} Hasta {end_fmt} estuviera listo para descargar."
     )

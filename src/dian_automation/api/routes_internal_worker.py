@@ -21,9 +21,11 @@ from sqlalchemy.orm import Session
 from dian_automation.config import config
 from dian_automation.db.database import get_db, SessionLocal
 from dian_automation.db.models import DIANExtractionJob, Business
+from dian_automation.queue.exceptions import STALE_PROCESSING_CODE
 from dian_automation.queue.manager import ExtractionQueueManager
 from dian_automation.extraction.xlsx_parser import DIANXLSXParser, DIANParseError
-from dian_automation.telegram.tech_ops_bot import TechOpsAlertBot, create_tech_ops_on_failure_callback
+from dian_automation.telegram.tech_ops_bot import TechOpsAlertBot
+from dian_automation.telegram.admin_alerts import create_failure_alert_callback
 
 logger = logging.getLogger("internal_worker_api")
 
@@ -42,10 +44,28 @@ def require_worker_token(authorization: Optional[str] = Header(default=None)) ->
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token de worker inválido.")
 
 
+def _notify_failure(job: DIANExtractionJob, error_code: str, error_detail: str, screenshot_path: Optional[str]) -> None:
+    """Avisa por Telegram según la clase del fallo (ADMIN si es lento, TECH_OPS si es duro o agotado).
+    Sin token de bot no se avisa; un error de Telegram nunca afecta al registro del fallo."""
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_TECH_OPS_BOT_TOKEN")
+    if not bot_token:
+        return
+    callback = create_failure_alert_callback(bot=TechOpsAlertBot(bot_token=bot_token), db_session_factory=SessionLocal)
+    try:
+        callback(job, error_code, error_detail, screenshot_path)
+    except Exception as e:
+        logger.error(f"Error notificando el fallo remoto del job {job.id}: {e}")
+
+
 @router.get("/next", dependencies=[Depends(require_worker_token)])
 def get_next_job(db: Session = Depends(get_db)):
     """Toma y reserva (PROCESSING) el siguiente job pendiente, con todo lo que el
-    worker remoto necesita para llamar a dian_flow.run_flow() sin tocar la base de datos."""
+    worker remoto necesita para llamar a dian_flow.run_flow() sin tocar la base de datos.
+    Antes libera los trabajos atascados en PROCESSING para que la cola vuelva a avanzar."""
+    for stale_job in ExtractionQueueManager.recover_stale_jobs(db=db):
+        logger.warning(f"Job {stale_job.id} atascado en PROCESSING: reprogramado como fallo lento.")
+        _notify_failure(stale_job, STALE_PROCESSING_CODE, stale_job.error_detail, None)
+
     job = ExtractionQueueManager.get_next_runnable_job(db=db)
     if not job:
         return {"job": None}
@@ -72,7 +92,8 @@ def get_next_job(db: Session = Depends(get_db)):
 
 @router.post("/{job_id}/complete", dependencies=[Depends(require_worker_token)])
 async def complete_job(job_id: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """Recibe el ZIP descargado por el worker remoto, lo guarda y lo parsea (ingesta)."""
+    """Recibe el ZIP descargado por el worker remoto, lo guarda y lo parsea (ingesta).
+    Acepta también un job ya recuperado como atascado (ENQUEUED): la ingesta es idempotente por CUFE."""
     job = db.query(DIANExtractionJob).filter(DIANExtractionJob.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' no encontrado")
@@ -107,6 +128,16 @@ async def fail_job(
     if not existing:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' no encontrado")
 
+    if existing.status != "PROCESSING":
+        # Fallo tardío de un job ya recuperado o cerrado: no debe reprogramarlo ni contar otro intento
+        logger.info(f"Fallo tardío ignorado: el job {job_id} está {existing.status}, no PROCESSING.")
+        return {
+            "status": existing.status,
+            "job_id": job_id,
+            "attempt_count": existing.attempt_count,
+            "ignored": True,
+        }
+
     screenshot_path = None
     if screenshot is not None:
         download_dir = os.getenv("DOWNLOAD_DIR", "./downloads")
@@ -124,13 +155,7 @@ async def fail_job(
         db=db,
     )
 
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_TECH_OPS_BOT_TOKEN")
-    if bot_token:
-        callback = create_tech_ops_on_failure_callback(bot=TechOpsAlertBot(bot_token=bot_token), db_session_factory=SessionLocal)
-        try:
-            callback(job, error_code, error_detail, screenshot_path)
-        except Exception as e:
-            logger.error(f"Error notificando a Tech Ops sobre fallo remoto: {e}")
+    _notify_failure(job, error_code, error_detail, screenshot_path)
 
     return {
         "status": "FAILED" if job.status == "FAILED" else "RETRY_SCHEDULED",

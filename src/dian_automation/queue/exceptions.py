@@ -43,3 +43,16 @@ class ExportTimeoutError(DIANExtractionError):
 
     def __init__(self, message: str = "Tiempo de espera agotado esperando generación de reporte en DIAN"):
         super().__init__(message, code="EXPORT_TIMEOUT")
+
+
+# Fallos "lentos": la DIAN no entregó el archivo a tiempo o el trabajo quedó atascado en PROCESSING.
+# Se reintentan a las 6 h solo para ese trabajo (Story 1.6). Cada excepción llega con dos nombres: el de
+# la clase (worker remoto: type(e).__name__) y su código (worker local: e.code). Todo lo demás es un
+# fallo duro (Story 1.3): agregar una excepción nueva exige clasificarla aquí.
+STALE_PROCESSING_CODE = "STALE_PROCESSING"
+SLOW_ERROR_CODES = frozenset({"ExportTimeoutError", "EXPORT_TIMEOUT", STALE_PROCESSING_CODE})
+
+
+def is_slow_error(error_code) -> bool:
+    """True si el código corresponde a un fallo lento (reintento a 6 h, sin pausar la cola)."""
+    return error_code in SLOW_ERROR_CODES

@@ -27,6 +27,7 @@ Este catálogo consolida todas las variables de entorno consumidas en el código
 | `HEADLESS` | Ejecución visible o segundo plano (False recomendado para evitar bloqueos) | `False`, `False` (ejemplo) | `src/dian_automation/config.py:42` | ✅ Documentada |
 | `JWT_SECRET` | Secreto que firma el JWT de sesión y el hash HMAC de los códigos OTP del login web; sin él no se puede iniciar sesión (la app arranca igual). Cambiarlo invalida sesiones y códigos pendientes | — (obligatorio para el login web) | `src/dian_automation/config.py`, `src/dian_automation/core/auth_service.py` | ✅ Documentada |
 | `JWT_TTL_MINUTES` | Vigencia del JWT de sesión en minutos (sin refresh) | `60` | `src/dian_automation/config.py` | ✅ Documentada |
+| `STALE_PROCESSING_SECONDS` | Segundos que un trabajo puede seguir en PROCESSING sin respuesta antes de darlo por atascado y reintentarlo a las 6 h; vacío = `EXPORT_DOWNLOAD_TIMEOUT_SECONDS` + 600 | vacío (900 con los valores por defecto) | `src/dian_automation/config.py` | ✅ Documentada |
 | `STALWART_IMAP_HOST` | Servidor de Correo Stalwart (Recepción automática del token mágico) | `mail.example.com`, `mail.example.com` (ejemplo) | `src/dian_automation/config.py:37` | ✅ Documentada |
 | `STALWART_IMAP_PORT` |  | `993`, `993` (ejemplo) | `src/dian_automation/config.py:38` | ✅ Documentada |
 | `STALWART_PASSWORD` |  | —, `tu_contrasena_aqui` (ejemplo) | `src/dian_automation/config.py:40` | ✅ Documentada |

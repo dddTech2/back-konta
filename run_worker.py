@@ -28,7 +28,8 @@ load_dotenv()
 
 from dian_automation.db.database import SessionLocal
 from dian_automation.queue.worker import ExtractionWorker
-from dian_automation.telegram.tech_ops_bot import TechOpsAlertBot, create_tech_ops_on_failure_callback
+from dian_automation.telegram.tech_ops_bot import TechOpsAlertBot
+from dian_automation.telegram.admin_alerts import create_failure_alert_callback
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,11 +44,14 @@ def main():
     on_failure_callback = None
     if bot_token:
         tech_ops_bot = TechOpsAlertBot(bot_token=bot_token)
-        on_failure_callback = create_tech_ops_on_failure_callback(
+        on_failure_callback = create_failure_alert_callback(
             bot=tech_ops_bot,
             db_session_factory=SessionLocal,
         )
-        logger.info("Alertas a Tech Ops activas (se notificará por Telegram ante cualquier fallo).")
+        logger.info(
+            "Alertas activas: Tech Ops ante fallos técnicos y la administradora ante descargas lentas "
+            "(se reintentan a las 6 h)."
+        )
     else:
         logger.warning(
             "TELEGRAM_BOT_TOKEN no configurado: los fallos de extracción NO notificarán a Tech Ops."

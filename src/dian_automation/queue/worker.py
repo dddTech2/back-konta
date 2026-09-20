@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from dian_automation.db.database import SessionLocal
 from dian_automation.db.models import DIANExtractionJob, Business
+from dian_automation.queue.exceptions import STALE_PROCESSING_CODE
 from dian_automation.queue.manager import ExtractionQueueManager
 from dian_automation.extraction.xlsx_parser import DIANXLSXParser, DIANParseError
 
@@ -154,9 +155,16 @@ class ExtractionWorker:
         pacing_seconds: Optional[int] = None,
         backoff_seconds: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Busca y ejecuta el siguiente trabajo listo en la cola."""
+        """Busca y ejecuta el siguiente trabajo listo en la cola (liberando antes los atascados)."""
         db = self.db_session_factory()
         try:
+            for stale_job in ExtractionQueueManager.recover_stale_jobs(db=db):
+                logger.warning(f"Trabajo {stale_job.id} atascado en PROCESSING: reprogramado como fallo lento.")
+                if on_failure_callback:
+                    try:
+                        on_failure_callback(stale_job, STALE_PROCESSING_CODE, stale_job.error_detail, None)
+                    except Exception as cb_err:
+                        logger.error(f"Error en callback on_failure: {cb_err}")
             job = ExtractionQueueManager.get_next_runnable_job(db=db)
             if not job:
                 return None
