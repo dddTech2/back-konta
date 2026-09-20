@@ -30,6 +30,7 @@ Este catálogo consolida todas las variables de entorno consumidas en el código
 | `WORKER_NAME` | Nombre con el que `run_worker_remote.py` se identifica en el latido (cabecera `X-Worker-Name`) | `remote` | `run_worker_remote.py` | ✅ Documentada |
 | `PENDING_UPLOADS_DIR` | Carpeta donde `run_worker_remote.py` deja los ZIP que no pudo subir, para reintentarlos | `pending_uploads/` junto al script | `run_worker_remote.py` | ✅ Documentada |
 | `WORKER_SILENCE_MINUTES` | Minutos sin latido del worker, con trabajos listos, antes de que el proceso `scheduler` avise por Telegram a TECH_OPS y ADMIN | `15` | `src/dian_automation/config.py` | ✅ Documentada |
+| `CALENDAR_UPCOMING_DAYS` | Días de antelación desde los que una obligación del calendario tributario se marca `proximo` en la API, el bot y la SPA | `15` | `src/dian_automation/config.py` | ✅ Documentada |
 | `SCHEDULER_ENABLED` | Activa el programador semanal: solo el valor `true` encola; cualquier otro lo deja apagado y solo lo registra en el log | `false` | `src/dian_automation/config.py`, `run_scheduler.py` | ✅ Documentada |
 | `SCHEDULER_WEEKDAY` | Día de la corrida semanal del programador (0 = lunes … 6 = domingo, numeración de Python) | `6` (domingo) | `src/dian_automation/config.py` | ✅ Documentada |
 | `SCHEDULER_HOUR` | Hora (0 a 23, `America/Bogota`) de la corrida; el programador actúa durante esa hora completa | `3` (03:00) | `src/dian_automation/config.py` | ✅ Documentada |

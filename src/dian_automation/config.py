@@ -57,6 +57,9 @@ class AppConfig:
     # Minutos sin latido del worker antes de avisar a TI y a la administradora (Story 1.8)
     worker_silence_minutes: int = int(os.getenv("WORKER_SILENCE_MINUTES") or "15")
 
+    # Días de antelación desde los que una obligación del calendario tributario se marca 'proximo' (Story 4.1b)
+    calendar_upcoming_days: int = int(os.getenv("CALENDAR_UPCOMING_DAYS") or "15")
+
     # Frontend web/móvil (para servir el prototipo y enlazarlo desde Telegram)
     frontend_dir: str = os.getenv("FRONTEND_DIR", "")
     kontable_web_url: str = os.getenv("KONTABLE_WEB_URL", "http://127.0.0.1:8000/app/")

@@ -16,6 +16,13 @@ from dian_automation.api.schemas import (
     NextTaxAlert,
     SubscriptionInfo,
 )
+from dian_automation.core.calendar_engine import (
+    CalendarNotLoadedError,
+    TaxCalendarEngine,
+    format_limit_date,
+    next_pending,
+    today_bogota,
+)
 
 router = APIRouter(prefix="/api/dashboard", tags=["Dashboard"])
 
@@ -52,6 +59,8 @@ def get_dashboard(
     if business.income_source == INCOME_SOURCE_MANUAL_SALES:
         raise HTTPException(status_code=404, detail="Este servicio no aplica a tu tipo de negocio.")
 
+    today = today_bogota()
+
     # 1. Información del negocio
     biz_info = BusinessInfo(
         id=business.id,
@@ -87,7 +96,7 @@ def get_dashboard(
             ivaAcumulado=0.0,
             numFacturas=0,
             variacion=0.0,
-            periodo="2026-08",
+            periodo=today.strftime("%Y-%m"),
         )
 
     # 3. Histórico de últimos 6 meses (para gráfico de barras)
@@ -105,7 +114,11 @@ def get_dashboard(
     # Si no hay histórico, creamos una barra con el periodo actual
     if not historico:
         historico = [
-            MonthlyBar(mes="Ago", period_year_month="2026-08", total=resumen.total)
+            MonthlyBar(
+                mes=_format_month_name(resumen.periodo),
+                period_year_month=resumen.periodo,
+                total=resumen.total,
+            )
         ]
 
     # 4. Facturas recientes emitidas (máximo 4 para el hero/card)
@@ -133,12 +146,33 @@ def get_dashboard(
         )
 
     # 5. Alerta de próximo vencimiento tributario
-    alerta = NextTaxAlert(
-        dias=5,
-        etiqueta=f"Periodo {resumen.periodo}",
-        limite="10 prox. mes",
-        estado="proximo",
-    )
+    try:
+        obligations = TaxCalendarEngine(db).obligations(business, today)
+        ob = next_pending(obligations)
+        if ob:
+            alerta = NextTaxAlert(
+                dias=ob.dias,
+                etiqueta=ob.etiqueta,
+                limite=format_limit_date(ob.fecha_limite),
+                estado=ob.estado,
+                tax_type=ob.tax_type,
+            )
+        else:
+            alerta = NextTaxAlert(
+                dias=None,
+                etiqueta="Sin vencimientos pendientes",
+                limite=None,
+                estado="aldia",
+                tax_type=None,
+            )
+    except CalendarNotLoadedError:
+        alerta = NextTaxAlert(
+            dias=None,
+            etiqueta="Calendario no disponible",
+            limite=None,
+            estado="sin_datos",
+            tax_type=None,
+        )
 
     # 6. Información de suscripción
     sub = (

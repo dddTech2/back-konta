@@ -45,11 +45,12 @@ class RecentInvoice(BaseModel):
 
 
 class NextTaxAlert(BaseModel):
-    """Alerta de próximo vencimiento tributario."""
+    """Alerta de próximo vencimiento tributario (viene del motor de calendario, Story 4.1b)."""
     dias: Optional[int] = None
     etiqueta: str
-    limite: str
-    estado: str = "proximo"
+    limite: Optional[str] = None
+    estado: str = "proximo"  # aldia, proximo, sin_datos (sin calendario cargado)
+    tax_type: Optional[str] = None  # IVA_BIMESTRAL, RETEFUENTE, RENTA_*; None sin obligación
 
 
 class SubscriptionInfo(BaseModel):
@@ -90,7 +91,7 @@ class IvaPeriodItem(BaseModel):
     saldo: float  # >0 Saldo a pagar, <0 Saldo a favor
     pct: float  # Proporción descontable/generado (0.0 a 1.0)
     estado: str  # en_curso, presentado
-    limite: str
+    limite: Optional[str] = None  # None sin obligación de IVA aplicable o sin calendario
     dias: Optional[int] = None
     facturas: List[PeriodInvoiceItem] = Field(default_factory=list)
 
@@ -201,3 +202,17 @@ class IncomeSummaryResponse(BaseModel):
     utilidad: str
     historial: List[IncomeSummaryItem]
 
+
+
+class CalendarObligation(BaseModel):
+    """Obligación tributaria con fecha límite (Story 4.1b)."""
+    tax_type: str
+    etiqueta: str
+    fecha_limite: str  # ISO YYYY-MM-DD
+    estado: str  # completado, proximo, aldia
+    dias: Optional[int] = None  # None si está completada
+
+
+class CalendarResponse(BaseModel):
+    """Respuesta de GET /api/calendar/{business_id}."""
+    obligaciones: List[CalendarObligation]

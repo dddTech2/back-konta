@@ -48,6 +48,9 @@ def db_session_factory():
         nit="901008579",
         dv="7",
         income_source=INCOME_SOURCE_DIAN,
+        iva_periodicity="BIMESTRAL",
+        is_withholding_agent=True,
+        taxpayer_type="PERSONA_JURIDICA",
         is_active=True,
     )
     sub_andrea = Subscription(
@@ -96,26 +99,45 @@ def db_session_factory():
     )
 
     # 3. Calendario tributario DIAN (dígito 9 y dígito 4)
+    curr_year = date.today().year
     cal_iva_9 = DIANTaxCalendar(
-        tax_type="IVA BIMESTRAL",
-        fiscal_year=2026,
-        period_label="Jul – Ago 2026",
+        tax_type="IVA_BIMESTRAL",
+        fiscal_year=curr_year,
+        period_label=f"Jul – Ago {curr_year}",
+        period_start=date(curr_year, 7, 1),
+        period_end=date(curr_year, 8, 31),
+        key_length=1,
+        key_from=9,
+        key_to=9,
+        installment=0,
         nit_last_digit=9,
         deadline_date=date.today() + timedelta(days=4),
         description="Declaración bimestral formulario 300",
     )
     cal_rete_9 = DIANTaxCalendar(
         tax_type="RETEFUENTE",
-        fiscal_year=2026,
-        period_label="Agosto 2026",
+        fiscal_year=curr_year,
+        period_label=f"Agosto {curr_year}",
+        period_start=date(curr_year, 8, 1),
+        period_end=date(curr_year, 8, 31),
+        key_length=1,
+        key_from=9,
+        key_to=9,
+        installment=0,
         nit_last_digit=9,
         deadline_date=date.today() + timedelta(days=12),
         description="Declaración mensual formulario 350",
     )
     cal_iva_4 = DIANTaxCalendar(
-        tax_type="IVA BIMESTRAL",
-        fiscal_year=2026,
-        period_label="Jul – Ago 2026",
+        tax_type="IVA_BIMESTRAL",
+        fiscal_year=curr_year,
+        period_label=f"Jul – Ago {curr_year}",
+        period_start=date(curr_year, 7, 1),
+        period_end=date(curr_year, 8, 31),
+        key_length=1,
+        key_from=4,
+        key_to=4,
+        installment=0,
         nit_last_digit=4,
         deadline_date=date.today() + timedelta(days=2),
         description="Declaración bimestral formulario 300",
@@ -351,9 +373,9 @@ def test_client_vencimientos_filtered_by_nit_last_digit(db_session_factory):
 
         msg = resp["message"]
         assert "Último dígito: *9*" in msg
-        assert "IVA BIMESTRAL" in msg
+        assert "IVA_BIMESTRAL" in msg
         assert "RETEFUENTE" in msg
-        assert "Agosto 2026" in msg
+        assert f"Agosto {date.today().year}" in msg
         # No debe contener el dígito 4
         assert "Dígito: `4`" not in msg
     finally:
@@ -776,6 +798,125 @@ def test_dian_resumen_and_vencimientos_unaffected(db_session_factory):
         assert venc_dian["success"] is True
         assert venc_dian["count"] > 0
         assert "CALENDARIO DE VENCIMIENTOS DIAN" in venc_dian["message"]
+    finally:
+        db.close()
+
+
+def test_client_vencimientos_message_formatting(db_session_factory):
+    """El mensaje de /vencimientos conserva idéntico formato de líneas, iconos y estados."""
+    db = db_session_factory()
+    try:
+        ref_date = date(2026, 9, 15)
+        # Limpiar calendario previo y sembrar casos específicos para probar todos los estados
+        db.query(DIANTaxCalendar).delete()
+
+        entries = [
+            DIANTaxCalendar(
+                tax_type="IVA_BIMESTRAL",
+                fiscal_year=2026,
+                period_label="Bimestre 1",
+                period_start=date(2026, 1, 1),
+                period_end=date(2026, 2, 28),
+                key_length=1,
+                key_from=9,
+                key_to=9,
+                installment=0,
+                deadline_date=ref_date - timedelta(days=3),
+                description="Venció en el pasado",
+            ),
+            DIANTaxCalendar(
+                tax_type="IVA_BIMESTRAL",
+                fiscal_year=2026,
+                period_label="Bimestre 2",
+                period_start=date(2026, 3, 1),
+                period_end=date(2026, 4, 30),
+                key_length=1,
+                key_from=9,
+                key_to=9,
+                installment=0,
+                deadline_date=ref_date,
+                description="Vence el día de hoy",
+            ),
+            DIANTaxCalendar(
+                tax_type="IVA_BIMESTRAL",
+                fiscal_year=2026,
+                period_label="Bimestre 3",
+                period_start=date(2026, 5, 1),
+                period_end=date(2026, 6, 30),
+                key_length=1,
+                key_from=9,
+                key_to=9,
+                installment=0,
+                deadline_date=ref_date + timedelta(days=2),
+                description="Vence pronto en 2 días",
+            ),
+            DIANTaxCalendar(
+                tax_type="IVA_BIMESTRAL",
+                fiscal_year=2026,
+                period_label="Bimestre 4",
+                period_start=date(2026, 7, 1),
+                period_end=date(2026, 8, 31),
+                key_length=1,
+                key_from=9,
+                key_to=9,
+                installment=0,
+                deadline_date=ref_date + timedelta(days=10),
+                description="Vence en 10 días",
+            ),
+        ]
+        db.add_all(entries)
+        db.commit()
+
+        resp = ClientTelegramBot.handle_vencimientos(
+            sender_chat_id=ANDREA_CHAT, db=db, reference_date=ref_date
+        )
+        assert resp["success"] is True
+        assert resp["count"] == 4
+
+        msg = resp["message"]
+        assert "CALENDARIO DE VENCIMIENTOS DIAN" in msg
+        assert "Fecha Límite:" in msg
+        assert "⚠️ Venció hace 3 días" in msg
+        assert "🚨 ¡VENCE HOY!" in msg
+        assert "⏳ En 2 días" in msg
+        assert "📅 En 10 días" in msg
+    finally:
+        db.close()
+
+
+def test_client_vencimientos_calendar_not_loaded(db_session_factory):
+    """Si el calendario del año no está cargado retorna CALENDAR_NOT_LOADED con mensaje amigable."""
+    db = db_session_factory()
+    try:
+        # Consultar para un año sin calendario cargado (2035)
+        resp = ClientTelegramBot.handle_vencimientos(
+            sender_chat_id=ANDREA_CHAT, db=db, reference_date=date(2035, 1, 1)
+        )
+        assert resp["success"] is False
+        assert resp["reason"] == "CALENDAR_NOT_LOADED"
+        assert resp["message"] == (
+            "🗓️ *Calendario Tributario DIAN*\n\n"
+            "ℹ️ El calendario tributario de este año aún no está cargado. Inténtalo de nuevo más tarde."
+        )
+    finally:
+        db.close()
+
+
+def test_client_vencimientos_filtered_by_business_profile(db_session_factory):
+    """Obligaciones se filtran por perfil del negocio (no aparece RETEFUENTE si no es agente retenedor)."""
+    db = db_session_factory()
+    try:
+        biz = db.query(Business).filter(Business.id == "biz-andrea").first()
+        biz.is_withholding_agent = False
+        db.commit()
+
+        resp = ClientTelegramBot.handle_vencimientos(
+            sender_chat_id=ANDREA_CHAT, db=db, reference_date=date.today()
+        )
+        assert resp["success"] is True
+        msg = resp["message"]
+        assert "IVA_BIMESTRAL" in msg
+        assert "RETEFUENTE" not in msg
     finally:
         db.close()
 

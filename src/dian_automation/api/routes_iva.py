@@ -13,17 +13,15 @@ from dian_automation.api.schemas import (
     PeriodInvoiceItem,
 )
 from dian_automation.api.routes_dashboard import _format_short_date
+from dian_automation.core.calendar_engine import (
+    CalendarNotLoadedError,
+    TaxCalendarEngine,
+    format_limit_date,
+    iva_obligation_for_month,
+    today_bogota,
+)
 
 router = APIRouter(prefix="/api/iva", tags=["IVA"])
-
-BIMONTHLY_LABELS = {
-    ("01", "02"): "Ene – Feb",
-    ("03", "04"): "Mar – Abr",
-    ("05", "06"): "May – Jun",
-    ("07", "08"): "Jul – Ago",
-    ("09", "10"): "Sep – Oct",
-    ("11", "12"): "Nov – Dic",
-}
 
 
 @router.get("/{business_id}", response_model=IvaDetailResponse)
@@ -35,6 +33,12 @@ def get_iva_detail(
     business, user, _ = business_access
     if business.income_source == INCOME_SOURCE_MANUAL_SALES:
         raise HTTPException(status_code=404, detail="Este servicio no aplica a tu tipo de negocio.")
+
+    today = today_bogota()
+    try:
+        obligations = TaxCalendarEngine(db).obligations(business, today)
+    except CalendarNotLoadedError:
+        obligations = []
 
     summaries = (
         db.query(MonthlyTaxSummary)
@@ -76,17 +80,29 @@ def get_iva_detail(
             ]
 
             is_latest = (idx == 0)
+            ob = iva_obligation_for_month(obligations, s.period_year_month)
+            if ob:
+                etiqueta = ob.etiqueta
+                limite = format_limit_date(ob.fecha_limite)
+                dias = ob.dias
+                estado = "presentado" if ob.estado == "completado" else "en_curso"
+            else:
+                etiqueta = f"Periodo {s.period_year_month}"
+                limite = None
+                dias = None
+                estado = "en_curso" if is_latest else "presentado"
+
             periodos_list.append(
                 IvaPeriodItem(
                     period_key=s.period_year_month,
-                    etiqueta=f"Periodo {s.period_year_month}",
+                    etiqueta=etiqueta,
                     generado=gen,
                     descontable=desc,
                     saldo=saldo,
                     pct=pct,
-                    estado="en_curso" if is_latest else "presentado",
-                    limite="10 prox. mes",
-                    dias=5 if is_latest else None,
+                    estado=estado,
+                    limite=limite,
+                    dias=dias,
                     facturas=facturas_items,
                 )
             )
@@ -101,17 +117,30 @@ def get_iva_detail(
         saldo = total_gen - total_desc
         pct = round(min(1.0, total_desc / total_gen), 4) if total_gen > 0 else 0.0
 
+        period_key = today.strftime("%Y-%m")
+        ob = iva_obligation_for_month(obligations, period_key)
+        if ob:
+            etiqueta = ob.etiqueta
+            limite = format_limit_date(ob.fecha_limite)
+            dias = ob.dias
+            estado = "presentado" if ob.estado == "completado" else "en_curso"
+        else:
+            etiqueta = f"Periodo {period_key}"
+            limite = None
+            dias = None
+            estado = "en_curso"
+
         periodos_list.append(
             IvaPeriodItem(
-                period_key="2026-08",
-                etiqueta="Jul – Ago 2026",
+                period_key=period_key,
+                etiqueta=etiqueta,
                 generado=total_gen,
                 descontable=total_desc,
                 saldo=saldo,
                 pct=pct,
-                estado="en_curso",
-                limite="10 sept 2026",
-                dias=5,
+                estado=estado,
+                limite=limite,
+                dias=dias,
                 facturas=[],
             )
         )

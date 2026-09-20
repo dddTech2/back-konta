@@ -27,8 +27,12 @@ from dian_automation.db.models import (
     Business,
     MonthlyTaxSummary,
     Invoice,
-    DIANTaxCalendar,
     INCOME_SOURCE_MANUAL_SALES,
+)
+from dian_automation.core.calendar_engine import (
+    CalendarNotLoadedError,
+    TaxCalendarEngine,
+    today_bogota,
 )
 from dian_automation.subscriptions.lockout_service import SubscriptionLockoutService
 
@@ -307,17 +311,21 @@ class ClientTelegramBot:
         else:
             last_digit = int(clean_nit[-1])
 
-        ref_date = reference_date or date.today()
+        ref_date = reference_date or today_bogota()
 
-        # Consultar calendario para este dígito
-        calendar_entries = (
-            db.query(DIANTaxCalendar)
-            .filter(DIANTaxCalendar.nit_last_digit == last_digit)
-            .order_by(DIANTaxCalendar.deadline_date.asc())
-            .all()
-        )
+        try:
+            obligations = TaxCalendarEngine(db).obligations(business, ref_date)
+        except CalendarNotLoadedError:
+            return {
+                "success": False,
+                "reason": "CALENDAR_NOT_LOADED",
+                "message": (
+                    "🗓️ *Calendario Tributario DIAN*\n\n"
+                    "ℹ️ El calendario tributario de este año aún no está cargado. Inténtalo de nuevo más tarde."
+                ),
+            }
 
-        if not calendar_entries:
+        if not obligations:
             return {
                 "success": True,
                 "count": 0,
@@ -336,8 +344,8 @@ class ClientTelegramBot:
         ]
 
         # Filtrar o clasificar próximas obligaciones
-        for entry in calendar_entries:
-            days_diff = (entry.deadline_date - ref_date).days
+        for ob in obligations:
+            days_diff = (ob.fecha_limite - ref_date).days
             if days_diff < 0:
                 status_tag = f"⚠️ Venció hace {abs(days_diff)} días"
                 icon = "🔴"
@@ -351,17 +359,17 @@ class ClientTelegramBot:
                 status_tag = f"📅 En {days_diff} días"
                 icon = "🟢"
 
-            lines.append(f"{icon} *{entry.tax_type}* ({entry.period_label})")
-            lines.append(f"   Fecha Límite: *{entry.deadline_date.strftime('%d/%m/%Y')}* — _{status_tag}_")
-            if entry.description:
-                lines.append(f"   _{entry.description}_")
+            lines.append(f"{icon} *{ob.tax_type}* ({ob.etiqueta})")
+            lines.append(f"   Fecha Límite: *{ob.fecha_limite.strftime('%d/%m/%Y')}* — _{status_tag}_")
+            if ob.description:
+                lines.append(f"   _{ob.description}_")
             lines.append("")
 
         lines.append("💡 *Tip Kontable:* Presenta y paga con anticipación para evitar sanciones e intereses de mora.")
 
         return {
             "success": True,
-            "count": len(calendar_entries),
+            "count": len(obligations),
             "last_digit": last_digit,
             "message": "\n".join(lines).strip(),
         }

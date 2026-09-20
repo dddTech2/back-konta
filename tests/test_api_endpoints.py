@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from dian_automation.db.database import Base, get_db
-from dian_automation.db.models import User, Business, Invoice, MonthlyTaxSummary, Subscription
+from dian_automation.db.models import User, Business, Invoice, MonthlyTaxSummary, Subscription, DIANTaxCalendar
 from dian_automation.api.app import app
 
 
@@ -68,6 +68,7 @@ def fixture_seed_data(db_session):
         dv="1",
         economic_activity="Servicios de diseño",
         taxpayer_type="PERSONA_JURIDICA",
+        iva_periodicity="BIMESTRAL",
         is_active=True,
     )
     db_session.add(biz)
@@ -188,7 +189,20 @@ def fixture_seed_data(db_session):
         total=Decimal("119000.00"),
         group_type="Recibido",
     )
-    db_session.add_all([inv1, inv2, inv3, biz_manual, inv_manual])
+    cal_iva = DIANTaxCalendar(
+        tax_type="IVA_BIMESTRAL",
+        fiscal_year=2026,
+        period_label="Jul – Ago 2026",
+        period_start=date(2026, 7, 1),
+        period_end=date(2026, 8, 31),
+        key_length=1,
+        key_from=7,
+        key_to=7,
+        installment=0,
+        deadline_date=date(2026, 9, 14),
+        description="IVA Bimestre 4",
+    )
+    db_session.add_all([inv1, inv2, inv3, biz_manual, inv_manual, cal_iva])
     db_session.commit()
 
     return {"user": user, "business": biz, "biz_manual": biz_manual, "sub": sub}
@@ -424,4 +438,144 @@ def test_dian_business_retains_iva_and_dashboard(client, seed_data):
 
     r_dash = client.get("/api/dashboard/biz-andrea-diseno")
     assert r_dash.status_code == 200
+
+
+def test_iva_with_obligation_and_presented_when_deadline_passed(client, db_session, seed_data, monkeypatch):
+    """IVA con obligación refleja etiqueta, límite, días y estado del motor; y 'presentado' si venció."""
+    biz = seed_data["business"]
+
+    # 1. Fecha antes del vencimiento (10 sep 2026 < 14 sep 2026)
+    monkeypatch.setattr("dian_automation.api.routes_iva.today_bogota", lambda: date(2026, 9, 10))
+    res = client.get(f"/api/iva/{biz.id}")
+    assert res.status_code == 200
+    periodos = res.json()["periodos"]
+    assert len(periodos) >= 1
+    p_ago = next(p for p in periodos if p["period_key"] == "2026-08")
+    assert p_ago["etiqueta"] == "Jul – Ago 2026"
+    assert p_ago["limite"] == "14 sep 2026"
+    assert p_ago["dias"] == 4
+    assert p_ago["estado"] == "en_curso"
+
+    # 2. Fecha después del vencimiento (20 sep 2026 > 14 sep 2026) -> completado / presentado
+    monkeypatch.setattr("dian_automation.api.routes_iva.today_bogota", lambda: date(2026, 9, 20))
+    res_past = client.get(f"/api/iva/{biz.id}")
+    assert res_past.status_code == 200
+    p_ago_past = next(p for p in res_past.json()["periodos"] if p["period_key"] == "2026-08")
+    assert p_ago_past["estado"] == "presentado"
+    assert p_ago_past["dias"] is None
+    assert p_ago_past["limite"] == "14 sep 2026"
+
+
+def test_iva_without_periodicity_or_calendar_not_loaded(client, db_session, seed_data, monkeypatch):
+    """IVA con negocio sin iva_periodicity o con calendario sin cargar -> limite=None, dias=None, 200."""
+    biz = seed_data["business"]
+    monkeypatch.setattr("dian_automation.api.routes_iva.today_bogota", lambda: date(2026, 9, 10))
+
+    # A. Negocio sin iva_periodicity
+    biz.iva_periodicity = None
+    db_session.commit()
+
+    res = client.get(f"/api/iva/{biz.id}")
+    assert res.status_code == 200
+    periodos = res.json()["periodos"]
+    p_ago = next(p for p in periodos if p["period_key"] == "2026-08")
+    assert p_ago["limite"] is None
+    assert p_ago["dias"] is None
+    assert p_ago["etiqueta"] == "Periodo 2026-08"
+
+    # B. Con iva_periodicity pero calendario sin cargar (año 2030 sin calendario cargado)
+    biz.iva_periodicity = "BIMESTRAL"
+    db_session.commit()
+    monkeypatch.setattr("dian_automation.api.routes_iva.today_bogota", lambda: date(2030, 9, 10))
+
+    res_no_cal = client.get(f"/api/iva/{biz.id}")
+    assert res_no_cal.status_code == 200
+    p_ago_no_cal = next(p for p in res_no_cal.json()["periodos"] if p["period_key"] == "2026-08")
+    assert p_ago_no_cal["limite"] is None
+    assert p_ago_no_cal["dias"] is None
+
+
+def test_dashboard_alert_from_calendar_engine(client, db_session, seed_data, monkeypatch):
+    """Dashboard con alerta del motor refleja tax_type, días, límite y estado."""
+    biz = seed_data["business"]
+    monkeypatch.setattr("dian_automation.api.routes_dashboard.today_bogota", lambda: date(2026, 9, 10))
+
+    res = client.get(f"/api/dashboard/{biz.id}")
+    assert res.status_code == 200
+    alerta = res.json()["alertaProximoVencimiento"]
+    assert alerta["tax_type"] == "IVA_BIMESTRAL"
+    assert alerta["dias"] == 4
+    assert alerta["estado"] == "proximo"
+    assert alerta["limite"] == "14 sep 2026"
+    assert alerta["etiqueta"] == "Jul – Ago 2026"
+
+
+def test_dashboard_without_pending_obligations(client, db_session, seed_data, monkeypatch):
+    """Dashboard sin obligaciones pendientes devuelve 'Sin vencimientos pendientes' y estado 'aldia'."""
+    biz = seed_data["business"]
+    # Al estar en 2026-09-20, el vencimiento del 14 sep ya está completado -> sin obligaciones pendientes
+    monkeypatch.setattr("dian_automation.api.routes_dashboard.today_bogota", lambda: date(2026, 9, 20))
+
+    res = client.get(f"/api/dashboard/{biz.id}")
+    assert res.status_code == 200
+    alerta = res.json()["alertaProximoVencimiento"]
+    assert alerta["etiqueta"] == "Sin vencimientos pendientes"
+    assert alerta["dias"] is None
+    assert alerta["limite"] is None
+    assert alerta["estado"] == "aldia"
+    assert alerta["tax_type"] is None
+
+
+def test_dashboard_calendar_not_loaded(client, db_session, seed_data, monkeypatch):
+    """Dashboard con calendario sin cargar devuelve estado 'sin_datos' y 200."""
+    biz = seed_data["business"]
+    # Año 2030 no está cargado en DIANTaxCalendar
+    monkeypatch.setattr("dian_automation.api.routes_dashboard.today_bogota", lambda: date(2030, 1, 15))
+
+    res = client.get(f"/api/dashboard/{biz.id}")
+    assert res.status_code == 200
+    alerta = res.json()["alertaProximoVencimiento"]
+    assert alerta["etiqueta"] == "Calendario no disponible"
+    assert alerta["dias"] is None
+    assert alerta["limite"] is None
+    assert alerta["estado"] == "sin_datos"
+    assert alerta["tax_type"] is None
+
+
+def test_default_period_is_current_bogota_month_when_no_summaries(client, db_session, seed_data, monkeypatch):
+    """Periodo por defecto es el mes actual de Bogotá cuando no hay resúmenes en dashboard e iva."""
+    user = seed_data["user"]
+    biz_empty = Business(
+        id="biz-sin-resumenes",
+        client_id=user.id,
+        legal_name="Sin Resumenes SAS",
+        commercial_name="Sin Resumenes",
+        nit="901555444",
+        dv="3",
+        taxpayer_type="PERSONA_JURIDICA",
+        iva_periodicity="BIMESTRAL",
+        is_active=True,
+    )
+    db_session.add(biz_empty)
+    db_session.commit()
+
+    fixed_today = date(2026, 9, 15)
+    monkeypatch.setattr("dian_automation.api.routes_dashboard.today_bogota", lambda: fixed_today)
+    monkeypatch.setattr("dian_automation.api.routes_iva.today_bogota", lambda: fixed_today)
+
+    # 1. Dashboard
+    r_dash = client.get(f"/api/dashboard/{biz_empty.id}")
+    assert r_dash.status_code == 200
+    dash_data = r_dash.json()
+    assert dash_data["resumen"]["periodo"] == "2026-09"
+    assert len(dash_data["historico"]) == 1
+    assert dash_data["historico"][0]["period_year_month"] == "2026-09"
+    assert dash_data["historico"][0]["mes"] == "Sep"
+
+    # 2. IVA
+    r_iva = client.get(f"/api/iva/{biz_empty.id}")
+    assert r_iva.status_code == 200
+    iva_data = r_iva.json()
+    assert len(iva_data["periodos"]) == 1
+    assert iva_data["periodos"][0]["period_key"] == "2026-09"
 
