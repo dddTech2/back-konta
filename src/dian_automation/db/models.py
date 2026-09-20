@@ -289,6 +289,19 @@ class DIANTaxCalendar(Base):
 
 
 
+class WorkerHeartbeat(Base):
+    """Último contacto de cada worker con /internal/jobs/next (Story 1.8). La hora es la del servidor."""
+
+    __tablename__ = "worker_heartbeats"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    name = Column(String(100), unique=True, nullable=False)  # cabecera X-Worker-Name; 'remote' por defecto
+    # Nulo solo en la fila que crea el monitor cuando ningún worker ha reportado nunca
+    last_seen_at = Column(DateTime, nullable=True)
+    last_alert_at = Column(DateTime, nullable=True)  # último aviso de silencio enviado
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class Sale(Base):
     """Venta declarada por el cliente (total y descripción opcional), desde Telegram o Web."""
 

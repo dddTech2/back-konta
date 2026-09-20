@@ -32,7 +32,7 @@ BASELINE_TABLES = {
     "payment_records",
     "dian_tax_calendar",
 }
-EXPECTED_TABLES = BASELINE_TABLES | {"sales", "otp_codes"}  # esquema en head: base + revisiones posteriores
+EXPECTED_TABLES = BASELINE_TABLES | {"sales", "otp_codes", "worker_heartbeats"}  # esquema en head: base + revisiones posteriores
 
 
 @pytest.fixture
@@ -98,6 +98,7 @@ def test_history_is_a_single_chain_rooted_at_the_baseline(alembic_cfg):
     assert script.get_revision("0003").down_revision == "0002"
     assert script.get_revision("0004").down_revision == "0003"
     assert script.get_revision("0005").down_revision == "0004"
+    assert script.get_revision("0006").down_revision == "0005"
 
 
 def test_baseline_revision_creates_only_the_nine_original_tables(alembic_cfg, engine):
@@ -127,6 +128,21 @@ def test_otp_codes_revision_upgrade_and_downgrade_one_step(alembic_cfg, engine):
 
     assert _tables(engine) == BASELINE_TABLES | {"sales", "alembic_version"}
     assert _version_rows(engine) == ["0002"]
+
+
+def test_worker_heartbeats_revision_upgrade_and_downgrade_one_step(alembic_cfg, engine):
+    command.upgrade(alembic_cfg, "0006")
+    columns = {c["name"]: c for c in inspect(engine).get_columns("worker_heartbeats")}
+    assert set(columns) == {"id", "name", "last_seen_at", "last_alert_at", "created_at"}
+    assert columns["last_seen_at"]["nullable"] and columns["last_alert_at"]["nullable"]
+    assert not columns["name"]["nullable"]
+    uniques = inspect(engine).get_unique_constraints("worker_heartbeats")
+    assert [u["column_names"] for u in uniques] == [["name"]]
+
+    command.downgrade(alembic_cfg, "-1")
+
+    assert "worker_heartbeats" not in _tables(engine)
+    assert _version_rows(engine) == ["0005"]
 
 
 def _insert_calendar_row(engine, row_id: str = "c-1", digit: int = 9):
@@ -434,7 +450,7 @@ def test_business_income_source_revision_defaults_existing_rows_and_matches_mode
 
 
 def test_business_income_source_revision_downgrade_drops_the_columns_and_keeps_rows(alembic_cfg, engine):
-    command.upgrade(alembic_cfg, "head")
+    command.upgrade(alembic_cfg, "0005")
     _insert_business(engine)
 
     command.downgrade(alembic_cfg, "-1")

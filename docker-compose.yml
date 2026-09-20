@@ -48,7 +48,8 @@ services:
 
   # Programador semanal de descargas (Story 1.7): solo encola, nunca abre la DIAN. Nace apagado:
   # no encola nada hasta que SCHEDULER_ENABLED=true en .env (actívalo cuando el worker remoto
-  # arranque solo, Story 1.8). Corrida por defecto: domingo 03:00 (America/Bogota).
+  # arranque solo: docs/DEPLOYMENT.md). Corrida por defecto: domingo 03:00 (America/Bogota).
+  # Aunque esté apagado, vigila el latido del worker y avisa por Telegram si deja de responder (Story 1.8).
   scheduler:
     build:
       context: .

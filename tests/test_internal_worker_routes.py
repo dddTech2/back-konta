@@ -16,7 +16,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from dian_automation.db.database import Base, get_db
-from dian_automation.db.models import User, Business, DIANExtractionJob
+from dian_automation.db.models import User, Business, DIANExtractionJob, WorkerHeartbeat
 from dian_automation.queue.exceptions import STALE_PROCESSING_CODE
 from dian_automation.queue.manager import ExtractionQueueManager
 from dian_automation.telegram.tech_ops_bot import TechOpsAlertBot
@@ -376,3 +376,98 @@ def test_fail_notifies_admin_end_to_end(client, db_session, seed_business, monke
     assert [d["chat_id"] for _, d in sent] == [1001]
     text = sent[0][1]["text"]
     assert "Empresa Remota" in text and "902033132-1" in text and "2026-08" in text and "Intento 1 de 3" in text
+
+
+# --- Latido del worker (Story 1.8) ------------------------------------------------------------
+
+
+def _heartbeats(db_session):
+    db_session.expire_all()
+    return {w.name: w for w in db_session.query(WorkerHeartbeat).all()}
+
+
+def test_first_next_creates_the_heartbeat_row_with_the_header_name(client, db_session):
+    before = datetime.utcnow()
+
+    res = client.get("/internal/jobs/next", headers={**_auth_headers(), "X-Worker-Name": "casa"})
+
+    assert res.status_code == 200
+    rows = _heartbeats(db_session)
+    assert list(rows) == ["casa"]
+    assert before <= rows["casa"].last_seen_at <= datetime.utcnow()
+    assert rows["casa"].last_alert_at is None
+
+
+def test_next_without_header_uses_the_default_name(client, db_session):
+    client.get("/internal/jobs/next", headers=_auth_headers())
+    client.get("/internal/jobs/next", headers={**_auth_headers(), "X-Worker-Name": "   "})
+
+    assert list(_heartbeats(db_session)) == ["remote"]
+
+
+def test_next_updates_last_seen_and_clears_the_alert_mark(client, db_session):
+    old = datetime.utcnow() - timedelta(hours=3)
+    db_session.add(WorkerHeartbeat(name="remote", last_seen_at=old, last_alert_at=old))
+    db_session.commit()
+
+    client.get("/internal/jobs/next", headers=_auth_headers())
+
+    rows = _heartbeats(db_session)
+    assert len(rows) == 1
+    assert rows["remote"].last_seen_at > old + timedelta(hours=2)
+    assert rows["remote"].last_alert_at is None
+
+
+def test_next_records_the_heartbeat_even_when_a_job_is_delivered(client, db_session, seed_business):
+    ExtractionQueueManager.enqueue_job(business_id=seed_business.id, target_period="2026-08", db=db_session)
+
+    res = client.get("/internal/jobs/next", headers=_auth_headers())
+
+    assert res.json()["job"] is not None
+    assert "remote" in _heartbeats(db_session)
+
+
+def test_next_rejects_a_bad_token_without_recording_a_heartbeat(client, db_session):
+    client.get("/internal/jobs/next", headers=_auth_headers("otro"))
+
+    assert _heartbeats(db_session) == {}
+
+
+def test_next_still_delivers_the_job_when_the_heartbeat_cannot_be_saved(client, db_session, seed_business, monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("base caída")
+
+    monkeypatch.setattr(internal_routes_module, "record_heartbeat", boom)
+    ExtractionQueueManager.enqueue_job(business_id=seed_business.id, target_period="2026-08", db=db_session)
+
+    res = client.get("/internal/jobs/next", headers=_auth_headers())
+
+    assert res.status_code == 200
+    assert res.json()["job"]["business_id"] == seed_business.id
+
+
+def test_complete_on_a_job_already_success_is_ignored_and_does_not_respace_the_queue(
+    client, db_session, seed_business, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("DOWNLOAD_DIR", str(tmp_path))
+    _second_business(db_session)
+    done = ExtractionQueueManager.enqueue_job(business_id=seed_business.id, target_period="2026-08", db=db_session)
+    ExtractionQueueManager.mark_job_processing(job_id=done.id, db=db_session)
+    ExtractionQueueManager.mark_job_success(job_id=done.id, zip_path="previo.zip", db=db_session)
+    waiting = ExtractionQueueManager.enqueue_job(business_id="biz-remote-2", target_period="2026-08", db=db_session)
+    next_run_before = waiting.next_run_at
+    finished_before = done.finished_at
+
+    res = client.post(
+        f"/internal/jobs/{done.id}/complete",
+        headers=_auth_headers(),
+        files={"file": ("reporte.zip", _build_sample_zip_bytes(), "application/zip")},
+    )
+
+    assert res.status_code == 200
+    assert res.json() == {"status": "SUCCESS", "job_id": done.id, "ignored": True}
+    db_session.refresh(done)
+    db_session.refresh(waiting)
+    assert done.zip_path == "previo.zip" and done.finished_at == finished_before
+    assert waiting.next_run_at == next_run_before
+    assert not list(tmp_path.iterdir())

@@ -6,6 +6,8 @@ Bogotá; el domingo a las 03:00 encola el mes en curso de cada negocio activo y,
 mes, el cierre del mes anterior.
 
 Nace apagado: mientras SCHEDULER_ENABLED no sea 'true' solo registra que está deshabilitado.
+Con o sin encolar, en cada ciclo vigila el latido del worker remoto: si pasan más de
+WORKER_SILENCE_MINUTES sin consultas y hay trabajos listos, avisa por Telegram a TECH_OPS y ADMIN.
 
 Uso:
     uv run python run_scheduler.py
@@ -14,6 +16,7 @@ Variables de entorno relevantes (ver .env.example):
     SCHEDULER_ENABLED   'true' para encolar; cualquier otro valor lo deja apagado (por defecto false).
     SCHEDULER_WEEKDAY   Día de la corrida semanal, 0 = lunes ... 6 = domingo (por defecto 6).
     SCHEDULER_HOUR      Hora de Bogotá de la corrida, 0 a 23 (por defecto 3).
+    WORKER_SILENCE_MINUTES  Minutos sin latido del worker antes de avisar (por defecto 15).
     DATABASE_URL        Opcional; por defecto sqlite:///./kontable.db.
 """
 
@@ -29,6 +32,7 @@ load_dotenv()
 from dian_automation.config import config
 from dian_automation.db.database import SessionLocal
 from dian_automation.queue.scheduler import ExtractionScheduler
+from dian_automation.queue.worker_heartbeat import WorkerSilenceMonitor
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,10 +44,12 @@ logger = logging.getLogger("scheduler_runner")
 
 def main():
     try:
+        monitor = WorkerSilenceMonitor(SessionLocal, silence_minutes=config.worker_silence_minutes)
         scheduler = ExtractionScheduler(
             db_session_factory=SessionLocal,
             weekday=config.scheduler_weekday,
             hour=config.scheduler_hour,
+            worker_watch=monitor.check,
         )
     except ValueError as e:
         logger.error(f"Configuración inválida del programador: {e}")

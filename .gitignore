@@ -32,6 +32,8 @@ venv.bak/
 
 # Downloads & sensitive fiscal data
 downloads/*
+# ZIP que el worker remoto no pudo subir (datos fiscales de clientes): nunca al repositorio
+pending_uploads/
 !downloads/.gitkeep
 
 # Bases de datos locales (pueden contener datos fiscales reales de pruebas)

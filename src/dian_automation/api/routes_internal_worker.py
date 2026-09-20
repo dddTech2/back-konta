@@ -23,6 +23,7 @@ from dian_automation.db.database import get_db, SessionLocal
 from dian_automation.db.models import DIANExtractionJob, Business
 from dian_automation.queue.exceptions import STALE_PROCESSING_CODE
 from dian_automation.queue.manager import ExtractionQueueManager
+from dian_automation.queue.worker_heartbeat import normalize_worker_name, record_heartbeat
 from dian_automation.extraction.xlsx_parser import DIANXLSXParser, DIANParseError
 from dian_automation.telegram.tech_ops_bot import TechOpsAlertBot
 from dian_automation.telegram.admin_alerts import create_failure_alert_callback
@@ -58,10 +59,17 @@ def _notify_failure(job: DIANExtractionJob, error_code: str, error_detail: str, 
 
 
 @router.get("/next", dependencies=[Depends(require_worker_token)])
-def get_next_job(db: Session = Depends(get_db)):
+def get_next_job(db: Session = Depends(get_db), x_worker_name: Optional[str] = Header(default=None)):
     """Toma y reserva (PROCESSING) el siguiente job pendiente, con todo lo que el
     worker remoto necesita para llamar a dian_flow.run_flow() sin tocar la base de datos.
-    Antes libera los trabajos atascados en PROCESSING para que la cola vuelva a avanzar."""
+    Registra el latido del worker (X-Worker-Name) y libera los trabajos atascados en PROCESSING
+    para que la cola vuelva a avanzar."""
+    try:
+        record_heartbeat(db, normalize_worker_name(x_worker_name))
+    except Exception:
+        db.rollback()
+        logger.exception("No se pudo guardar el latido del worker; se sigue entregando trabajos.")
+
     for stale_job in ExtractionQueueManager.recover_stale_jobs(db=db):
         logger.warning(f"Job {stale_job.id} atascado en PROCESSING: reprogramado como fallo lento.")
         _notify_failure(stale_job, STALE_PROCESSING_CODE, stale_job.error_detail, None)
@@ -97,6 +105,11 @@ async def complete_job(job_id: str, file: UploadFile = File(...), db: Session = 
     job = db.query(DIANExtractionJob).filter(DIANExtractionJob.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' no encontrado")
+
+    if job.status == "SUCCESS":
+        # Subida repetida (ej. un ZIP que quedó en pending_uploads/ del worker): no se ingiere de nuevo ni se re-espacia la cola
+        logger.info(f"ZIP repetido ignorado: el job {job_id} ya está SUCCESS.")
+        return {"status": "SUCCESS", "job_id": job_id, "ignored": True}
 
     download_dir = os.getenv("DOWNLOAD_DIR", "./downloads")
     os.makedirs(download_dir, exist_ok=True)

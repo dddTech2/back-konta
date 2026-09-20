@@ -56,7 +56,13 @@ def _previous_month(year: int, month: int) -> tuple:
 class ExtractionScheduler:
     """Decide y encola las extracciones semanales y de cierre de mes."""
 
-    def __init__(self, db_session_factory: Callable[[], Session], weekday: int = 6, hour: int = 3):
+    def __init__(
+        self,
+        db_session_factory: Callable[[], Session],
+        weekday: int = 6,
+        hour: int = 3,
+        worker_watch: Optional[Callable[[Optional[datetime]], Any]] = None,
+    ):
         if not 0 <= weekday <= 6:
             raise ValueError(f"SCHEDULER_WEEKDAY debe estar entre 0 (lunes) y 6 (domingo); recibido {weekday}")
         if not 0 <= hour <= 23:
@@ -64,6 +70,8 @@ class ExtractionScheduler:
         self.db_session_factory = db_session_factory
         self.weekday = weekday
         self.hour = hour
+        # Vigilancia del silencio del worker (Story 1.8): corre en cada ciclo, esté o no habilitada la programación
+        self.worker_watch = worker_watch
 
     def describe(self) -> str:
         return f"{WEEKDAY_NAMES[self.weekday]} a las {self.hour:02d}:00 (America/Bogota)"
@@ -121,15 +129,25 @@ class ExtractionScheduler:
         now_func: Optional[Callable[[], datetime]] = None,
         max_iterations: Optional[int] = None,
     ) -> None:
-        """Bucle del proceso. Deshabilitado sigue vivo (para que Docker no lo reinicie) pero no encola."""
+        """Bucle del proceso. Deshabilitado sigue vivo (para que Docker no lo reinicie) pero no encola.
+
+        La vigilancia del worker (si hay) corre en cada ciclo, incluso deshabilitado.
+        """
         if enabled:
             logger.info(f"Programador habilitado: corrida semanal el {self.describe()}; cierre de mes los días 1 a 5.")
         else:
             logger.info("Programador deshabilitado (SCHEDULER_ENABLED distinto de 'true'): no se encolará nada.")
+        if self.worker_watch is not None:
+            logger.info("Vigilancia del worker activa (avisa si deja de responder con trabajos listos).")
 
         iterations = 0
         while max_iterations is None or iterations < max_iterations:
             iterations += 1
+            if self.worker_watch is not None:
+                try:
+                    self.worker_watch(now_func() if now_func else None)
+                except Exception:
+                    logger.exception("Error en la vigilancia del worker; se reintenta en el siguiente ciclo.")
             if enabled:
                 try:
                     result = self.tick(now_func() if now_func else None)

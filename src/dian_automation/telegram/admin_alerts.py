@@ -87,26 +87,35 @@ def get_admin_chat_ids(db: Session) -> List[int]:
     return [u.telegram_chat_id for u in users if u.telegram_chat_id]
 
 
-def notify_admins(db: Session, text: str, bot: Optional[TechOpsAlertBot] = None) -> Dict[str, Any]:
-    """Envía `text` a cada ADMIN activo con chat. Nunca lanza: un fallo de Telegram no debe deshacer nada."""
-    chat_ids = get_admin_chat_ids(db)
+def _send_text(chat_ids: List[int], text: str, sender: TechOpsAlertBot, audience: str, who: str) -> Dict[str, Any]:
+    """Envía `text` en texto plano a cada chat. Nunca lanza: un fallo de Telegram no debe deshacer nada."""
     if not chat_ids:
-        logger.warning("No hay destinatarios ADMIN con telegram_chat_id configurado.")
+        logger.warning(f"No hay destinatarios {audience} con telegram_chat_id configurado.")
         return {"sent": False, "recipients_count": 0, "delivered_count": 0, "reason": "NO_RECIPIENTS"}
 
-    sender = bot or TechOpsAlertBot()
     delivered = 0
     for chat_id in chat_ids:
         try:
             result = sender.http_dispatcher("sendMessage", {"chat_id": chat_id, "text": text}, None)
         except Exception as e:
-            logger.error(f"Error avisando a la administradora (chat {chat_id}): {e}")
+            logger.error(f"Error avisando a {who} (chat {chat_id}): {e}")
             continue
         if result.get("ok"):
             delivered += 1
         else:
-            logger.warning(f"Telegram no entregó el aviso a la administradora (chat {chat_id}): {result}")
+            logger.warning(f"Telegram no entregó el aviso a {who} (chat {chat_id}): {result}")
     return {"sent": delivered > 0, "recipients_count": len(chat_ids), "delivered_count": delivered}
+
+
+def notify_admins(db: Session, text: str, bot: Optional[TechOpsAlertBot] = None) -> Dict[str, Any]:
+    """Envía `text` a cada ADMIN activo con chat."""
+    return _send_text(get_admin_chat_ids(db), text, bot or TechOpsAlertBot(), "ADMIN", "la administradora")
+
+
+def notify_tech_ops(db: Session, text: str, bot: Optional[TechOpsAlertBot] = None) -> Dict[str, Any]:
+    """Envía `text` (sin botones ni Markdown) a cada TECH_OPS activo con chat."""
+    sender = bot or TechOpsAlertBot()
+    return _send_text(sender.get_tech_ops_chat_ids(db), text, sender, "TECH_OPS", "Soporte TI")
 
 
 def notify_slow_failure(
