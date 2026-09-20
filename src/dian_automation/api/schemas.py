@@ -1,7 +1,9 @@
 """Esquemas Pydantic para los endpoints REST de Kontable."""
 
+from datetime import datetime
+from decimal import Decimal
 from typing import List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class BusinessInfo(BaseModel):
@@ -162,3 +164,21 @@ class MeResponse(BaseModel):
     subscription_status: Optional[str] = None
     has_warning_banner: bool = False
     redirect_url: Optional[str] = None
+
+
+class SaleCreateRequest(BaseModel):
+    """Venta a registrar desde la web. Solo tipa los campos: la regla del total (> 0, 2 decimales) y el
+    largo de la descripción son del servicio compartido `core/sales_service.py`."""
+    total_amount: Decimal
+    description: Optional[str] = None
+
+
+class SaleResponse(BaseModel):
+    """Venta registrada; `total_amount` viaja como Decimal (cadena en JSON), nunca como float."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    total_amount: Decimal
+    description: Optional[str] = None
+    recorded_via: str
+    created_at: datetime

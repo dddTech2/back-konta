@@ -24,6 +24,17 @@ MAX_DESCRIPTION_LENGTH = 500
 _TOTAL_PATTERN = re.compile(r"-?[0-9]{1,12}(?:\.[0-9]{1,2})?")
 
 
+_INVALID_TOTAL_MESSAGE = (
+    "El total debe ser un número con punto decimal opcional (máximo 2 decimales), "
+    "sin símbolos ni separadores de miles."
+)
+
+# `adjusted()` de un total válido: de 0.01 (-2) a 999999999999.99 (11). Fuera de ese rango se rechaza
+# antes de `format(..., "f")`, que con exponentes enormes ("1E+99999999") reserva cientos de MB.
+_MIN_ADJUSTED = -2
+_MAX_ADJUSTED = 11
+
+
 class SalesError(Exception):
     """Error tipado del registro de ventas; `code` permite a cada canal elegir su mensaje."""
 
@@ -41,6 +52,8 @@ class SalesError(Exception):
 def parse_total(raw_total: Union[str, int, Decimal, None]) -> Decimal:
     """Valida el total crudo y lo devuelve como Decimal > 0 con a lo sumo 2 decimales."""
     if isinstance(raw_total, Decimal):
+        if not raw_total.is_finite() or not _MIN_ADJUSTED <= raw_total.adjusted() <= _MAX_ADJUSTED:
+            raise SalesError(SalesError.INVALID_TOTAL, _INVALID_TOTAL_MESSAGE)
         text = format(raw_total, "f")
     elif isinstance(raw_total, (str, int)) and not isinstance(raw_total, bool):
         text = str(raw_total).strip()
@@ -48,11 +61,7 @@ def parse_total(raw_total: Union[str, int, Decimal, None]) -> Decimal:
         text = ""
 
     if not _TOTAL_PATTERN.fullmatch(text):
-        raise SalesError(
-            SalesError.INVALID_TOTAL,
-            "El total debe ser un número con punto decimal opcional (máximo 2 decimales), "
-            "sin símbolos ni separadores de miles.",
-        )
+        raise SalesError(SalesError.INVALID_TOTAL, _INVALID_TOTAL_MESSAGE)
 
     total = Decimal(text)
     if total <= 0:

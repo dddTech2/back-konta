@@ -102,6 +102,23 @@ def test_invalid_total_format_is_rejected(db, raw):
     assert _count(db) == 0
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [Decimal("1E+99999999"), Decimal("1E-99999999"), Decimal("-1E+99999999"), Decimal("0E+99999999"),
+     Decimal("NaN"), Decimal("Infinity"), Decimal("1E+12"), Decimal("0.001")],
+)
+def test_decimal_with_extreme_exponent_or_non_finite_is_rejected_without_formatting(raw):
+    with pytest.raises(SalesError) as exc:
+        sales_service.parse_total(raw)
+
+    assert exc.value.code == SalesError.INVALID_TOTAL
+
+
+def test_decimal_range_edges_are_accepted():
+    assert sales_service.parse_total(Decimal("0.01")) == Decimal("0.01")
+    assert sales_service.parse_total(Decimal("999999999999.99")) == Decimal("999999999999.99")
+
+
 def test_accepted_total_formats(db):
     assert sales_service.parse_total("150000") == Decimal("150000")
     assert sales_service.parse_total(" 99.5 ") == Decimal("99.5")

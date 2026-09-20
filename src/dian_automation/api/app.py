@@ -13,6 +13,7 @@ from dian_automation.api.routes_auth import router as auth_router
 from dian_automation.api.routes_dashboard import router as dashboard_router
 from dian_automation.api.routes_iva import router as iva_router
 from dian_automation.api.routes_invoices import router as invoices_router
+from dian_automation.api.routes_sales import router as sales_router
 from dian_automation.api.routes_config import router as config_router
 from dian_automation.api.routes_internal_worker import router as internal_worker_router
 
@@ -53,6 +54,7 @@ app.include_router(auth_router)
 app.include_router(dashboard_router)
 app.include_router(iva_router)
 app.include_router(invoices_router)
+app.include_router(sales_router)
 app.include_router(config_router)
 app.include_router(internal_worker_router)
 
