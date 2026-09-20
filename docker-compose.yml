@@ -4,7 +4,10 @@
 #
 # Uso:
 #   cp .env.example .env   # y completar TELEGRAM_BOT_TOKEN, ADMIN_TELEGRAM_CHAT_ID, etc.
-#   docker compose up -d --build
+#   (cd ../ProyectoDianFront && npm ci && npm run build)   # la API sirve ../ProyectoDianFront/dist
+#   docker compose up -d --build   # el servicio `migrate` crea/actualiza las tablas antes de arrancar el resto
+#   docker compose exec api python -m dian_automation.core.calendar_loader data/calendario_dian_2026.csv   # una vez
+# Worker local (solo pruebas, ver abajo): docker compose --profile local-worker up -d
 #   docker compose logs -f bot      # confirmar "Conectado con éxito como: @tu_bot"
 
 services:
@@ -17,6 +20,18 @@ services:
       - redis_data:/data
     restart: unless-stopped
 
+  # Aplica las migraciones de Alembic (crea las tablas en un volumen nuevo y actualiza uno existente) y termina.
+  # api, bot y scheduler esperan a que acabe bien; con un solo migrador no compiten por el archivo SQLite.
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: ["migrate"]
+    env_file: .env
+    volumes:
+      - kontable_data:/data
+    restart: "no"
+
   api:
     build:
       context: .
@@ -25,13 +40,17 @@ services:
     env_file: .env
     environment:
       FRONTEND_DIR: /frontend/dist
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0   # dentro de la red de compose Redis es "redis", no localhost
     ports:
       - "8020:8000"
     volumes:
       - kontable_data:/data
       - ../ProyectoDianFront:/frontend:ro
     depends_on:
-      - redis
+      redis:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   bot:
@@ -40,10 +59,15 @@ services:
       dockerfile: docker/Dockerfile
     command: ["bot"]
     env_file: .env
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0   # dentro de la red de compose Redis es "redis", no localhost
     volumes:
       - kontable_data:/data
     depends_on:
-      - redis
+      redis:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   # Programador semanal de descargas (Story 1.7): solo encola, nunca abre la DIAN. Nace apagado:
@@ -56,22 +80,33 @@ services:
       dockerfile: docker/Dockerfile
     command: ["scheduler"]
     env_file: .env
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0   # dentro de la red de compose Redis es "redis", no localhost
     volumes:
       - kontable_data:/data
     depends_on:
-      - redis
+      redis:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
-  # Worker LOCAL: solo útil para pruebas desde una máquina/IP que la DIAN no bloquee.
-  # En el despliegue real, el worker corre aparte con `python run_worker_remote.py`
-  # desde una red residencial -- ver docs/DEPLOYMENT.md. Puedes comentar este servicio
-  # si vas a usar exclusivamente el worker remoto.
+  # Worker LOCAL: solo útil para pruebas desde una máquina/IP que la DIAN no bloquee. No arranca con
+  # `docker compose up`: hay que pedirlo con `--profile local-worker`. En el VPS debe quedar apagado, porque
+  # tomaría trabajos de la cola desde la IP bloqueada y los haría fallar. En el despliegue real, el worker
+  # corre aparte desde una red residencial (`run_worker_remote.py` o kontable-worker.exe): docs/DEPLOYMENT.md.
   worker:
+    profiles: ["local-worker"]
     build:
       context: .
       dockerfile: docker/Dockerfile
     command: ["worker"]
     env_file: .env
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0   # dentro de la red de compose Redis es "redis", no localhost
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     volumes:
       - kontable_data:/data
       - browser_profile:/app/.browser_profile

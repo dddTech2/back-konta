@@ -140,3 +140,15 @@ El motor de calendario (`GET /api/calendar`, `/vencimientos` del bot, el pill de
 1. Antes del 1 de enero, consigue el calendario oficial del año siguiente y arma `data/calendario_dian_AAAA.csv` con el mismo formato que `data/calendario_dian_2026.csv`.
 2. Cárgalo en el servidor con `uv run python -m dian_automation.core.calendar_loader data/calendario_dian_AAAA.csv`: valida el archivo completo y, si algo falla, lo rechaza entero y deja la base intacta.
 3. Verifica con `GET /api/calendar/<business_id>` de un negocio `DIAN` que responde 200.
+
+## 9. Levantar el servidor (Docker)
+
+En el VPS, con `ProyectoDianFront` como carpeta hermana de `ProyectoDianBack`:
+
+1. `cp .env.example .env` y completa al menos `TELEGRAM_BOT_TOKEN`, `ADMIN_BOOTSTRAP_CHAT_IDS`, `JWT_SECRET`, `INTERNAL_WORKER_TOKEN` y `REDIS_PASSWORD`.
+2. Compila la SPA, que la API sirve desde `../ProyectoDianFront/dist`: `cd ../ProyectoDianFront && npm ci && npm run build`.
+3. `docker compose up -d --build`. El servicio `migrate` aplica `alembic upgrade head` (crea las tablas en un volumen nuevo o actualiza uno existente) y termina; `api`, `bot` y `scheduler` arrancan cuando acaba bien. Si falla, `docker compose logs migrate` dice por qué y el resto no arranca.
+4. Carga el calendario una sola vez: `docker compose exec api python -m dian_automation.core.calendar_loader data/calendario_dian_2026.csv`. Sin él, la API responde 409 en `/api/calendar` y el bot avisa que no está cargado (sección 8 para el año siguiente).
+5. Deja `SCHEDULER_ENABLED=false` hasta que el worker remoto arranque solo.
+
+Dentro de la red de compose, Redis es el host `redis`: `docker-compose.yml` fija `REDIS_URL` de cada contenedor y no usa el del `.env`. El servicio `worker` (Chrome dentro del contenedor) no arranca por defecto; es solo para pruebas desde una IP que la DIAN no bloquee: `docker compose --profile local-worker up -d`. En el VPS debe quedar apagado.

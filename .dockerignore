@@ -15,3 +15,13 @@ _bmad/
 _bmad-output/
 graphify-out/
 docs/
+
+# Datos, secretos y artefactos que no deben entrar a la imagen
+*.db
+.env.*
+!.env.example
+Nueva carpeta/
+dist/
+build/
+pending_uploads/
+worker.log

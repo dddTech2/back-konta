@@ -10,6 +10,10 @@ export ARTIFACTS_DIR="${ARTIFACTS_DIR:-/data/artifacts}"
 mkdir -p "$DOWNLOAD_DIR" "$ARTIFACTS_DIR"
 
 case "$1" in
+  migrate)
+    echo "[entrypoint] Aplicando migraciones (alembic upgrade head) sobre $DATABASE_URL..."
+    exec alembic upgrade head
+    ;;
   api)
     echo "[entrypoint] Iniciando API FastAPI (uvicorn) en 0.0.0.0:8000..."
     exec uvicorn dian_automation.api.app:app --host 0.0.0.0 --port 8000
