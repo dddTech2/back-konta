@@ -65,6 +65,16 @@ powershell -ExecutionPolicy Bypass -File scripts\install_worker_task.ps1 -Uninst
 
 Si el equipo es dedicado, activa el inicio de sesión automático (`netplwiz`) y desactiva la suspensión, para que el worker vuelva solo tras un corte de luz. No es un servicio de Windows a propósito: un servicio no tiene sesión de escritorio y Chrome no podría abrir ventana. Pasar a servicio exige `HEADLESS=True` y comprobar que Turnstile lo acepta.
 
+### Windows sin Python (ejecutable)
+
+`kontable_worker.spec` empaqueta el worker con PyInstaller para un equipo sin Python ni `uv`. En el equipo de desarrollo, desde la carpeta del proyecto:
+
+```powershell
+uv run --with pyinstaller pyinstaller kontable_worker.spec --noconfirm
+```
+
+Deja la carpeta `dist\kontable-worker\` (unos 130 MB), que se copia entera al equipo del worker. Ahí se coloca el `.env` (sección 2) y se lanza `kontable-worker.exe` con esa carpeta como directorio de trabajo: `.env`, `downloads\`, `.browser_profile\` y `pending_uploads\` quedan junto al ejecutable. Chrome debe estar instalado en el equipo; no se empaqueta. `scripts\install_worker_task.ps1` sigue lanzando el worker con `uv`; para arrancar el `.exe` al iniciar sesión hay que crear la tarea aparte.
+
 ### Linux / Raspberry Pi (`systemd`)
 
 Ejemplo de `/etc/systemd/system/kontable-worker.service` (ajusta usuario y rutas). Con escritorio, agrega `Environment=DISPLAY=:0`; sin escritorio, ejecuta el comando con `xvfb-run -a`.

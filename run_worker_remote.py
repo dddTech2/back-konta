@@ -55,7 +55,9 @@ API_BASE = os.getenv("KONTABLE_API_URL", "http://127.0.0.1:8000").rstrip("/")
 WORKER_TOKEN = os.getenv("INTERNAL_WORKER_TOKEN", "")
 WORKER_NAME = (os.getenv("WORKER_NAME") or "remote").strip() or "remote"
 POLL_INTERVAL_SECONDS = 10
-PENDING_UPLOADS_DIR = Path(os.getenv("PENDING_UPLOADS_DIR") or Path(__file__).resolve().parent / "pending_uploads")
+# Empaquetado con PyInstaller, __file__ apunta a una carpeta interna del programa; los ZIP pendientes van junto al .exe
+_BASE_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+PENDING_UPLOADS_DIR = Path(os.getenv("PENDING_UPLOADS_DIR") or _BASE_DIR / "pending_uploads")
 
 # Subida del ZIP: espera 5 s que se duplica hasta 5 min, durante un máximo de 20 min
 UPLOAD_TIMEOUT_SECONDS = 60.0
