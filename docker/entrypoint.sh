@@ -1,5 +1,5 @@
 #!/bin/sh
-# Punto de entrada compartido por los 3 servicios. El nombre del proceso llega como
+# Punto de entrada compartido por los servicios. El nombre del proceso llega como
 # primer argumento (ver `command:` de cada servicio en docker-compose.yml).
 set -e
 
@@ -17,6 +17,10 @@ case "$1" in
   bot)
     echo "[entrypoint] Iniciando bot de Telegram (long polling)..."
     exec python run_telegram_bot.py
+    ;;
+  scheduler)
+    echo "[entrypoint] Iniciando programador semanal de descargas (SCHEDULER_ENABLED=${SCHEDULER_ENABLED:-false})..."
+    exec python run_scheduler.py
     ;;
   worker)
     echo "[entrypoint] Iniciando Xvfb en :99 (pantalla virtual para Chrome no-headless)..."

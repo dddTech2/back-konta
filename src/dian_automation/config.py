@@ -48,6 +48,12 @@ class AppConfig:
     )
     download_dir: str = os.getenv("DOWNLOAD_DIR", "./downloads")
 
+    # Programador semanal de descargas (Story 1.7). Nace apagado: solo 'true' lo activa.
+    scheduler_enabled: bool = os.getenv("SCHEDULER_ENABLED", "false").strip().lower() == "true"
+    # 0 = lunes ... 6 = domingo (numeración de Python); hora de America/Bogota
+    scheduler_weekday: int = int(os.getenv("SCHEDULER_WEEKDAY") or "6")
+    scheduler_hour: int = int(os.getenv("SCHEDULER_HOUR") or "3")
+
     # Frontend web/móvil (para servir el prototipo y enlazarlo desde Telegram)
     frontend_dir: str = os.getenv("FRONTEND_DIR", "")
     kontable_web_url: str = os.getenv("KONTABLE_WEB_URL", "http://127.0.0.1:8000/app/")

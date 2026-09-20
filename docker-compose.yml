@@ -1,4 +1,4 @@
-# Despliegue de prueba en un solo servidor: 3 contenedores (api, bot, worker) + 2 volumenes
+# Despliegue de prueba en un solo servidor: 4 contenedores (api, bot, scheduler, worker) + 2 volumenes
 # compartidos (datos y perfil persistente de Chrome). Requiere que, en el servidor, la carpeta
 # ProyectoDianFront exista como hermana de esta (../ProyectoDianFront), igual que en local.
 #
@@ -39,6 +39,21 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     command: ["bot"]
+    env_file: .env
+    volumes:
+      - kontable_data:/data
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # Programador semanal de descargas (Story 1.7): solo encola, nunca abre la DIAN. Nace apagado:
+  # no encola nada hasta que SCHEDULER_ENABLED=true en .env (actívalo cuando el worker remoto
+  # arranque solo, Story 1.8). Corrida por defecto: domingo 03:00 (America/Bogota).
+  scheduler:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: ["scheduler"]
     env_file: .env
     volumes:
       - kontable_data:/data
