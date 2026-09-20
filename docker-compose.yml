@@ -24,7 +24,7 @@ services:
     command: ["api"]
     env_file: .env
     environment:
-      FRONTEND_DIR: /frontend
+      FRONTEND_DIR: /frontend/dist
     ports:
       - "8020:8000"
     volumes:

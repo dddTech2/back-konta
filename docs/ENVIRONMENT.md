@@ -68,6 +68,24 @@ Requisitos de entorno: `JWT_SECRET` (obligatorio; usa al menos 32 caracteres ale
 
 ---
 
+## Frontend web (SPA React + Vite)
+
+La SPA vive en `../ProyectoDianFront` (React 18 + Vite 5 + TypeScript) y se compila a estático; en producción no hay Node, la API sirve `dist/` en `/app`.
+
+```bash
+cd ../ProyectoDianFront
+npm ci && npm run build   # genera dist/ (no se commitea)
+docker compose up -d      # FRONTEND_DIR=/frontend/dist ya está fijado en docker-compose.yml
+```
+
+- `FRONTEND_DIR`: carpeta que la API monta en `/app`. Fuera de Docker apunta a `../ProyectoDianFront/dist` (valor de `.env.example`); no lo dejes vacío, porque entonces la API sirve la carpeta del repo sin compilar (el `index.html` de Vite, que no funciona sin build). Si `dist/` no existe, la API arranca pero omite el mount `/app` sin avisar. El prototipo `kontable-prototipo_1.html` sigue en el repo como referencia, pero `dist/` no lo incluye y ya no obtiene datos (las rutas exigen JWT).
+- `KONTABLE_WEB_URL`: URL pública de la SPA (`.../app/`) que el bot manda en `/dashboard`. La SPA ignora `?nit=`; el acceso es por OTP. Los servidores que ya tenían la URL del prototipo (`.../app/kontable-prototipo_1.html`) deben actualizar esta variable: el build no incluye ese archivo y el enlace antiguo daría 404.
+- Desarrollo: `npm run dev` en `ProyectoDianFront` sirve la SPA en `http://localhost:5173/app/` y redirige `/api` a `http://127.0.0.1:8000` (o a `VITE_DEV_API`).
+- Variables de la SPA (se fijan al compilar): `VITE_API_BASE` (por defecto vacío = mismo origen) y `VITE_KATERINN_WHATSAPP` (solo dígitos con indicativo; por defecto el número del prototipo, `573001234567`).
+- El enrutado es por hash (`/app/#/login`), así que el servidor de estáticos no necesita fallback de SPA.
+
+---
+
 ## Recomendaciones de Seguridad
 1. Nunca agregues claves de producción ni contraseñas a repositorios públicos.
 2. Mantén siempre actualizado el archivo `.env.example` cuando agregues nuevas variables al código.

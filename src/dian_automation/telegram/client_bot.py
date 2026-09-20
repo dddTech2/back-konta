@@ -310,7 +310,7 @@ class ClientTelegramBot:
         message = (
             f"📱 *Tu Dashboard Kontable — {business.commercial_name}*\n\n"
             f"{link}\n\n"
-            "_Se abre directamente con tus cifras reales de facturación e IVA, sin necesidad de iniciar sesión._"
+            "_Inicia sesión con tu celular o el NIT de tu negocio: te enviaremos un código por este chat._"
         )
         return {"success": True, "link": link, "message": message}
 
