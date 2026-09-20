@@ -252,6 +252,7 @@ def get_me(user: User, db: Session) -> Dict[str, Any]:
     access = SubscriptionLockoutService.verify_user_web_access(user.id, db)
     return {
         "business_id": business.id if business else None,
+        "income_source": business.income_source if business else None,
         "is_provisioned": business is not None,
         "is_blocked": not access["allowed"],
         "subscription_status": subscription.status if subscription else None,

@@ -8,12 +8,22 @@ y generar automáticamente el enlace de invitación Deep Linking (/start <token>
 import re
 import logging
 import calendar
+import unicodedata
 from decimal import Decimal
 from datetime import datetime, date, timedelta
 from typing import Optional, Dict, Any, Tuple, List, Callable
 from sqlalchemy.orm import Session
 
-from dian_automation.db.models import User, Business, Subscription, PaymentRecord
+from dian_automation.db.models import (
+    INCOME_SOURCE_DIAN,
+    INCOME_SOURCE_MANUAL_SALES,
+    IVA_PERIODICITY_BIMESTRAL,
+    IVA_PERIODICITY_CUATRIMESTRAL,
+    User,
+    Business,
+    Subscription,
+    PaymentRecord,
+)
 from dian_automation.subscriptions.service import add_months_to_date
 from dian_automation.telegram.deep_linking import TelegramDeepLinkingService
 
@@ -91,8 +101,37 @@ class AdminTelegramBot:
         "🏢 *Empresa (Representante Legal):*\n"
         "`/crear_cliente EMPRESA | Nombre Contacto | Celular | Nombre Empresa | NIT Empresa | Cédula Representante | Plan`\n"
         "_Ejemplo:_ `/crear_cliente EMPRESA | Andrea Torres | 3001234567 | Ferretería El Roble SAS | 901008579 | 10000002 | TRIMESTRAL`\n\n"
-        "_Planes disponibles: TRIMESTRAL, SEMESTRAL, ANUAL_"
+        "_Planes disponibles: TRIMESTRAL, SEMESTRAL, ANUAL_\n"
+        "_Opcional, al final de cualquiera de las dos plantillas:_ `| TIPO` con `FACTURADOR` (por defecto, factura "
+        "electrónicamente) o `VENTAS_MANUALES` (registra sus ventas a mano)."
     )
+
+    # Tipo de negocio que la administradora escribe en los comandos -> valor guardado en `businesses.income_source`.
+    INCOME_SOURCE_BY_TIPO: Dict[str, str] = {
+        "FACTURADOR": INCOME_SOURCE_DIAN,
+        "VENTAS_MANUALES": INCOME_SOURCE_MANUAL_SALES,
+    }
+    INCOME_SOURCE_LABELS: Dict[str, str] = {
+        INCOME_SOURCE_DIAN: "🧾 Facturador electrónico (cifras desde la DIAN)",
+        INCOME_SOURCE_MANUAL_SALES: "✍️ Ventas manuales (registra sus ventas a mano)",
+    }
+
+    @staticmethod
+    def _plain_upper(raw: str) -> str:
+        """Mayúsculas sin acentos (RETENCIÓN, SÍ), también cuando el acento llega como marca combinada."""
+        decomposed = unicodedata.normalize("NFKD", raw.strip())
+        return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).upper()
+
+    @classmethod
+    def normalize_nit(cls, raw: str) -> Optional[str]:
+        """NIT solo con dígitos; admite `-DV` final (901008579-7). None si tiene menos de 6 dígitos."""
+        raw = raw.strip()
+        if "-" in raw:
+            possible_dv = raw.rsplit("-", 1)[-1].strip()
+            if len(possible_dv) == 1 and possible_dv.isdigit():
+                raw = raw.rsplit("-", 1)[0]
+        nit = "".join(filter(str.isdigit, raw))
+        return nit if len(nit) >= 6 else None
 
     @classmethod
     def parse_crear_cliente_command(cls, text: str) -> Tuple[bool, Optional[Dict[str, str]], Optional[str]]:
@@ -119,6 +158,10 @@ class AdminTelegramBot:
                 f"⚠️ Tipo de cliente '{tipo_raw}' no reconocido. Debe ser `PERSONA` o `EMPRESA`.\n\n"
                 + cls.USAGE_MESSAGE,
             )
+
+        max_parts = 6 if tipo_clean == "PERSONA" else 8  # el TIPO de negocio (opcional) va al final
+        if len(parts) > max_parts:
+            return False, None, cls.USAGE_MESSAGE
 
         if tipo_clean == "PERSONA":
             if len(parts) < 5:
@@ -177,6 +220,19 @@ class AdminTelegramBot:
             planes_validos = ", ".join(cls.PLANS_CONFIG.keys())
             return False, None, f"⚠️ Plan '{plan_raw}' no reconocido. Opciones válidas: {planes_validos}"
 
+        income_source = None  # sin TIPO: un negocio nuevo queda DIAN y uno existente conserva el suyo
+        negocio_pos = 5 if tipo_clean == "PERSONA" else 7
+        negocio_raw = parts[negocio_pos] if len(parts) > negocio_pos else ""
+        if negocio_raw:
+            income_source = cls.INCOME_SOURCE_BY_TIPO.get(negocio_raw.upper())
+            if income_source is None:
+                return (
+                    False,
+                    None,
+                    f"⚠️ Tipo de negocio '{negocio_raw}' no reconocido. Debe ser `FACTURADOR` o `VENTAS_MANUALES`.\n\n"
+                    + cls.USAGE_MESSAGE,
+                )
+
         return True, {
             "tipo_cliente": tipo_clean,
             "full_name": name,
@@ -185,6 +241,7 @@ class AdminTelegramBot:
             "nit": nit_clean,
             "legal_rep_doc": rep_doc_clean,
             "plan": plan_clean,
+            "income_source": income_source,
         }, None
 
     @classmethod
@@ -225,6 +282,7 @@ class AdminTelegramBot:
         business_name = data["business_name"] if tipo_cliente == "EMPRESA" else full_name
         plan_name = data["plan"]
         plan_info = cls.PLANS_CONFIG[plan_name]
+        income_source = data["income_source"]  # None = no indicado: nuevo -> DIAN, existente -> conserva el suyo
 
         # 3. Calcular dígito de verificación
         dv = cls.calculate_dian_dv(nit_clean)
@@ -254,6 +312,7 @@ class AdminTelegramBot:
                         dv=dv,
                         taxpayer_type=taxpayer_type,
                         legal_rep_doc=legal_rep_doc,
+                        income_source=income_source or INCOME_SOURCE_DIAN,
                         is_active=True,
                     )
                     db.add(business)
@@ -265,6 +324,8 @@ class AdminTelegramBot:
                     business.dv = dv
                     business.taxpayer_type = taxpayer_type
                     business.legal_rep_doc = legal_rep_doc
+                    if income_source:
+                        business.income_source = income_source
             else:
                 # Generar email unívoco garantizado
                 email_prefix = re.sub(r"[^a-zA-Z0-9]", ".", full_name.lower().strip())
@@ -294,6 +355,8 @@ class AdminTelegramBot:
                     business.dv = dv
                     business.taxpayer_type = taxpayer_type
                     business.legal_rep_doc = legal_rep_doc
+                    if income_source:
+                        business.income_source = income_source
                 else:
                     business = Business(
                         client_id=user.id,
@@ -303,6 +366,7 @@ class AdminTelegramBot:
                         dv=dv,
                         taxpayer_type=taxpayer_type,
                         legal_rep_doc=legal_rep_doc,
+                        income_source=income_source or INCOME_SOURCE_DIAN,
                         is_active=True,
                     )
                     db.add(business)
@@ -365,6 +429,7 @@ class AdminTelegramBot:
             response_message = (
                 "✅ *Cliente creado con éxito.*\n\n"
                 f"📂 *Tipo:* {tipo_label}\n"
+                f"🗂️ *Tipo de negocio:* {cls.INCOME_SOURCE_LABELS.get(business.income_source, business.income_source)}\n"
                 f"{cliente_line}"
                 f"📱 *Teléfono:* `{user.phone}`\n"
                 f"{id_lines}"
@@ -388,6 +453,7 @@ class AdminTelegramBot:
                 "tipo_cliente": tipo_cliente,
                 "nit": f"{nit_clean}-{dv}",
                 "legal_rep_doc": legal_rep_doc,
+                "income_source": business.income_source,
                 "plan": plan_name,
                 "final_price": plan_info["final_price"],
                 "deep_link_url": deep_link_url,
@@ -832,6 +898,200 @@ class AdminTelegramBot:
             "message": message,
         }
 
+    CAMBIAR_TIPO_USAGE = (
+        "⚠️ *Uso incorrecto.* Formato requerido:\n"
+        "`/cambiar_tipo NIT | TIPO`\n\n"
+        "_TIPO:_ `FACTURADOR` (factura electrónicamente, cifras desde la DIAN) o `VENTAS_MANUALES` "
+        "(registra sus ventas a mano).\n"
+        "_Ejemplo:_ `/cambiar_tipo 901008579 | VENTAS_MANUALES`"
+    )
+
+    @classmethod
+    def parse_cambiar_tipo_command(cls, text: str) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
+        """Analiza `/cambiar_tipo NIT | FACTURADOR|VENTAS_MANUALES`."""
+        match = re.match(r"^/cambiar_tipo\b\s*(.*)", text, re.IGNORECASE | re.DOTALL)
+        if not match:
+            return False, None, "Comando no reconocido."
+
+        parts = [p.strip() for p in match.group(1).strip().split("|")]
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            return False, None, cls.CAMBIAR_TIPO_USAGE
+
+        nit = cls.normalize_nit(parts[0])
+        if not nit:
+            return (
+                False,
+                None,
+                f"⚠️ El NIT '{parts[0]}' no es válido (debe tener al menos 6 dígitos numéricos).\n\n"
+                + cls.CAMBIAR_TIPO_USAGE,
+            )
+
+        income_source = cls.INCOME_SOURCE_BY_TIPO.get(parts[1].upper())
+        if income_source is None:
+            return False, None, f"⚠️ Tipo '{parts[1]}' no reconocido.\n\n" + cls.CAMBIAR_TIPO_USAGE
+
+        return True, {"nit": nit, "income_source": income_source}, None
+
+    @classmethod
+    def execute_cambiar_tipo(cls, sender_chat_id: int, text: str, db: Session) -> Dict[str, Any]:
+        """Cambia el tipo (DIAN o ventas manuales) de un negocio existente. No depende de la suscripción."""
+        if not cls.is_authorized_admin(sender_chat_id, db):
+            logger.warning(f"Intento de /cambiar_tipo no autorizado desde chat_id={sender_chat_id}")
+            return {
+                "success": False,
+                "reason": "UNAUTHORIZED",
+                "message": "⛔ *Acceso denegado:* Este comando está restringido a la administración comercial autorizada.",
+            }
+
+        is_valid, data, error_msg = cls.parse_cambiar_tipo_command(text)
+        if not is_valid:
+            return {"success": False, "reason": "INVALID_SYNTAX", "message": error_msg}
+
+        biz = db.query(Business).filter(Business.nit == data["nit"]).first()
+        if not biz:
+            return {
+                "success": False,
+                "reason": "BUSINESS_NOT_FOUND",
+                "message": f"❌ No se encontró ningún negocio registrado con NIT `{data['nit']}`.\n\n"
+                + cls.CAMBIAR_TIPO_USAGE,
+            }
+
+        try:
+            biz.income_source = data["income_source"]
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error cambiando tipo del NIT {data['nit']}: {e}", exc_info=True)
+            return {"success": False, "reason": "INTERNAL_ERROR", "message": f"❌ Error interno al cambiar el tipo: {str(e)}"}
+
+        logger.info(f"Admin chat {sender_chat_id} cambió el tipo del NIT {biz.nit} a {biz.income_source}")
+        return {
+            "success": True,
+            "business_id": biz.id,
+            "income_source": biz.income_source,
+            "message": (
+                "✅ *Tipo de negocio actualizado.*\n\n"
+                f"🏢 *Empresa:* {biz.commercial_name} (NIT `{biz.nit}-{biz.dv}`)\n"
+                f"🗂️ *Tipo:* {cls.INCOME_SOURCE_LABELS[biz.income_source]}"
+            ),
+        }
+
+    PERFIL_TRIBUTARIO_USAGE = (
+        "⚠️ *Uso incorrecto.* Formato requerido:\n"
+        "`/perfil_tributario NIT | IVA=BIMESTRAL|CUATRIMESTRAL|NINGUNO | RETENCION=SI|NO`\n\n"
+        "_Ejemplo:_ `/perfil_tributario 901008579 | IVA=CUATRIMESTRAL | RETENCION=SI`\n"
+        "_Solo para negocios facturadores; `NINGUNO` = no es responsable de IVA._"
+    )
+
+    IVA_BY_VALUE: Dict[str, Optional[str]] = {
+        "BIMESTRAL": IVA_PERIODICITY_BIMESTRAL,
+        "CUATRIMESTRAL": IVA_PERIODICITY_CUATRIMESTRAL,
+        "NINGUNO": None,
+    }
+
+    @classmethod
+    def parse_perfil_tributario_command(cls, text: str) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
+        """Analiza `/perfil_tributario NIT | IVA=... | RETENCION=...` (las dos claves, en cualquier orden)."""
+        match = re.match(r"^/perfil_tributario\b\s*(.*)", text, re.IGNORECASE | re.DOTALL)
+        if not match:
+            return False, None, "Comando no reconocido."
+
+        parts = [p.strip() for p in match.group(1).strip().split("|")]
+        if len(parts) != 3 or not parts[0]:
+            return False, None, cls.PERFIL_TRIBUTARIO_USAGE
+
+        nit = cls.normalize_nit(parts[0])
+        if not nit:
+            return (
+                False,
+                None,
+                f"⚠️ El NIT '{parts[0]}' no es válido (debe tener al menos 6 dígitos numéricos).\n\n"
+                + cls.PERFIL_TRIBUTARIO_USAGE,
+            )
+
+        values: Dict[str, str] = {}
+        for part in parts[1:]:
+            key, sep, value = part.partition("=")
+            key = cls._plain_upper(key)
+            if not sep or key not in ("IVA", "RETENCION") or key in values or not value.strip():
+                return False, None, cls.PERFIL_TRIBUTARIO_USAGE
+            values[key] = cls._plain_upper(value)
+
+        if values["IVA"] not in cls.IVA_BY_VALUE:
+            return False, None, f"⚠️ IVA '{values['IVA']}' no reconocido.\n\n" + cls.PERFIL_TRIBUTARIO_USAGE
+        if values["RETENCION"] not in ("SI", "NO"):
+            return (
+                False,
+                None,
+                f"⚠️ RETENCION '{values['RETENCION']}' no reconocida.\n\n" + cls.PERFIL_TRIBUTARIO_USAGE,
+            )
+
+        return True, {
+            "nit": nit,
+            "iva_periodicity": cls.IVA_BY_VALUE[values["IVA"]],
+            "is_withholding_agent": values["RETENCION"] == "SI",
+        }, None
+
+    @classmethod
+    def execute_perfil_tributario(cls, sender_chat_id: int, text: str, db: Session) -> Dict[str, Any]:
+        """Fija la periodicidad de IVA y si es agente de retención de un negocio facturador (DIAN)."""
+        if not cls.is_authorized_admin(sender_chat_id, db):
+            logger.warning(f"Intento de /perfil_tributario no autorizado desde chat_id={sender_chat_id}")
+            return {
+                "success": False,
+                "reason": "UNAUTHORIZED",
+                "message": "⛔ *Acceso denegado:* Este comando está restringido a la administración comercial autorizada.",
+            }
+
+        is_valid, data, error_msg = cls.parse_perfil_tributario_command(text)
+        if not is_valid:
+            return {"success": False, "reason": "INVALID_SYNTAX", "message": error_msg}
+
+        biz = db.query(Business).filter(Business.nit == data["nit"]).first()
+        if not biz:
+            return {
+                "success": False,
+                "reason": "BUSINESS_NOT_FOUND",
+                "message": f"❌ No se encontró ningún negocio registrado con NIT `{data['nit']}`.\n\n"
+                + cls.PERFIL_TRIBUTARIO_USAGE,
+            }
+        if biz.income_source != INCOME_SOURCE_DIAN:
+            return {
+                "success": False,
+                "reason": "NOT_APPLICABLE",
+                "message": (
+                    f"❌ *{biz.commercial_name}* registra sus ventas a mano: no tiene IVA, ICA ni otros impuestos "
+                    "que configurar. El perfil tributario aplica solo a negocios facturadores "
+                    "(`/cambiar_tipo NIT | FACTURADOR`).\n\n" + cls.PERFIL_TRIBUTARIO_USAGE
+                ),
+            }
+
+        try:
+            biz.iva_periodicity = data["iva_periodicity"]
+            biz.is_withholding_agent = data["is_withholding_agent"]
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error guardando perfil tributario del NIT {data['nit']}: {e}", exc_info=True)
+            return {"success": False, "reason": "INTERNAL_ERROR", "message": f"❌ Error interno al guardar el perfil: {str(e)}"}
+
+        logger.info(
+            f"Admin chat {sender_chat_id} fijó el perfil tributario del NIT {biz.nit}: IVA={biz.iva_periodicity}, "
+            f"retención={biz.is_withholding_agent}"
+        )
+        return {
+            "success": True,
+            "business_id": biz.id,
+            "iva_periodicity": biz.iva_periodicity,
+            "is_withholding_agent": biz.is_withholding_agent,
+            "message": (
+                "✅ *Perfil tributario actualizado.*\n\n"
+                f"🏢 *Empresa:* {biz.commercial_name} (NIT `{biz.nit}-{biz.dv}`)\n"
+                f"🧮 *IVA:* {biz.iva_periodicity or 'NINGUNO (no responsable de IVA)'}\n"
+                f"✂️ *Agente de retención:* {'SÍ' if biz.is_withholding_agent else 'NO'}"
+            ),
+        }
+
     @classmethod
     def handle_admin_message(
         cls,
@@ -860,6 +1120,14 @@ class AdminTelegramBot:
             res = cls.execute_ejecutar_extraccion(sender_chat_id, text_clean, db)
             return res["message"]
 
+        elif text_clean.startswith("/cambiar_tipo"):
+            res = cls.execute_cambiar_tipo(sender_chat_id, text_clean, db)
+            return res["message"]
+
+        elif text_clean.startswith("/perfil_tributario"):
+            res = cls.execute_perfil_tributario(sender_chat_id, text_clean, db)
+            return res["message"]
+
         elif text_clean.startswith("/ayuda") or text_clean.startswith("/help"):
             return (
                 "💼 *COMANDOS DE ADMINISTRACIÓN COMERCIAL (Katerinn)*\n\n"
@@ -871,6 +1139,8 @@ class AdminTelegramBot:
                 "🏢 *Empresa (Representante Legal):*\n"
                 "`/crear_cliente EMPRESA | Nombre Contacto | Celular | Nombre Empresa | NIT Empresa | Cédula Representante | Plan`\n"
                 "_Ejemplo:_ `/crear_cliente EMPRESA | Andrea Torres | 3001234567 | Ferretería El Roble SAS | 901008579 | 10000002 | TRIMESTRAL`\n\n"
+                "_Al final de cualquiera de las dos plantillas puedes agregar_ `| TIPO`: `FACTURADOR` (por defecto, "
+                "factura electrónicamente) o `VENTAS_MANUALES` (registra sus ventas a mano).\n\n"
                 "2️⃣ *Confirmar Pago:* Registra transferencias, reactiva cuentas y levanta suspensiones:\n"
                 "`/confirmar_pago NIT | Monto | Referencia`\n"
                 "_Ejemplo:_ `/confirmar_pago 901008579 | 142500 | TR-998822`\n\n"
@@ -883,7 +1153,13 @@ class AdminTelegramBot:
                 "calendario completos, sin contar el mes en curso, en una sola solicitud)\n"
                 "_Periodo opcional — si se omite, usa el mes anterior completo._\n"
                 "⚠️ _Solo encola el trabajo. Para procesarlo de verdad contra la DIAN necesitas correr por separado_ "
-                "`uv run python run_worker.py`_ (un proceso aparte del bot)._"
+                "`uv run python run_worker.py`_ (un proceso aparte del bot)._\n\n"
+                "5️⃣ *Cambiar tipo de negocio:* Pasa un cliente entre facturador electrónico y ventas manuales:\n"
+                "`/cambiar_tipo NIT | FACTURADOR` o `/cambiar_tipo NIT | VENTAS_MANUALES`\n"
+                "_Ejemplo:_ `/cambiar_tipo 901008579 | VENTAS_MANUALES`\n\n"
+                "6️⃣ *Perfil tributario (solo facturadores):* Periodicidad de IVA y agente de retención, para el calendario:\n"
+                "`/perfil_tributario NIT | IVA=BIMESTRAL|CUATRIMESTRAL|NINGUNO | RETENCION=SI|NO`\n"
+                "_Ejemplo:_ `/perfil_tributario 901008579 | IVA=CUATRIMESTRAL | RETENCION=SI`"
             )
 
         return (

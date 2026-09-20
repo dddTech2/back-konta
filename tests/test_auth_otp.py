@@ -500,6 +500,7 @@ def test_me_for_provisioned_user(client, db, ana, bearer):
     assert resp.status_code == 200
     assert resp.json() == {
         "business_id": "biz-ana",
+        "income_source": "DIAN",
         "is_provisioned": True,
         "is_blocked": False,
         "subscription_status": "ACTIVO",
@@ -524,6 +525,7 @@ def test_me_without_business_is_not_provisioned(client, db, bearer):
     assert resp.status_code == 200
     body = resp.json()
     assert body["business_id"] is None and body["is_provisioned"] is False
+    assert body["income_source"] is None
     assert body["subscription_status"] is None and body["is_blocked"] is False
 
 
@@ -575,8 +577,8 @@ def test_me_with_several_businesses_returns_the_oldest_active_one_without_fiscal
     resp = client.get("/api/auth/me", headers=bearer("ana"))
 
     assert resp.json()["business_id"] == "biz-ana-old"
-    assert set(resp.json()) == {"business_id", "is_provisioned", "is_blocked", "subscription_status",
-                                "has_warning_banner", "redirect_url"}
+    assert set(resp.json()) == {"business_id", "income_source", "is_provisioned", "is_blocked",
+                                "subscription_status", "has_warning_banner", "redirect_url"}
 
 
 # --------------------------------------------------------------------------- envío por Telegram
@@ -664,3 +666,13 @@ def test_config_imports_without_jwt_secret_and_tolerates_blank_ttl(env_value, ex
     ttl, secret = _config_ttl(env_value)
 
     assert ttl == expected
+
+
+def test_me_reports_the_income_source_of_the_active_business(client, db, ana, bearer):
+    db.get(Business, "biz-ana").income_source = "MANUAL_SALES"
+    db.commit()
+
+    body = client.get("/api/auth/me", headers=bearer("ana")).json()
+
+    assert body["income_source"] == "MANUAL_SALES"
+    assert body["business_id"] == "biz-ana" and body["is_provisioned"] is True  # el resto no cambia

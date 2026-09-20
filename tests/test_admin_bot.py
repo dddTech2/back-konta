@@ -433,3 +433,305 @@ def test_ejecutar_extraccion_con_rango_de_meses(db_session_factory):
         assert res_bad_range["reason"] == "INVALID_SYNTAX"
     finally:
         db.close()
+
+
+# --------------------------------------------------------------------------- Story 6.1: tipo de negocio
+
+ADMIN_CHAT = 555444333
+INTRUDER_CHAT = 111222333
+PERSONA = "/crear_cliente PERSONA | Andrea Torres | 3001234567 | 1000000001 | TRIMESTRAL"
+EMPRESA = (
+    "/crear_cliente EMPRESA | Andrea Torres | 3001234567 | Ferretería El Roble SAS | 901008579 | 10000002 | "
+    "TRIMESTRAL"
+)
+
+
+def _crear(db, text):
+    return AdminTelegramBot.execute_crear_cliente(sender_chat_id=ADMIN_CHAT, text=text, db=db)
+
+
+def _business(db, nit):
+    db.expire_all()
+    return db.query(Business).filter(Business.nit == nit).one()
+
+
+@pytest.mark.parametrize(
+    "text, nit, expected",
+    [
+        (PERSONA, "1000000001", "DIAN"),
+        (PERSONA + " | ", "1000000001", "DIAN"),
+        (PERSONA + " | FACTURADOR", "1000000001", "DIAN"),
+        (PERSONA + " | ventas_manuales", "1000000001", "MANUAL_SALES"),
+        (EMPRESA, "901008579", "DIAN"),
+        (EMPRESA + " | Facturador", "901008579", "DIAN"),
+        (EMPRESA + " | VENTAS_MANUALES", "901008579", "MANUAL_SALES"),
+    ],
+    ids=["persona", "persona_tipo_vacio", "persona_facturador", "persona_minusculas", "empresa",
+         "empresa_facturador", "empresa_ventas_manuales"],
+)
+def test_crear_cliente_saves_the_business_type(db_session_factory, text, nit, expected):
+    db = db_session_factory()
+    try:
+        res = _crear(db, text)
+
+        assert res["success"] is True, res["message"]
+        assert res["income_source"] == expected
+        assert _business(db, nit).income_source == expected
+        label = "Ventas manuales" if expected == "MANUAL_SALES" else "Facturador electrónico"
+        assert f"*Tipo de negocio:* " in res["message"] and label in res["message"]
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [PERSONA + " | MIXTO", EMPRESA + " | mixto", PERSONA + " | FACTURADOR | de_mas", EMPRESA + " | FACTURADOR | x"],
+    ids=["persona_tipo_invalido", "empresa_tipo_invalido", "persona_campo_de_mas", "empresa_campo_de_mas"],
+)
+def test_crear_cliente_rejects_bad_business_type_or_extra_fields_without_creating_anything(db_session_factory, text):
+    db = db_session_factory()
+    try:
+        res = _crear(db, text)
+
+        assert res["success"] is False and res["reason"] == "INVALID_SYNTAX"
+        assert "/crear_cliente PERSONA" in res["message"] and "VENTAS_MANUALES" in res["message"]
+        assert db.query(Business).count() == 0 and db.query(Subscription).count() == 0
+        assert db.query(User).filter(User.role == "CLIENT").count() == 1  # solo el intruso sembrado
+    finally:
+        db.close()
+
+
+def test_recreating_a_client_without_type_keeps_its_type_but_an_explicit_type_changes_it(db_session_factory):
+    db = db_session_factory()
+    try:
+        assert _crear(db, PERSONA + " | VENTAS_MANUALES")["success"] is True
+
+        assert _crear(db, PERSONA)["success"] is True  # renovación sin TIPO
+        assert _business(db, "1000000001").income_source == "MANUAL_SALES"
+
+        assert _crear(db, PERSONA + " | FACTURADOR")["success"] is True
+        assert _business(db, "1000000001").income_source == "DIAN"
+    finally:
+        db.close()
+
+
+def _seed_business(db, tipo="FACTURADOR", blocked=False):
+    _crear(db, EMPRESA + f" | {tipo}")
+    biz = _business(db, "901008579")
+    if blocked:
+        sub = db.query(Subscription).filter(Subscription.client_id == biz.client_id).one()
+        sub.status = "BLOQUEADO"
+        db.commit()
+    return biz
+
+
+@pytest.mark.parametrize(
+    "arg, expected",
+    [("VENTAS_MANUALES", "MANUAL_SALES"), ("ventas_manuales", "MANUAL_SALES"), ("FACTURADOR", "DIAN")],
+)
+def test_cambiar_tipo_updates_and_confirms(db_session_factory, arg, expected):
+    db = db_session_factory()
+    try:
+        _seed_business(db, "FACTURADOR" if expected == "MANUAL_SALES" else "VENTAS_MANUALES")
+
+        res = AdminTelegramBot.execute_cambiar_tipo(ADMIN_CHAT, f"/cambiar_tipo 901008579 | {arg}", db)
+
+        assert res["success"] is True and res["income_source"] == expected
+        assert "Tipo de negocio actualizado" in res["message"]
+        assert _business(db, "901008579").income_source == expected
+    finally:
+        db.close()
+
+
+def test_cambiar_tipo_accepts_a_nit_with_verification_digit_and_ignores_the_subscription_block(db_session_factory):
+    db = db_session_factory()
+    try:
+        _seed_business(db, blocked=True)
+
+        res = AdminTelegramBot.execute_cambiar_tipo(ADMIN_CHAT, "/cambiar_tipo 901.008.579-7 | VENTAS_MANUALES", db)
+
+        assert res["success"] is True
+        assert _business(db, "901008579").income_source == "MANUAL_SALES"
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "text, reason",
+    [
+        ("/cambiar_tipo 999999999 | FACTURADOR", "BUSINESS_NOT_FOUND"),
+        ("/cambiar_tipo 901008579 | MIXTO", "INVALID_SYNTAX"),
+        ("/cambiar_tipo 901008579", "INVALID_SYNTAX"),
+        ("/cambiar_tipo", "INVALID_SYNTAX"),
+        ("/cambiar_tipo 12 | FACTURADOR", "INVALID_SYNTAX"),
+        ("/cambiar_tipo 901008579 | FACTURADOR | extra", "INVALID_SYNTAX"),
+    ],
+)
+def test_cambiar_tipo_bad_input_answers_with_the_usage_and_changes_nothing(db_session_factory, text, reason):
+    db = db_session_factory()
+    try:
+        _seed_business(db, "VENTAS_MANUALES")
+
+        res = AdminTelegramBot.execute_cambiar_tipo(ADMIN_CHAT, text, db)
+
+        assert res["success"] is False and res["reason"] == reason
+        assert "/cambiar_tipo NIT | TIPO" in res["message"]
+        assert _business(db, "901008579").income_source == "MANUAL_SALES"
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("chat_id", [INTRUDER_CHAT, 999000999], ids=["cliente", "desconocido"])
+def test_cambiar_tipo_and_perfil_tributario_are_denied_to_non_admins(db_session_factory, chat_id):
+    db = db_session_factory()
+    try:
+        _seed_business(db)
+
+        tipo = AdminTelegramBot.execute_cambiar_tipo(chat_id, "/cambiar_tipo 901008579 | VENTAS_MANUALES", db)
+        perfil = AdminTelegramBot.execute_perfil_tributario(
+            chat_id, "/perfil_tributario 901008579 | IVA=BIMESTRAL | RETENCION=SI", db
+        )
+
+        assert tipo["reason"] == "UNAUTHORIZED" and perfil["reason"] == "UNAUTHORIZED"
+        biz = _business(db, "901008579")
+        assert (biz.income_source, biz.iva_periodicity, biz.is_withholding_agent) == ("DIAN", None, False)
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "iva, retencion, expected_iva, expected_agent",
+    [
+        ("BIMESTRAL", "SI", "BIMESTRAL", True),
+        ("CUATRIMESTRAL", "NO", "CUATRIMESTRAL", False),
+        ("NINGUNO", "SI", None, True),
+        ("ninguno", "no", None, False),
+        ("bimestral", "SÍ", "BIMESTRAL", True),
+    ],
+)
+def test_perfil_tributario_updates_and_confirms(db_session_factory, iva, retencion, expected_iva, expected_agent):
+    db = db_session_factory()
+    try:
+        _seed_business(db)
+
+        res = AdminTelegramBot.execute_perfil_tributario(
+            ADMIN_CHAT, f"/perfil_tributario 901008579 | IVA={iva} | RETENCION={retencion}", db
+        )
+
+        assert res["success"] is True and "Perfil tributario actualizado" in res["message"]
+        biz = _business(db, "901008579")
+        assert (biz.iva_periodicity, biz.is_withholding_agent) == (expected_iva, expected_agent)
+    finally:
+        db.close()
+
+
+def test_perfil_tributario_accepts_keys_in_any_order_spaces_accents_and_a_nit_with_dv(db_session_factory):
+    db = db_session_factory()
+    try:
+        _seed_business(db, blocked=True)
+
+        res = AdminTelegramBot.execute_perfil_tributario(
+            ADMIN_CHAT, "/perfil_tributario 901008579-7 |  retención = sí | iva = cuatrimestral ", db
+        )
+
+        assert res["success"] is True, res["message"]
+        biz = _business(db, "901008579")
+        assert (biz.iva_periodicity, biz.is_withholding_agent) == ("CUATRIMESTRAL", True)
+    finally:
+        db.close()
+
+
+def test_perfil_tributario_accepts_accents_sent_as_combining_marks(db_session_factory):
+    db = db_session_factory()
+    try:
+        _seed_business(db)
+        decomposed = "RETENCIO" + chr(0x301) + "N=SI" + chr(0x301)  # RETENCIÓN=SÍ con marcas combinadas
+
+        res = AdminTelegramBot.execute_perfil_tributario(
+            ADMIN_CHAT, f"/perfil_tributario 901008579 | IVA=BIMESTRAL | {decomposed}", db
+        )
+
+        assert res["success"] is True, res["message"]
+        assert _business(db, "901008579").is_withholding_agent is True
+    finally:
+        db.close()
+
+
+def test_perfil_tributario_can_be_overwritten(db_session_factory):
+    db = db_session_factory()
+    try:
+        _seed_business(db)
+        AdminTelegramBot.execute_perfil_tributario(ADMIN_CHAT, "/perfil_tributario 901008579 | IVA=BIMESTRAL | RETENCION=SI", db)
+
+        AdminTelegramBot.execute_perfil_tributario(ADMIN_CHAT, "/perfil_tributario 901008579 | IVA=NINGUNO | RETENCION=NO", db)
+
+        biz = _business(db, "901008579")
+        assert (biz.iva_periodicity, biz.is_withholding_agent) == (None, False)
+    finally:
+        db.close()
+
+
+def test_perfil_tributario_is_rejected_for_a_manual_sales_business(db_session_factory):
+    db = db_session_factory()
+    try:
+        _seed_business(db, "VENTAS_MANUALES")
+
+        res = AdminTelegramBot.execute_perfil_tributario(
+            ADMIN_CHAT, "/perfil_tributario 901008579 | IVA=BIMESTRAL | RETENCION=SI", db
+        )
+
+        assert res["success"] is False and res["reason"] == "NOT_APPLICABLE"
+        assert "registra sus ventas a mano" in res["message"] and "/perfil_tributario NIT" in res["message"]
+        biz = _business(db, "901008579")
+        assert (biz.iva_periodicity, biz.is_withholding_agent) == (None, False)
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "text, reason",
+    [
+        ("/perfil_tributario 999999999 | IVA=BIMESTRAL | RETENCION=SI", "BUSINESS_NOT_FOUND"),
+        ("/perfil_tributario 901008579 | IVA=ANUAL | RETENCION=SI", "INVALID_SYNTAX"),
+        ("/perfil_tributario 901008579 | IVA=BIMESTRAL | RETENCION=TAL_VEZ", "INVALID_SYNTAX"),
+        ("/perfil_tributario 901008579 | IVA=BIMESTRAL", "INVALID_SYNTAX"),
+        ("/perfil_tributario 901008579 | IVA=BIMESTRAL | IVA=CUATRIMESTRAL", "INVALID_SYNTAX"),
+        ("/perfil_tributario 901008579 | IVA=BIMESTRAL | ICA=SI", "INVALID_SYNTAX"),
+        ("/perfil_tributario 901008579 | BIMESTRAL | SI", "INVALID_SYNTAX"),
+        ("/perfil_tributario 901008579 | IVA= | RETENCION=SI", "INVALID_SYNTAX"),
+        ("/perfil_tributario 12 | IVA=BIMESTRAL | RETENCION=SI", "INVALID_SYNTAX"),
+        ("/perfil_tributario", "INVALID_SYNTAX"),
+    ],
+)
+def test_perfil_tributario_bad_input_answers_with_the_usage_and_changes_nothing(db_session_factory, text, reason):
+    db = db_session_factory()
+    try:
+        _seed_business(db)
+
+        res = AdminTelegramBot.execute_perfil_tributario(ADMIN_CHAT, text, db)
+
+        assert res["success"] is False and res["reason"] == reason
+        assert "/perfil_tributario NIT | IVA=" in res["message"]
+        biz = _business(db, "901008579")
+        assert (biz.iva_periodicity, biz.is_withholding_agent) == (None, False)
+    finally:
+        db.close()
+
+
+def test_handle_admin_message_routes_the_new_commands_and_help_lists_them(db_session_factory):
+    db = db_session_factory()
+    try:
+        _seed_business(db)
+
+        tipo = AdminTelegramBot.handle_admin_message(ADMIN_CHAT, "/cambiar_tipo 901008579 | VENTAS_MANUALES", db)
+        perfil = AdminTelegramBot.handle_admin_message(
+            ADMIN_CHAT, "/perfil_tributario 901008579 | IVA=BIMESTRAL | RETENCION=SI", db
+        )
+        ayuda = AdminTelegramBot.handle_admin_message(ADMIN_CHAT, "/ayuda", db)
+
+        assert "Tipo de negocio actualizado" in tipo
+        assert "registra sus ventas a mano" in perfil  # el negocio ya es MANUAL_SALES: el perfil no aplica
+        assert "/cambiar_tipo NIT | FACTURADOR" in ayuda and "/perfil_tributario NIT | IVA=" in ayuda
+        assert "VENTAS_MANUALES" in ayuda
+    finally:
+        db.close()

@@ -18,6 +18,7 @@ from sqlalchemy import (
     UniqueConstraint,
     CheckConstraint,
     Index,
+    false,
 )
 from sqlalchemy.orm import relationship
 from dian_automation.db.database import Base
@@ -26,6 +27,17 @@ from dian_automation.db.database import Base
 def generate_uuid() -> str:
     """Generador de UUIDv4 como string."""
     return str(uuid.uuid4())
+
+
+# Tipo de negocio (Story 6.1): origen de las cifras. Son códigos de datos, no estados en español (ADR-006).
+INCOME_SOURCE_DIAN = "DIAN"  # factura electrónicamente: cifras e impuestos desde el informe de la DIAN
+INCOME_SOURCE_MANUAL_SALES = "MANUAL_SALES"  # registra sus ventas a mano; sin IVA ni ICA
+INCOME_SOURCES = (INCOME_SOURCE_DIAN, INCOME_SOURCE_MANUAL_SALES)
+
+# Perfil tributario de un negocio DIAN: periodicidad del IVA (NULL = no responsable de IVA).
+IVA_PERIODICITY_BIMESTRAL = "BIMESTRAL"
+IVA_PERIODICITY_CUATRIMESTRAL = "CUATRIMESTRAL"
+IVA_PERIODICITIES = (IVA_PERIODICITY_BIMESTRAL, IVA_PERIODICITY_CUATRIMESTRAL)
 
 
 class User(Base):
@@ -62,6 +74,11 @@ class Business(Base):
     legal_rep_doc = Column(String(30), nullable=True)
     economic_activity = Column(String(255), nullable=True)
     invoice_prefix_filter = Column(String(50), nullable=True)
+    income_source = Column(
+        String(20), nullable=False, default=INCOME_SOURCE_DIAN, server_default=INCOME_SOURCE_DIAN
+    )  # DIAN, MANUAL_SALES
+    iva_periodicity = Column(String(20), nullable=True)  # BIMESTRAL, CUATRIMESTRAL; NULL = sin IVA
+    is_withholding_agent = Column(Boolean, nullable=False, default=False, server_default=false())
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

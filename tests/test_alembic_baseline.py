@@ -97,6 +97,7 @@ def test_history_is_a_single_chain_rooted_at_the_baseline(alembic_cfg):
     assert script.get_revision("0002").down_revision == "0001"
     assert script.get_revision("0003").down_revision == "0002"
     assert script.get_revision("0004").down_revision == "0003"
+    assert script.get_revision("0005").down_revision == "0004"
 
 
 def test_baseline_revision_creates_only_the_nine_original_tables(alembic_cfg, engine):
@@ -219,7 +220,7 @@ def test_calendar_ranges_unique_index_rejects_a_repeated_obligation(alembic_cfg,
 def test_calendar_ranges_downgrade_restores_old_schema_and_keeps_only_single_digit_rows(alembic_cfg, engine):
     command.upgrade(alembic_cfg, "0003")
     _insert_calendar_row(engine, "legacy", 4)
-    command.upgrade(alembic_cfg, "head")
+    command.upgrade(alembic_cfg, "0004")
     insert = text(
         "INSERT INTO dian_tax_calendar (id, tax_type, fiscal_year, period_label, key_length, key_from, key_to,"
         " installment, jurisdiction, deadline_date, created_at) VALUES (:id, :tax, 2026, 'P', :kl, :kf, :kt,"
@@ -394,3 +395,51 @@ def test_default_database_url_when_env_absent():
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "sqlite:///./kontable.db"
+
+
+def _insert_business(engine, business_id: str = "b-1"):
+    _insert_user(engine, f"u-{business_id}")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO businesses (id, client_id, legal_name, commercial_name, nit, dv, taxpayer_type,"
+                " is_active, created_at, updated_at) VALUES (:id, :client, 'Ana', 'Ana', '901008579', '7',"
+                " 'PERSONA_NATURAL', 1, '2026-01-01 00:00:00', '2026-01-01 00:00:00')"
+            ),
+            {"id": business_id, "client": f"u-{business_id}"},
+        )
+
+
+def _business_columns(engine) -> dict:
+    return {c["name"]: c for c in inspect(engine).get_columns("businesses")}
+
+
+def test_business_income_source_revision_defaults_existing_rows_and_matches_model(alembic_cfg, engine):
+    command.upgrade(alembic_cfg, "0004")
+    _insert_business(engine)
+
+    command.upgrade(alembic_cfg, "head")
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT income_source, iva_periodicity, is_withholding_agent FROM businesses")
+        ).one()
+    assert tuple(row) == ("DIAN", None, 0)
+    columns = _business_columns(engine)
+    assert columns["income_source"]["nullable"] is False
+    assert columns["is_withholding_agent"]["nullable"] is False
+    assert columns["iva_periodicity"]["nullable"] is True
+    assert columns["income_source"]["type"].length == 20 and columns["iva_periodicity"]["type"].length == 20
+    assert _diff(engine, Base.metadata) == []
+
+
+def test_business_income_source_revision_downgrade_drops_the_columns_and_keeps_rows(alembic_cfg, engine):
+    command.upgrade(alembic_cfg, "head")
+    _insert_business(engine)
+
+    command.downgrade(alembic_cfg, "-1")
+
+    assert _version_rows(engine) == ["0004"]
+    assert {"income_source", "iva_periodicity", "is_withholding_agent"}.isdisjoint(_business_columns(engine))
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM businesses")).scalar_one() == 1
