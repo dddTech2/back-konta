@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
-from dian_automation.db.models import Business, Sale, User
+from dian_automation.db.models import Business, INCOME_SOURCE_MANUAL_SALES, Sale, User
 from dian_automation.subscriptions.lockout_service import SubscriptionLockoutService
 
 RECORDED_VIA_TELEGRAM = "TELEGRAM"
@@ -44,6 +44,7 @@ class SalesError(Exception):
     NON_POSITIVE_TOTAL = "NON_POSITIVE_TOTAL"
     DESCRIPTION_TOO_LONG = "DESCRIPTION_TOO_LONG"
     BUSINESS_BLOCKED = "BUSINESS_BLOCKED"
+    NOT_MANUAL_SALES = "NOT_MANUAL_SALES"
 
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -106,6 +107,12 @@ def register_sale(
         raise SalesError(
             SalesError.BUSINESS_BLOCKED,
             "Suscripción suspendida por pago pendiente: no se pueden registrar ventas.",
+        )
+
+    if business.income_source != INCOME_SOURCE_MANUAL_SALES:
+        raise SalesError(
+            SalesError.NOT_MANUAL_SALES,
+            "Tu negocio factura electrónicamente: las ventas salen de la DIAN y no se registran a mano.",
         )
 
     total_amount = parse_total(total)

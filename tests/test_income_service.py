@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 from dian_automation.core.income_service import IncomeError, history, summary
 from dian_automation.core.sales_service import RECORDED_VIA_TELEGRAM, register_sale
-from dian_automation.db.models import Base, Business, Invoice, Sale, User
+from dian_automation.db.models import Base, Business, INCOME_SOURCE_MANUAL_SALES, Invoice, Sale, User
 
 
 @pytest.fixture
@@ -33,6 +33,7 @@ def business_a(db):
         commercial_name="Biz A",
         nit="900111222",
         dv="1",
+        income_source=INCOME_SOURCE_MANUAL_SALES,
         is_active=True,
     )
     db.add_all([user, biz])
@@ -50,6 +51,7 @@ def business_b(db):
         commercial_name="Biz B",
         nit="900333444",
         dv="2",
+        income_source=INCOME_SOURCE_MANUAL_SALES,
         is_active=True,
     )
     db.add_all([user, biz])

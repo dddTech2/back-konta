@@ -26,7 +26,10 @@ from dian_automation.queue.manager import ExtractionQueueManager
 from dian_automation.queue.worker_heartbeat import normalize_worker_name, record_heartbeat
 from dian_automation.extraction.xlsx_parser import DIANXLSXParser, DIANParseError
 from dian_automation.telegram.tech_ops_bot import TechOpsAlertBot
-from dian_automation.telegram.admin_alerts import create_failure_alert_callback
+from dian_automation.telegram.admin_alerts import (
+    create_failure_alert_callback,
+    notify_misclassified_business,
+)
 
 logger = logging.getLogger("internal_worker_api")
 
@@ -124,6 +127,7 @@ async def complete_job(job_id: str, file: UploadFile = File(...), db: Session = 
         raise HTTPException(status_code=422, detail=f"El ZIP se recibió pero no se pudo parsear: {e}")
 
     job = ExtractionQueueManager.mark_job_success(job_id=job_id, zip_path=zip_path, db=db)
+    notify_misclassified_business(db, job)
     logger.info(f"Job {job_id} completado por worker remoto. Ingesta: {parse_result}")
     return {"status": "SUCCESS", "job_id": job_id, "parse_result": parse_result}
 

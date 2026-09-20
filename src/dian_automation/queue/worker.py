@@ -11,6 +11,7 @@ from dian_automation.db.models import DIANExtractionJob, Business
 from dian_automation.queue.exceptions import STALE_PROCESSING_CODE
 from dian_automation.queue.manager import ExtractionQueueManager
 from dian_automation.extraction.xlsx_parser import DIANXLSXParser, DIANParseError
+from dian_automation.telegram.admin_alerts import notify_misclassified_business
 
 logger = logging.getLogger("dian_worker")
 
@@ -79,6 +80,8 @@ class ExtractionWorker:
                 pacing_seconds=pacing_seconds,
             )
             logger.info(f"Trabajo {job.id} completado con éxito. Pacing de 15 min aplicado.")
+
+            notify_misclassified_business(db, job)
 
             return {
                 "status": "SUCCESS",

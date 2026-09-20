@@ -14,6 +14,8 @@ from dian_automation.db.models import (
     Invoice,
     DIANTaxCalendar,
     Subscription,
+    INCOME_SOURCE_DIAN,
+    INCOME_SOURCE_MANUAL_SALES,
 )
 from dian_automation.telegram.client_bot import ClientTelegramBot
 
@@ -45,6 +47,7 @@ def db_session_factory():
         commercial_name="Torres Branding & Studio",
         nit="901008579",
         dv="7",
+        income_source=INCOME_SOURCE_DIAN,
         is_active=True,
     )
     sub_andrea = Subscription(
@@ -118,9 +121,43 @@ def db_session_factory():
         description="Declaración bimestral formulario 300",
     )
 
+    # 4. Cliente activo con origen MANUAL_SALES (Pedro Gómez)
+    user_manual = User(
+        id="usr-pedro-manual",
+        email="pedro.manual@empresa.co",
+        full_name="Pedro Gómez",
+        role="CLIENT",
+        telegram_chat_id=555666777,
+        is_telegram_linked=True,
+        is_active=True,
+    )
+    biz_manual = Business(
+        id="biz-pedro-manual",
+        client_id=user_manual.id,
+        legal_name="Panadería Pedro Gómez SAS",
+        commercial_name="Panadería Pedro",
+        nit="900888777",
+        dv="3",
+        income_source=INCOME_SOURCE_MANUAL_SALES,
+        is_active=True,
+    )
+    sub_manual = Subscription(
+        id="sub-pedro-manual",
+        client_id=user_manual.id,
+        plan="TRIMESTRAL",
+        discount_rate=Decimal("5.00"),
+        base_price=Decimal("150000.00"),
+        final_price=Decimal("142500.00"),
+        start_date=date.today() - timedelta(days=10),
+        cutoff_date=date.today() + timedelta(days=80),
+        grace_period_end=date.today() + timedelta(days=83),
+        status="ACTIVO",
+    )
+
     db.add_all([
         user_andrea, biz_andrea, sub_andrea,
         user_bloqueado, biz_bloqueado, sub_bloqueada,
+        user_manual, biz_manual, sub_manual,
         cal_iva_9, cal_rete_9, cal_iva_4,
     ])
     db.commit()
@@ -392,9 +429,10 @@ def test_client_router_and_help(db_session_factory):
 
 ANDREA_CHAT = 777888999
 CARLOS_CHAT = 111000111  # suscripción BLOQUEADA
+MANUAL_CHAT = 555666777  # negocio MANUAL_SALES
 
 
-def _send(db_session_factory, text, chat_id=ANDREA_CHAT):
+def _send(db_session_factory, text, chat_id=MANUAL_CHAT):
     db = db_session_factory()
     try:
         return ClientTelegramBot.handle_client_message(sender_chat_id=chat_id, text=text, db=db)
@@ -419,8 +457,8 @@ def test_registrar_venta_with_description(db_session_factory):
     assert len(sales) == 1
     assert sales[0].total_amount == Decimal("150000.00")
     assert sales[0].description == "3 tortas de chocolate"
-    assert sales[0].business_id == "biz-andrea"
-    assert sales[0].recorded_by_user_id == "usr-andrea-torres"
+    assert sales[0].business_id == "biz-pedro-manual"
+    assert sales[0].recorded_by_user_id == "usr-pedro-manual"
     assert sales[0].recorded_via == "TELEGRAM"
     assert "Venta registrada: $150,000 COP" in resp
     assert "3 tortas de chocolate" in resp
@@ -540,8 +578,10 @@ def test_parse_registrar_venta_command_only_splits_text():
 
 
 def test_help_and_unknown_command_list_registrar_venta(db_session_factory):
-    assert "/registrar_venta" in _send(db_session_factory, "/ayuda")
-    assert "/registrar_venta" in _send(db_session_factory, "/comando_invalido")
+    assert "/registrar_venta" in _send(db_session_factory, "/ayuda", chat_id=MANUAL_CHAT)
+    assert "/registrar_venta" in _send(db_session_factory, "/comando_invalido", chat_id=MANUAL_CHAT)
+    # Negocio DIAN no lista /registrar_venta en /ayuda
+    assert "/registrar_venta" not in _send(db_session_factory, "/ayuda", chat_id=ANDREA_CHAT)
 
 
 def test_registrar_venta_accepts_bot_name_suffix_in_router(db_session_factory):
@@ -563,9 +603,179 @@ def test_registrar_venta_maps_service_block_error_to_suspension_message(db_sessi
 
     db = db_session_factory()
     try:
-        resp = ClientTelegramBot.handle_registrar_venta(ANDREA_CHAT, db, "/registrar_venta 100")
+        resp = ClientTelegramBot.handle_registrar_venta(MANUAL_CHAT, db, "/registrar_venta 100")
     finally:
         db.close()
 
     assert resp["success"] is False
     assert resp["message"] == SubscriptionLockoutService.BLOCKED_TELEGRAM_MESSAGE
+
+
+def test_registrar_venta_dian_business_returns_informational_message_and_no_sale(db_session_factory):
+    """/registrar_venta con negocio DIAN responde con mensaje informativo y no crea venta."""
+    resp = _send(db_session_factory, "/registrar_venta 100000", chat_id=ANDREA_CHAT)
+
+    assert "ℹ️ Tu negocio factura electrónicamente: las ventas salen de la DIAN y no se registran a mano." in resp
+    assert _sales(db_session_factory) == []
+
+
+def test_client_resumen_manual_sales(db_session_factory):
+    """/resumen MANUAL_SALES muestra ingresos/egresos/utilidad y no contiene 'IVA' ni 'impuesto'."""
+    from dian_automation.db.models import Sale, Invoice
+    db = db_session_factory()
+    try:
+        today = date.today()
+        current_month = today.strftime("%Y-%m")
+        sale = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("1500000.00"),
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=today,
+            created_at=datetime.utcnow(),
+        )
+        inv = Invoice(
+            id="inv-manual-egreso-1",
+            business_id="biz-pedro-manual",
+            cufe="cufe-egreso-1",
+            document_type="Factura electrónica de venta",
+            prefix="REC",
+            folio="501",
+            issue_date=datetime.utcnow(),
+            issuer_nit="800111222",
+            issuer_name="Proveedor Harina",
+            receiver_nit="900888777",
+            receiver_name="Panadería Pedro Gómez SAS",
+            iva=Decimal("19000.00"),
+            total=Decimal("200000.00"),
+            group_type="Recibido",
+        )
+        db.add_all([sale, inv])
+        db.commit()
+
+        resp = ClientTelegramBot.handle_resumen(sender_chat_id=MANUAL_CHAT, db=db)
+        assert resp["success"] is True
+        assert resp["has_data"] is True
+
+        msg = resp["message"]
+        assert "Resumen del mes - Panadería Pedro" in msg
+        assert current_month in msg
+        assert "Ingresos" in msg
+        assert "$1,500,000 COP" in msg
+        assert "Egresos" in msg
+        assert "$200,000 COP" in msg
+        assert "Utilidad estimada" in msg
+        assert "$1,300,000 COP" in msg
+        assert "egresos corresponden al total de tus facturas recibidas" in msg
+
+        # Verificación estricta: NO debe contener 'IVA' ni 'impuesto'
+        assert "iva" not in msg.lower()
+        assert "impuesto" not in msg.lower()
+    finally:
+        db.close()
+
+
+def test_client_resumen_manual_sales_zeros_when_no_movement(db_session_factory):
+    """/resumen MANUAL_SALES muestra ceros si el mes no tiene movimientos."""
+    db = db_session_factory()
+    try:
+        resp = ClientTelegramBot.handle_resumen(sender_chat_id=MANUAL_CHAT, db=db, target_period="2023-01")
+        assert resp["success"] is True
+        msg = resp["message"]
+        assert "Resumen del mes - Panadería Pedro" in msg
+        assert "2023-01" in msg
+        assert "$0 COP" in msg
+        assert "iva" not in msg.lower()
+        assert "impuesto" not in msg.lower()
+    finally:
+        db.close()
+
+
+def test_client_resumen_manual_sales_invalid_month_does_not_crash(db_session_factory):
+    """/resumen 2026-13 (pasa el patrón AAAA-MM del enrutador) responde un mensaje claro, sin excepción."""
+    db = db_session_factory()
+    try:
+        resp = ClientTelegramBot.handle_resumen(sender_chat_id=MANUAL_CHAT, db=db, target_period="2026-13")
+        assert resp["success"] is False
+        assert resp["reason"] == "INVALID_MONTH"
+        assert "/resumen AAAA-MM" in resp["message"]
+
+        text = ClientTelegramBot.handle_client_message(MANUAL_CHAT, "/resumen 2026-13", db)
+        assert "Mes inválido" in text
+    finally:
+        db.close()
+
+
+def test_client_vencimientos_manual_sales(db_session_factory):
+    """/vencimientos MANUAL_SALES responde indicando que no aplica con count 0."""
+    db = db_session_factory()
+    try:
+        resp = ClientTelegramBot.handle_vencimientos(sender_chat_id=MANUAL_CHAT, db=db)
+        assert resp["success"] is True
+        assert resp["count"] == 0
+        assert "no aplica a tu tipo de negocio" in resp["message"]
+    finally:
+        db.close()
+
+
+def test_client_help_by_business_type(db_session_factory):
+    """/ayuda adapta sus opciones según el tipo de negocio."""
+    db = db_session_factory()
+    try:
+        help_manual = ClientTelegramBot.handle_help(sender_chat_id=MANUAL_CHAT, db=db)
+        assert "/resumen" in help_manual
+        assert "/facturas" not in help_manual
+        assert "/dashboard" in help_manual
+        assert "/registrar_venta" in help_manual
+        assert "/ayuda" in help_manual
+        assert "/vencimientos" not in help_manual
+        assert "iva" not in help_manual.lower()
+        assert "impuesto" not in help_manual.lower()
+        assert "datos provienen directamente del repositorio oficial de la DIAN" not in help_manual
+
+        help_dian = ClientTelegramBot.handle_help(sender_chat_id=ANDREA_CHAT, db=db)
+        assert "/resumen" in help_dian
+        assert "/facturas" in help_dian
+        assert "/vencimientos" in help_dian
+        assert "/dashboard" in help_dian
+        assert "/ayuda" in help_dian
+        assert "/registrar_venta" not in help_dian
+        assert "datos provienen directamente del repositorio oficial de la DIAN" in help_dian
+    finally:
+        db.close()
+
+
+def test_dian_resumen_and_vencimientos_unaffected(db_session_factory):
+    """Para negocio DIAN, /resumen y /vencimientos conservan su comportamiento original."""
+    db = db_session_factory()
+    try:
+        summary = MonthlyTaxSummary(
+            business_id="biz-andrea",
+            period_year_month="2026-08",
+            total_invoiced_net=Decimal("10000000.00"),
+            iva_generado=Decimal("1900000.00"),
+            iva_descontable=Decimal("500000.00"),
+            iva_balance=Decimal("1400000.00"),
+            rete_iva_total=Decimal("0.00"),
+            rete_renta_total=Decimal("0.00"),
+            rete_ica_total=Decimal("0.00"),
+            total_invoices_count=5,
+            variation_vs_previous_pct=Decimal("10.00"),
+        )
+        db.add(summary)
+        db.commit()
+
+        # DIAN /resumen incluye IVA
+        res_dian = ClientTelegramBot.handle_resumen(sender_chat_id=ANDREA_CHAT, db=db, target_period="2026-08")
+        assert res_dian["success"] is True
+        assert "LIQUIDACIÓN DE IVA" in res_dian["message"]
+        assert "Saldo a Pagar DIAN" in res_dian["message"]
+
+        # DIAN /vencimientos incluye obligaciones del calendario
+        venc_dian = ClientTelegramBot.handle_vencimientos(sender_chat_id=ANDREA_CHAT, db=db)
+        assert venc_dian["success"] is True
+        assert venc_dian["count"] > 0
+        assert "CALENDARIO DE VENCIMIENTOS DIAN" in venc_dian["message"]
+    finally:
+        db.close()
+

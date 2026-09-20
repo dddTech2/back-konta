@@ -159,10 +159,39 @@ def fixture_seed_data(db_session):
         total=Decimal("1000000.00"),
         group_type="Recibido",
     )
-    db_session.add_all([inv1, inv2, inv3])
+    # Negocio adicional con origen de ingresos MANUAL_SALES para Story 6.3
+    biz_manual = Business(
+        id="biz-andrea-manual",
+        client_id=user.id,
+        legal_name="Andrea Torres Manual SAS",
+        commercial_name="Andrea Manual",
+        nit="901999888",
+        dv="2",
+        economic_activity="Comercio al por menor",
+        taxpayer_type="PERSONA_NATURAL",
+        income_source="MANUAL_SALES",
+        is_active=True,
+    )
+    inv_manual = Invoice(
+        id="inv-manual-001",
+        business_id=biz_manual.id,
+        cufe="cufe-manual-001",
+        document_type="Factura electrónica de venta",
+        prefix="REC",
+        folio="101",
+        issue_date=datetime(2026, 8, 10, 10, 0),
+        issuer_nit="800111222",
+        issuer_name="Proveedor Papelería",
+        receiver_nit="901999888",
+        receiver_name="Andrea Torres Manual SAS",
+        iva=Decimal("19000.00"),
+        total=Decimal("119000.00"),
+        group_type="Recibido",
+    )
+    db_session.add_all([inv1, inv2, inv3, biz_manual, inv_manual])
     db_session.commit()
 
-    return {"user": user, "business": biz, "sub": sub}
+    return {"user": user, "business": biz, "biz_manual": biz_manual, "sub": sub}
 
 
 def test_root_and_health_endpoints(client):
@@ -365,3 +394,34 @@ def test_public_config_without_token_returns_none(client, monkeypatch):
     res = client.get("/api/config")
     assert res.status_code == 200
     assert res.json()["telegram_bot_username"] is None
+
+
+def test_iva_and_dashboard_return_404_for_manual_sales_business(client, seed_data):
+    """GET /api/iva/{id} y GET /api/dashboard/{id} devuelven 404 para un negocio MANUAL_SALES."""
+    r_iva = client.get("/api/iva/biz-andrea-manual")
+    assert r_iva.status_code == 404
+    assert r_iva.json()["detail"] == "Este servicio no aplica a tu tipo de negocio."
+
+    r_dash = client.get("/api/dashboard/biz-andrea-manual")
+    assert r_dash.status_code == 404
+    assert r_dash.json()["detail"] == "Este servicio no aplica a tu tipo de negocio."
+
+
+def test_invoices_returns_200_for_manual_sales_business(client, seed_data):
+    """GET /api/invoices/{id} sigue respondiendo 200 para un negocio MANUAL_SALES."""
+    r_inv = client.get("/api/invoices/biz-andrea-manual")
+    assert r_inv.status_code == 200
+    data = r_inv.json()
+    assert "invoices" in data
+    assert len(data["invoices"]) == 1
+    assert data["invoices"][0]["id"] == "inv-manual-001"
+
+
+def test_dian_business_retains_iva_and_dashboard(client, seed_data):
+    """Para negocio DIAN, /api/iva y /api/dashboard siguen respondiendo 200."""
+    r_iva = client.get("/api/iva/biz-andrea-diseno")
+    assert r_iva.status_code == 200
+
+    r_dash = client.get("/api/dashboard/biz-andrea-diseno")
+    assert r_dash.status_code == 200
+

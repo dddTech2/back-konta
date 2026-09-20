@@ -11,9 +11,16 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Callable
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from dian_automation.db.models import User, DIANExtractionJob, Business
+from dian_automation.db.models import (
+    User,
+    DIANExtractionJob,
+    Business,
+    Invoice,
+    INCOME_SOURCE_MANUAL_SALES,
+)
 from dian_automation.queue.exceptions import STALE_PROCESSING_CODE, is_slow_error
 from dian_automation.telegram.tech_ops_bot import TechOpsAlertBot, create_tech_ops_on_failure_callback
 
@@ -166,3 +173,54 @@ def create_failure_alert_callback(
         tech_ops_callback(job, error_code, error_detail, screenshot_path)
 
     return callback
+
+
+def notify_misclassified_business(
+    db: Session,
+    job: DIANExtractionJob,
+    bot: Optional[TechOpsAlertBot] = None,
+) -> bool:
+    """Avisa a los administradores si un negocio MANUAL_SALES trajo facturas emitidas de la DIAN.
+
+    AC #7 de la Story 6.3:
+    Tras el análisis exitoso del ZIP de un trabajo cuyo negocio es MANUAL_SALES y contiene
+    facturas emitidas (group_type == "Emitido" asociadas al job), se notifica una vez a los
+    usuarios ADMIN por Telegram ("posible cliente mal clasificado").
+    El tipo del negocio NO cambia.
+    Nunca propaga excepciones para no afectar trabajos exitosos.
+    """
+    try:
+        if not job or not getattr(job, "business_id", None):
+            return False
+
+        business = db.query(Business).filter(Business.id == job.business_id).first()
+        if not business or business.income_source != INCOME_SOURCE_MANUAL_SALES:
+            return False
+
+        issued_count = (
+            db.query(func.count(Invoice.id))
+            .filter(
+                Invoice.job_id == job.id,
+                Invoice.group_type == "Emitido",
+            )
+            .scalar()
+            or 0
+        )
+        if issued_count == 0:
+            return False
+
+        commercial_name = business.commercial_name or business.legal_name or "Desconocido"
+        nit_str = f"{business.nit}-{business.dv}" if business.dv else business.nit
+        text = (
+            f"⚠️ Posible cliente mal clasificado: {commercial_name} (NIT {nit_str}) "
+            f"está registrado como ventas manuales, pero el último análisis trajo {issued_count} "
+            f"factura(s) emitida(s) de la DIAN. Revisa su tipo de negocio (/cambiar_tipo)."
+        )
+
+        result = notify_admins(db, text, bot=bot)
+        return bool(result.get("sent"))
+    except Exception as e:
+        job_id = getattr(job, "id", None)
+        logger.error(f"Error notificando posible clasificación errónea para el trabajo {job_id}: {e}")
+        return False
+

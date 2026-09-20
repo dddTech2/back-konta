@@ -14,19 +14,38 @@ import os
 import re
 import logging
 from datetime import datetime, date
+from decimal import Decimal
 from typing import Optional, Dict, Any, Tuple, List
+from zoneinfo import ZoneInfo
 import httpx
 from sqlalchemy.orm import Session
 
 from dian_automation.config import config
-from dian_automation.core import sales_service
-from dian_automation.db.models import User, Business, MonthlyTaxSummary, Invoice, DIANTaxCalendar
+from dian_automation.core import income_service, sales_service
+from dian_automation.db.models import (
+    User,
+    Business,
+    MonthlyTaxSummary,
+    Invoice,
+    DIANTaxCalendar,
+    INCOME_SOURCE_MANUAL_SALES,
+)
 from dian_automation.subscriptions.lockout_service import SubscriptionLockoutService
 
 logger = logging.getLogger("client_bot")
 
 # httpx loguea a nivel INFO la URL completa de cada petición y la de Telegram lleva el token del bot.
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+def _format_cop(amount: Decimal) -> str:
+    """Formatea monto en COP: $1,500,000 sin decimales si es entero, con 2 si no."""
+    is_integer = (amount % 1 == 0)
+    abs_amt = abs(amount)
+    fmt = f"${abs_amt:,.0f}" if is_integer else f"${abs_amt:,.2f}"
+    if amount < 0:
+        return f"-{fmt} COP"
+    return f"{fmt} COP"
 
 
 class ClientTelegramBot:
@@ -100,6 +119,44 @@ class ClientTelegramBot:
         user, business, err_code, err_msg = cls.get_authenticated_client(sender_chat_id, db)
         if err_code:
             return {"success": False, "reason": err_code, "message": err_msg}
+
+        if business.income_source == INCOME_SOURCE_MANUAL_SALES:
+            month = target_period or datetime.now(ZoneInfo("America/Bogota")).strftime("%Y-%m")
+            try:
+                data = income_service.summary(db, business, month)
+            except income_service.IncomeError:
+                return {
+                    "success": False,
+                    "reason": income_service.IncomeError.INVALID_MONTH,
+                    "message": "❌ Mes inválido. Usa el formato `/resumen AAAA-MM`, por ejemplo `/resumen 2026-08`.",
+                }
+            ingresos = data["ingresos"]
+            egresos = data["egresos"]
+            utilidad = data["utilidad"]
+
+            has_data = not (ingresos == Decimal("0.00") and egresos == Decimal("0.00") and utilidad == Decimal("0.00"))
+
+            message = (
+                f"📊 *Resumen del mes - {business.commercial_name}*\n"
+                f"🏢 NIT: `{business.nit}-{business.dv}`\n"
+                f"📅 *Mes:* {month}\n"
+                "───────────────────────────────\n"
+                f"💵 *Ingresos:* {_format_cop(ingresos)}\n"
+                f"💸 *Egresos:* {_format_cop(egresos)}\n"
+                f"📈 *Utilidad estimada:* {_format_cop(utilidad)}\n"
+                "───────────────────────────────\n"
+                "ℹ️ _Los egresos corresponden al total de tus facturas recibidas._"
+            )
+
+            return {
+                "success": True,
+                "has_data": has_data,
+                "period": month,
+                "ingresos": ingresos,
+                "egresos": egresos,
+                "utilidad": utilidad,
+                "message": message,
+            }
 
         query = db.query(MonthlyTaxSummary).filter(MonthlyTaxSummary.business_id == business.id)
         if target_period:
@@ -232,6 +289,16 @@ class ClientTelegramBot:
         user, business, err_code, err_msg = cls.get_authenticated_client(sender_chat_id, db)
         if err_code:
             return {"success": False, "reason": err_code, "message": err_msg}
+
+        if business.income_source == INCOME_SOURCE_MANUAL_SALES:
+            return {
+                "success": True,
+                "count": 0,
+                "message": (
+                    f"🗓️ *Calendario Tributario DIAN*\n\n"
+                    "ℹ️ El calendario de vencimientos tributarios no aplica a tu tipo de negocio."
+                ),
+            }
 
         # Extraer el último dígito del NIT (sin el DV)
         clean_nit = "".join(filter(str.isdigit, business.nit))
@@ -389,6 +456,8 @@ class ClientTelegramBot:
         except sales_service.SalesError as exc:
             if exc.code == sales_service.SalesError.BUSINESS_BLOCKED:
                 message = SubscriptionLockoutService.BLOCKED_TELEGRAM_MESSAGE
+            elif exc.code == sales_service.SalesError.NOT_MANUAL_SALES:
+                message = f"ℹ️ {exc.message}"
             elif exc.code in (
                 sales_service.SalesError.NON_POSITIVE_TOTAL,
                 sales_service.SalesError.DESCRIPTION_TOO_LONG,
@@ -414,6 +483,18 @@ class ClientTelegramBot:
 
         biz_name = business.commercial_name if business else "tu empresa"
 
+        if business and business.income_source == INCOME_SOURCE_MANUAL_SALES:
+            return (
+                f"👋 *¡Hola, bienvenido a Kontable Bot!*\n"
+                f"Asistente contable inteligente para *{biz_name}*.\n\n"
+                "Puedes consultar tu información en cualquier momento con estos comandos:\n\n"
+                "📊 */resumen* — Ingresos, egresos y utilidad del mes.\n"
+                "📱 */dashboard* — Enlace a tu panel web/móvil con gráficos e historial completo.\n"
+                "📝 */registrar_venta* — Registra una venta: `/registrar_venta 150000 | descripción opcional`.\n"
+                "ℹ️ */ayuda* — Muestra este menú de opciones.\n\n"
+                "🔒 _Tus cifras de ingresos se basan en las ventas registradas por el cliente y los egresos en tus facturas electrónicas recibidas._"
+            )
+
         return (
             f"👋 *¡Hola, bienvenido a Kontable Bot!*\n"
             f"Asistente tributario inteligente para *{biz_name}*.\n\n"
@@ -422,7 +503,6 @@ class ClientTelegramBot:
             "🧾 */facturas* — Últimas 4 facturas electrónicas emitidas con clientes y montos.\n"
             "🗓️ */vencimientos* — Fechas límite de tus obligaciones tributarias según tu NIT.\n"
             "📱 */dashboard* — Enlace a tu panel web/móvil con gráficos e historial completo.\n"
-            "📝 */registrar_venta* — Registra una venta: `/registrar_venta 150000 | descripción opcional`.\n"
             "ℹ️ */ayuda* — Muestra este menú de opciones.\n\n"
             "🔒 _Tus datos provienen directamente del repositorio oficial de la DIAN._"
         )

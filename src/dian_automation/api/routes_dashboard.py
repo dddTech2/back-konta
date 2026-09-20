@@ -1,11 +1,11 @@
 """Rutas para el Dashboard principal de Kontable."""
 
 from typing import Tuple, Dict, Any, List
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from dian_automation.db.database import get_db
-from dian_automation.db.models import Business, User, MonthlyTaxSummary, Invoice, Subscription
+from dian_automation.db.models import Business, User, MonthlyTaxSummary, Invoice, Subscription, INCOME_SOURCE_MANUAL_SALES
 from dian_automation.api.dependencies import get_business_with_access
 from dian_automation.api.schemas import (
     DashboardResponse,
@@ -49,6 +49,8 @@ def get_dashboard(
 ):
     """Retorna todas las métricas consolidadas consumidas por la pantalla de inicio."""
     business, user, access_check = business_access
+    if business.income_source == INCOME_SOURCE_MANUAL_SALES:
+        raise HTTPException(status_code=404, detail="Este servicio no aplica a tu tipo de negocio.")
 
     # 1. Información del negocio
     biz_info = BusinessInfo(

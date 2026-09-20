@@ -10,7 +10,15 @@ from sqlalchemy.orm import sessionmaker
 
 from dian_automation.core import sales_service
 from dian_automation.core.sales_service import SalesError, register_sale
-from dian_automation.db.models import Base, Business, Sale, Subscription, User
+from dian_automation.db.models import (
+    Base,
+    Business,
+    INCOME_SOURCE_DIAN,
+    INCOME_SOURCE_MANUAL_SALES,
+    Sale,
+    Subscription,
+    User,
+)
 
 
 @pytest.fixture
@@ -19,11 +27,11 @@ def db():
     Base.metadata.create_all(bind=engine)
     session = sessionmaker(autocommit=False, autoflush=False, bind=engine)()
 
-    def _client(suffix: str, status: str):
+    def _client(suffix: str, status: str, income_source: str = INCOME_SOURCE_MANUAL_SALES):
         user = User(id=f"usr-{suffix}", email=f"{suffix}@x.co", full_name=suffix, role="CLIENT",
                     telegram_chat_id=1000 + len(suffix), is_telegram_linked=True, is_active=True)
         biz = Business(id=f"biz-{suffix}", client_id=user.id, legal_name=suffix, commercial_name=suffix,
-                       nit="901008579", dv="7", is_active=True)
+                       nit="901008579", dv="7", is_active=True, income_source=income_source)
         sub = Subscription(id=f"sub-{suffix}", client_id=user.id, plan="TRIMESTRAL",
                            discount_rate=Decimal("5.00"), base_price=Decimal("150000.00"),
                            final_price=Decimal("142500.00"), start_date=date.today() - timedelta(days=10),
@@ -31,7 +39,11 @@ def db():
                            grace_period_end=date.today() + timedelta(days=83), status=status)
         return [user, biz, sub]
 
-    session.add_all(_client("ok", "ACTIVO") + _client("blocked", "BLOQUEADO"))
+    session.add_all(
+        _client("ok", "ACTIVO")
+        + _client("blocked", "BLOQUEADO")
+        + _client("dian", "ACTIVO", income_source=INCOME_SOURCE_DIAN)
+    )
     session.commit()
     yield session
     session.close()
@@ -175,3 +187,21 @@ def test_register_sale_now_at_0510_utc_stores_same_day_bogota_date(db):
 
     assert sale.created_at == now
     assert sale.sale_date == date(2026, 9, 21)
+
+
+def test_dian_business_fails_with_not_manual_sales_and_no_row(db):
+    with pytest.raises(SalesError) as exc:
+        _register(db, who="dian", total="100")
+
+    assert exc.value.code == SalesError.NOT_MANUAL_SALES
+    assert "Tu negocio factura electrónicamente" in exc.value.message
+    assert _count(db) == 0
+
+
+def test_manual_sales_business_succeeds(db):
+    sale = _register(db, who="ok", total="50000", description="Venta manual")
+
+    assert sale.id is not None
+    assert sale.total_amount == Decimal("50000.00")
+    assert _count(db) == 1
+

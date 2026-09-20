@@ -183,3 +183,21 @@ class SaleResponse(BaseModel):
     description: Optional[str] = None
     recorded_via: str
     created_at: datetime
+
+
+class IncomeSummaryItem(BaseModel):
+    """Resumen mensual de ingresos, egresos y utilidad (como cadenas decimales con 2 decimales)."""
+    month: str
+    ingresos: str
+    egresos: str
+    utilidad: str
+
+
+class IncomeSummaryResponse(BaseModel):
+    """Respuesta del endpoint de resumen de ingresos e historial de 6 meses."""
+    month: str
+    ingresos: str
+    egresos: str
+    utilidad: str
+    historial: List[IncomeSummaryItem]
+

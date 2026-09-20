@@ -40,4 +40,6 @@ def create_sale(
         if exc.code == sales_service.SalesError.BUSINESS_BLOCKED:
             # Bloqueo ocurrido entre el guardia de acceso y el servicio: mismo 403 que el resto de rutas.
             raise SubscriptionBlockedError(message=exc.message) from exc
+        if exc.code == sales_service.SalesError.NOT_MANUAL_SALES:
+            raise HTTPException(status_code=409, detail=exc.message) from exc
         raise HTTPException(status_code=422, detail=exc.message) from exc

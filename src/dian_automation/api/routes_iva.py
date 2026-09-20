@@ -1,11 +1,11 @@
 """Rutas para la consulta de Balance de IVA y Ring SVG."""
 
 from typing import Tuple, Dict, Any, List
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from dian_automation.db.database import get_db
-from dian_automation.db.models import Business, User, MonthlyTaxSummary, Invoice
+from dian_automation.db.models import Business, User, MonthlyTaxSummary, Invoice, INCOME_SOURCE_MANUAL_SALES
 from dian_automation.api.dependencies import get_business_with_access
 from dian_automation.api.schemas import (
     IvaDetailResponse,
@@ -33,6 +33,8 @@ def get_iva_detail(
 ):
     """Retorna los periodos fiscales de IVA con métricas para el gráfico circular Ring SVG."""
     business, user, _ = business_access
+    if business.income_source == INCOME_SOURCE_MANUAL_SALES:
+        raise HTTPException(status_code=404, detail="Este servicio no aplica a tu tipo de negocio.")
 
     summaries = (
         db.query(MonthlyTaxSummary)

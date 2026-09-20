@@ -31,10 +31,10 @@ def db_session():
         engine.dispose()
 
 
-def _seed_owner(db, suffix: str, nit: str, status: str = "ACTIVO") -> None:
+def _seed_owner(db, suffix: str, nit: str, status: str = "ACTIVO", income_source: str = "MANUAL_SALES") -> None:
     user = User(id=f"usr-{suffix}", email=f"{suffix}@x.co", full_name=suffix, role="CLIENT", is_active=True)
     business = Business(id=f"biz-{suffix}", client_id=user.id, legal_name=suffix, commercial_name=suffix,
-                        nit=nit, dv="7", is_active=True)
+                        nit=nit, dv="7", is_active=True, income_source=income_source)
     sub = Subscription(id=f"sub-{suffix}", client_id=user.id, plan="TRIMESTRAL",
                        discount_rate=Decimal("5.00"), base_price=Decimal("150000.00"),
                        final_price=Decimal("142500.00"), start_date=date.today() - timedelta(days=10),
@@ -49,6 +49,7 @@ def seeded(db_session):
     _seed_owner(db_session, "ana", "901111111")
     _seed_owner(db_session, "otro", "902222222")
     _seed_owner(db_session, "bloq", "903333333", status="BLOQUEADO")
+    _seed_owner(db_session, "dian", "904444444", income_source="DIAN")
     return db_session
 
 
@@ -247,3 +248,23 @@ def test_auth_and_sales_routers_are_both_mounted(client):
     assert me.status_code == 200
     sale = client.post(f"/api/sales/{me.json()['business_id']}", json={"total_amount": 10})
     assert sale.status_code == 201
+
+
+def test_post_sale_with_dian_business_returns_409_and_no_row(client, seeded, bearer):
+    dian_client = TestClient(app, headers=bearer("usr-dian"))
+    response = dian_client.post("/api/sales/biz-dian", json={"total_amount": 150000.00, "description": "3 tortas"})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "Tu negocio factura electrónicamente: las ventas salen de la DIAN y no se registran a mano."
+    )
+    assert seeded.query(Sale).filter(Sale.business_id == "biz-dian").count() == 0
+
+
+def test_post_sale_with_manual_sales_business_returns_201(client, seeded):
+    response = client.post("/api/sales/biz-ana", json={"total_amount": 25000.00, "description": "Venta manual"})
+
+    assert response.status_code == 201
+    assert response.json()["total_amount"] == "25000.00"
+    assert seeded.query(Sale).filter(Sale.business_id == "biz-ana").count() >= 1
+
