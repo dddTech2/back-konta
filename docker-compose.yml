@@ -1,16 +1,33 @@
-# Servidor: api, bot, scheduler y redis, mas un `migrate` de un solo uso, con un volumen de datos compartido.
+# Servidor: postgres, redis, api, bot, scheduler, backup y el migrate de un solo uso, con un volumen de datos compartido.
+# SQLite ya no se usa en el servidor.
 # NO incluye el worker de descargas: la DIAN bloquea la IP del VPS, asi que el worker corre aparte en una
 # red residencial (run_worker_remote.py o kontable-worker.exe, ver docs/DEPLOYMENT.md). Requiere que, en el servidor, la carpeta
 # ProyectoDianFront exista como hermana de esta (../ProyectoDianFront), igual que en local.
 #
 # Uso:
-#   cp .env.example .env   # y completar TELEGRAM_BOT_TOKEN, ADMIN_TELEGRAM_CHAT_ID, etc.
+#   cp .env.example .env   # definir POSTGRES_PASSWORD en .env (ej. openssl rand -hex 24; usa solo letras y números para que la URL de conexión no necesite escapes), TELEGRAM_BOT_TOKEN, ADMIN_TELEGRAM_CHAT_ID, etc.
 #   (cd ../ProyectoDianFront && npm ci && npm run build)   # la API sirve ../ProyectoDianFront/dist
 #   docker compose up -d --build   # el servicio `migrate` crea/actualiza las tablas antes de arrancar el resto
 #   docker compose exec api python -m dian_automation.core.calendar_loader data/calendario_dian_2026.csv   # una vez
 #   docker compose logs -f bot      # confirmar "Conectado con éxito como: @tu_bot"
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kontable
+      POSTGRES_DB: kontable
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kontable -d kontable"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
@@ -21,15 +38,20 @@ services:
     restart: unless-stopped
 
   # Aplica las migraciones de Alembic (crea las tablas en un volumen nuevo y actualiza uno existente) y termina.
-  # api, bot y scheduler esperan a que acabe bien; con un solo migrador no compiten por el archivo SQLite.
+  # api, bot y scheduler esperan a que acabe bien; con un solo migrador no compiten por la base de datos.
   migrate:
     build:
       context: .
       dockerfile: docker/Dockerfile
     command: ["migrate"]
     env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://kontable:${POSTGRES_PASSWORD}@postgres:5432/kontable
     volumes:
       - kontable_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: "no"
 
   api:
@@ -39,6 +61,7 @@ services:
     command: ["api"]
     env_file: .env
     environment:
+      DATABASE_URL: postgresql+psycopg://kontable:${POSTGRES_PASSWORD}@postgres:5432/kontable
       FRONTEND_DIR: /frontend/dist
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0   # dentro de la red de compose Redis es "redis", no localhost
     ports:
@@ -47,6 +70,8 @@ services:
       - kontable_data:/data
       - ../ProyectoDianFront:/frontend:ro
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_started
       migrate:
@@ -60,10 +85,13 @@ services:
     command: ["bot"]
     env_file: .env
     environment:
+      DATABASE_URL: postgresql+psycopg://kontable:${POSTGRES_PASSWORD}@postgres:5432/kontable
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0   # dentro de la red de compose Redis es "redis", no localhost
     volumes:
       - kontable_data:/data
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_started
       migrate:
@@ -81,16 +109,38 @@ services:
     command: ["scheduler"]
     env_file: .env
     environment:
+      DATABASE_URL: postgresql+psycopg://kontable:${POSTGRES_PASSWORD}@postgres:5432/kontable
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0   # dentro de la red de compose Redis es "redis", no localhost
     volumes:
       - kontable_data:/data
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_started
       migrate:
         condition: service_completed_successfully
     restart: unless-stopped
 
+  backup:
+    image: postgres:16-alpine
+    entrypoint: ["sh", "/backup/pg-backup.sh"]
+    environment:
+      PGHOST: postgres
+      PGUSER: kontable
+      PGDATABASE: kontable
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+      BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-24}
+    volumes:
+      - ./docker/pg-backup.sh:/backup/pg-backup.sh:ro
+      - ./backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   kontable_data:
   redis_data:
+  postgres_data:

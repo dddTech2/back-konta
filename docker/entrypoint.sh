@@ -11,7 +11,7 @@ mkdir -p "$DOWNLOAD_DIR" "$ARTIFACTS_DIR"
 
 case "$1" in
   migrate)
-    echo "[entrypoint] Aplicando migraciones (alembic upgrade head) sobre $DATABASE_URL..."
+    echo "[entrypoint] Aplicando migraciones (alembic upgrade head)..."
     exec alembic upgrade head
     ;;
   api)
