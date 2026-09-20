@@ -1,6 +1,6 @@
 """Esquemas Pydantic para los endpoints REST de Kontable."""
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, Field
@@ -184,6 +184,27 @@ class SaleResponse(BaseModel):
     description: Optional[str] = None
     recorded_via: str
     created_at: datetime
+
+
+class SaleListItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    total_amount: Decimal
+    description: Optional[str] = None
+    recorded_via: str
+    sale_date: date
+    created_at: datetime
+
+
+class SaleListResponse(BaseModel):
+    month: str            # 'YYYY-MM'
+    sales: List[SaleListItem]
+
+
+class SaleVoidResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    voided_at: datetime
 
 
 class IncomeSummaryItem(BaseModel):

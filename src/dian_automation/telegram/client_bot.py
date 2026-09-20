@@ -5,6 +5,8 @@ Permite a los clientes consultar en tiempo real desde Telegram:
 - /facturas: Últimas 4 facturas electrónicas emitidas.
 - /vencimientos: Calendario de obligaciones tributarias DIAN según el último dígito del NIT.
 - /registrar_venta: Registra una venta (total y descripción opcional) vía core/sales_service.py.
+- /mis_ventas: Lista las últimas ventas registradas del negocio con numeración para anulación.
+- /anular_venta: Anula una venta mal registrada según su posición en la lista reciente.
 - /ayuda: Menú interactivo de comandos disponibles.
 
 Incluye control de acceso mediante verificación de vinculación y estado de suscripción.
@@ -483,6 +485,128 @@ class ClientTelegramBot:
         return {"success": True, "sale_id": sale.id, "message": message}
 
     @classmethod
+    def handle_mis_ventas(cls, sender_chat_id: int, db: Session) -> Dict[str, Any]:
+        """Procesa /mis_ventas: lista hasta 10 ventas recientes no anuladas del negocio."""
+        user, business, err_code, err_msg = cls.get_authenticated_client(sender_chat_id, db)
+        if err_code:
+            return {"success": False, "reason": err_code, "message": err_msg}
+
+        if business.income_source != INCOME_SOURCE_MANUAL_SALES:
+            return {
+                "success": False,
+                "reason": "NOT_MANUAL_SALES",
+                "message": "ℹ️ Tu negocio factura electrónicamente: las ventas salen de la DIAN y no se registran a mano.",
+            }
+
+        sales = sales_service.list_recent_sales(db, business, 10)
+        if not sales:
+            return {
+                "success": True,
+                "count": 0,
+                "message": "ℹ️ Aún no tienes ventas registradas.",
+            }
+
+        lines = ["🧾 *Tus últimas ventas*", ""]
+        for i, sale in enumerate(sales, 1):
+            date_str = sale.sale_date.strftime("%d/%m/%Y")
+            amount_str = _format_cop(sale.total_amount)
+            if sale.description:
+                desc = cls._escape_markdown(sale.description)
+                lines.append(f"{i}. {date_str} — {amount_str} — {desc}")
+            else:
+                lines.append(f"{i}. {date_str} — {amount_str}")
+
+        lines.append("")
+        lines.append("Para anular una: `/anular_venta 2`")
+
+        return {
+            "success": True,
+            "count": len(sales),
+            "message": "\n".join(lines),
+        }
+
+    @staticmethod
+    def parse_anular_venta_command(text: str) -> Optional[int]:
+        """Quita /anular_venta (con @bot opcional) y devuelve el entero positivo o None."""
+        if not re.match(r"^\s*/anular_venta(?:@\w+)?(?:\s|$)", text.strip(), flags=re.IGNORECASE):
+            return None
+        body = re.sub(r"^\s*/anular_venta(?:@\w+)?", "", text.strip(), flags=re.IGNORECASE)
+        cleaned = body.strip()
+        if not cleaned or not cleaned.isdigit():
+            return None
+        val = int(cleaned)
+        return val if val > 0 else None
+
+    @classmethod
+    def handle_anular_venta(
+        cls, sender_chat_id: int, db: Session, text: str
+    ) -> Dict[str, Any]:
+        """Procesa /anular_venta N: anula la venta en la posición posicional indicada."""
+        user, business, err_code, err_msg = cls.get_authenticated_client(sender_chat_id, db)
+        if err_code:
+            return {"success": False, "reason": err_code, "message": err_msg}
+
+        if business.income_source != INCOME_SOURCE_MANUAL_SALES:
+            return {
+                "success": False,
+                "reason": "NOT_MANUAL_SALES",
+                "message": "ℹ️ Tu negocio factura electrónicamente: las ventas salen de la DIAN y no se registran a mano.",
+            }
+
+        num = cls.parse_anular_venta_command(text)
+        if num is None:
+            return {
+                "success": False,
+                "reason": "INVALID_NUMBER",
+                "message": (
+                    "❌ Indica el número de la venta a anular, por ejemplo `/anular_venta 2`. "
+                    "Mira tu lista con /mis_ventas."
+                ),
+            }
+
+        recent = sales_service.list_recent_sales(db, business, 10)
+        if num < 1 or num > len(recent):
+            return {
+                "success": False,
+                "reason": "NUMBER_OUT_OF_RANGE",
+                "message": "❌ Ese número no está en tu lista actual. Usa /mis_ventas para ver las ventas que puedes anular.",
+            }
+
+        target_sale = recent[num - 1]
+
+        try:
+            voided = sales_service.void_sale(
+                db, user=user, business=business, sale_id=target_sale.id
+            )
+        except sales_service.SalesError as exc:
+            if exc.code == sales_service.SalesError.BUSINESS_BLOCKED:
+                message = SubscriptionLockoutService.BLOCKED_TELEGRAM_MESSAGE
+            elif exc.code == sales_service.SalesError.NOT_MANUAL_SALES:
+                message = f"ℹ️ {exc.message}"
+            elif exc.code in (
+                sales_service.SalesError.SALE_NOT_FOUND,
+                sales_service.SalesError.ALREADY_VOIDED,
+            ):
+                message = f"❌ {exc.message} Usa /mis_ventas para ver tu lista actual."
+            else:
+                message = f"❌ {exc.message}"
+            return {"success": False, "reason": exc.code, "message": message}
+
+        date_str = voided.sale_date.strftime("%d/%m/%Y")
+        amount_str = _format_cop(voided.total_amount)
+        if voided.description:
+            desc_escaped = cls._escape_markdown(voided.description)
+            msg = f"🗑️ Venta anulada: {amount_str} — {desc_escaped} ({date_str})"
+        else:
+            msg = f"🗑️ Venta anulada: {amount_str} ({date_str})"
+
+        return {
+            "success": True,
+            "sale_id": voided.id,
+            "message": msg,
+        }
+
+    @classmethod
     def handle_help(cls, sender_chat_id: int, db: Session) -> str:
         """Devuelve el menú de ayuda y bienvenida para el cliente."""
         user, business, err_code, err_msg = cls.get_authenticated_client(sender_chat_id, db)
@@ -499,6 +623,8 @@ class ClientTelegramBot:
                 "📊 */resumen* — Ingresos, egresos y utilidad del mes.\n"
                 "📱 */dashboard* — Enlace a tu panel web/móvil con gráficos e historial completo.\n"
                 "📝 */registrar_venta* — Registra una venta: `/registrar_venta 150000 | descripción opcional`.\n"
+                "🧾 */mis_ventas* — Tus últimas 10 ventas, con un número para anular.\n"
+                "🗑️ */anular_venta* — Anula una venta mal registrada: `/anular_venta 2`.\n"
                 "ℹ️ */ayuda* — Muestra este menú de opciones.\n\n"
                 "🔒 _Tus cifras de ingresos se basan en las ventas registradas por el cliente y los egresos en tus facturas electrónicas recibidas._"
             )
@@ -547,6 +673,14 @@ class ClientTelegramBot:
 
         elif re.match(r"^/registrar_venta(?:@\w+)?(?:\s|$)", text_clean):
             res = cls.handle_registrar_venta(sender_chat_id, db, text)
+            return res["message"]
+
+        elif re.match(r"^/mis_ventas(?:@\w+)?(?:\s|$)", text_clean):
+            res = cls.handle_mis_ventas(sender_chat_id, db)
+            return res["message"]
+
+        elif re.match(r"^/anular_venta(?:@\w+)?(?:\s|$)", text_clean):
+            res = cls.handle_anular_venta(sender_chat_id, db, text)
             return res["message"]
 
         elif text_clean.startswith("/ayuda") or text_clean.startswith("/help") or text_clean == "/start":

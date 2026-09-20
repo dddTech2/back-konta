@@ -920,3 +920,657 @@ def test_client_vencimientos_filtered_by_business_profile(db_session_factory):
     finally:
         db.close()
 
+
+# ---------------------------------------------------------------------------
+# Story 6.5: /mis_ventas y /anular_venta (Parte B2)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_anular_venta_command():
+    """Valida la extracción del número entero positivo o None según la sintaxis."""
+    parse = ClientTelegramBot.parse_anular_venta_command
+
+    assert parse("/anular_venta 1") == 1
+    assert parse("/anular_venta 10") == 10
+    assert parse("/anular_venta@KontableBot 5") == 5
+    assert parse("/ANULAR_VENTA 3") == 3
+    assert parse("/anular_venta") is None
+    assert parse("/anular_venta 0") is None
+    assert parse("/anular_venta -1") is None
+    assert parse("/anular_venta abc") is None
+    assert parse("/anular_venta 1 2") is None
+    assert parse("/anular_venta 1.5") is None
+    assert parse("hola") is None
+    assert parse("") is None
+
+
+def test_mis_ventas_listing_with_details(db_session_factory):
+    """/mis_ventas lista con número, fecha dd/mm/AAAA, monto y descripción."""
+    from dian_automation.db.models import Sale
+
+    db = db_session_factory()
+    try:
+        sale1 = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("50000.00"),
+            description="Pan integral y café",
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=date(2026, 9, 10),
+            created_at=datetime(2026, 9, 10, 8, 0, 0),
+        )
+        sale2 = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("120000.00"),
+            description=None,
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=date(2026, 9, 12),
+            created_at=datetime(2026, 9, 12, 10, 30, 0),
+        )
+        db.add_all([sale1, sale2])
+        db.commit()
+
+        resp = ClientTelegramBot.handle_mis_ventas(sender_chat_id=MANUAL_CHAT, db=db)
+        assert resp["success"] is True
+        assert resp["count"] == 2
+
+        msg = resp["message"]
+        assert "🧾 *Tus últimas ventas*" in msg
+        # La más reciente primero (sale2 es del 12/09, sale1 del 10/09)
+        assert "1. 12/09/2026 — $120,000 COP" in msg
+        # Sin descripción: se omite el guion y la descripción
+        assert "1. 12/09/2026 — $120,000 COP —" not in msg
+        # Con descripción
+        assert "2. 10/09/2026 — $50,000 COP — Pan integral y café" in msg
+        assert "Para anular una: `/anular_venta 2`" in msg
+    finally:
+        db.close()
+
+
+def test_mis_ventas_max_10_even_if_12_sales(db_session_factory):
+    """/mis_ventas muestra máximo 10 aunque haya 12 ventas y la más reciente es la 1."""
+    from dian_automation.db.models import Sale
+
+    db = db_session_factory()
+    try:
+        base_date = date(2026, 9, 1)
+        base_time = datetime(2026, 9, 1, 8, 0, 0)
+        for i in range(1, 13):
+            sale = Sale(
+                business_id="biz-pedro-manual",
+                total_amount=Decimal(f"{i * 10000}.00"),
+                description=f"Venta número {i}",
+                recorded_via="TELEGRAM",
+                recorded_by_user_id="usr-pedro-manual",
+                sale_date=base_date + timedelta(days=i),
+                created_at=base_time + timedelta(hours=i),
+            )
+            db.add(sale)
+        db.commit()
+
+        resp = ClientTelegramBot.handle_mis_ventas(sender_chat_id=MANUAL_CHAT, db=db)
+        assert resp["success"] is True
+        assert resp["count"] == 10
+
+        msg = resp["message"]
+        # La más reciente es la 12, que debe ser la número 1 de la lista
+        assert "1. 13/09/2026 — $120,000 COP — Venta número 12" in msg
+        # La número 10 de la lista debe ser la venta 3
+        assert "10. 04/09/2026 — $30,000 COP — Venta número 3" in msg
+        # Las ventas 1 y 2 quedaron fuera del límite de 10
+        assert "Venta número 1\n" not in msg and not msg.endswith("Venta número 1")
+        assert "Venta número 2" not in msg
+        assert "11." not in msg
+        assert "12." not in msg
+    finally:
+        db.close()
+
+
+def test_mis_ventas_excludes_voided_sales(db_session_factory):
+    """/mis_ventas excluye ventas anuladas del listado."""
+    from dian_automation.db.models import Sale
+
+    db = db_session_factory()
+    try:
+        sale1 = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("40000.00"),
+            description="Venta activa 1",
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=date(2026, 9, 10),
+            created_at=datetime(2026, 9, 10, 8, 0, 0),
+        )
+        sale2 = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("60000.00"),
+            description="Venta a anular",
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=date(2026, 9, 11),
+            created_at=datetime(2026, 9, 11, 8, 0, 0),
+        )
+        sale3 = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("80000.00"),
+            description="Venta activa 2",
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=date(2026, 9, 12),
+            created_at=datetime(2026, 9, 12, 8, 0, 0),
+        )
+        db.add_all([sale1, sale2, sale3])
+        db.commit()
+
+        # Anular la venta 2 (posición 2 de la lista reciente: 1=sale3, 2=sale2, 3=sale1)
+        res_void = ClientTelegramBot.handle_anular_venta(
+            sender_chat_id=MANUAL_CHAT, db=db, text="/anular_venta 2"
+        )
+        assert res_void["success"] is True
+
+        resp = ClientTelegramBot.handle_mis_ventas(sender_chat_id=MANUAL_CHAT, db=db)
+        assert resp["success"] is True
+        assert resp["count"] == 2
+
+        msg = resp["message"]
+        assert "Venta activa 2" in msg
+        assert "Venta activa 1" in msg
+        assert "Venta a anular" not in msg
+    finally:
+        db.close()
+
+
+def test_mis_ventas_empty_when_no_sales(db_session_factory):
+    """/mis_ventas responde mensaje amigable cuando aún no hay ventas."""
+    db = db_session_factory()
+    try:
+        resp = ClientTelegramBot.handle_mis_ventas(sender_chat_id=MANUAL_CHAT, db=db)
+        assert resp["success"] is True
+        assert resp["count"] == 0
+        assert resp["message"] == "ℹ️ Aún no tienes ventas registradas."
+    finally:
+        db.close()
+
+
+def test_mis_ventas_dian_business_not_applicable(db_session_factory):
+    """/mis_ventas con negocio DIAN devuelve mensaje de no aplicabilidad."""
+    db = db_session_factory()
+    try:
+        resp = ClientTelegramBot.handle_mis_ventas(sender_chat_id=ANDREA_CHAT, db=db)
+        assert resp["success"] is False
+        assert resp["reason"] == "NOT_MANUAL_SALES"
+        assert "ℹ️ Tu negocio factura electrónicamente: las ventas salen de la DIAN y no se registran a mano." in resp["message"]
+    finally:
+        db.close()
+
+
+def test_mis_ventas_subscription_blocked(db_session_factory):
+    """/mis_ventas con cliente BLOQUEADO devuelve mensaje de suscripción suspendida."""
+    db = db_session_factory()
+    try:
+        resp = ClientTelegramBot.handle_mis_ventas(sender_chat_id=CARLOS_CHAT, db=db)
+        assert resp["success"] is False
+        assert resp["reason"] == "SUBSCRIPTION_BLOCKED"
+        assert "Servicio Suspendido" in resp["message"]
+
+        # A través del enrutador
+        router_resp = _send(db_session_factory, "/mis_ventas", chat_id=CARLOS_CHAT)
+        assert "Servicio Suspendido" in router_resp
+    finally:
+        db.close()
+
+
+def test_anular_venta_position_2_success(db_session_factory):
+    """/anular_venta 2 anula la segunda de la lista, actualiza voided_at y no aparece en /mis_ventas."""
+    from dian_automation.db.models import Sale
+
+    db = db_session_factory()
+    try:
+        base_time = datetime(2026, 9, 20, 10, 0, 0)
+        sale1 = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("15000.00"),
+            description="Venta vieja",
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=date(2026, 9, 18),
+            created_at=base_time - timedelta(days=2),
+        )
+        sale2 = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("25000.00"),
+            description="Venta del medio",
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=date(2026, 9, 19),
+            created_at=base_time - timedelta(days=1),
+        )
+        sale3 = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("35000.00"),
+            description="Venta reciente",
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=date(2026, 9, 20),
+            created_at=base_time,
+        )
+        db.add_all([sale1, sale2, sale3])
+        db.commit()
+
+        # Orden reciente: 1=sale3, 2=sale2, 3=sale1
+        resp = ClientTelegramBot.handle_anular_venta(
+            sender_chat_id=MANUAL_CHAT, db=db, text="/anular_venta 2"
+        )
+        assert resp["success"] is True
+        assert resp["sale_id"] == sale2.id
+
+        msg = resp["message"]
+        assert "🗑️ Venta anulada:" in msg
+        assert "$25,000 COP" in msg
+        assert "Venta del medio" in msg
+        assert "19/09/2026" in msg
+
+        # Verificar que la fila sigue existiendo en DB y tiene voided_at y voided_by_user_id
+        all_sales = db.query(Sale).all()
+        assert len(all_sales) == 3
+
+        db.refresh(sale2)
+        assert sale2.voided_at is not None
+        assert sale2.voided_by_user_id == "usr-pedro-manual"
+
+        db.refresh(sale1)
+        assert sale1.voided_at is None
+        db.refresh(sale3)
+        assert sale3.voided_at is None
+
+        # /mis_ventas ya no muestra la venta anulada
+        list_resp = ClientTelegramBot.handle_mis_ventas(sender_chat_id=MANUAL_CHAT, db=db)
+        assert list_resp["success"] is True
+        assert list_resp["count"] == 2
+        assert "Venta del medio" not in list_resp["message"]
+        assert "Venta reciente" in list_resp["message"]
+        assert "Venta vieja" in list_resp["message"]
+    finally:
+        db.close()
+
+
+def test_anular_venta_without_description(db_session_factory):
+    """/anular_venta de una venta sin descripción omite ese tramo en el mensaje de éxito."""
+    from dian_automation.db.models import Sale
+
+    db = db_session_factory()
+    try:
+        sale = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("50000.00"),
+            description=None,
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=date(2026, 9, 20),
+            created_at=datetime(2026, 9, 20, 10, 0, 0),
+        )
+        db.add(sale)
+        db.commit()
+
+        resp = ClientTelegramBot.handle_anular_venta(
+            sender_chat_id=MANUAL_CHAT, db=db, text="/anular_venta 1"
+        )
+        assert resp["success"] is True
+        assert resp["message"] == "🗑️ Venta anulada: $50,000 COP (20/09/2026)"
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "cmd_text",
+    [
+        "/anular_venta",
+        "/anular_venta 0",
+        "/anular_venta -1",
+        "/anular_venta -5",
+        "/anular_venta abc",
+        "/anular_venta 1 2",
+        "/anular_venta 1.5",
+        "/anular_venta $2",
+    ],
+)
+def test_anular_venta_invalid_numbers_error_without_voiding(db_session_factory, cmd_text):
+    """Número 0, negativo, no numérico o ausente retorna INVALID_NUMBER sin anular nada."""
+    from dian_automation.db.models import Sale
+
+    db = db_session_factory()
+    try:
+        sale = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("70000.00"),
+            description="Venta intacta",
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=date(2026, 9, 20),
+            created_at=datetime(2026, 9, 20, 10, 0, 0),
+        )
+        db.add(sale)
+        db.commit()
+
+        resp = ClientTelegramBot.handle_anular_venta(
+            sender_chat_id=MANUAL_CHAT, db=db, text=cmd_text
+        )
+        assert resp["success"] is False
+        assert resp["reason"] == "INVALID_NUMBER"
+        assert "❌ Indica el número de la venta a anular, por ejemplo `/anular_venta 2`." in resp["message"]
+        assert "Mira tu lista con /mis_ventas." in resp["message"]
+
+        db.refresh(sale)
+        assert sale.voided_at is None
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("cmd_text", ["/anular_venta 3", "/anular_venta 99"])
+def test_anular_venta_number_out_of_range(db_session_factory, cmd_text):
+    """Número fuera de rango (mayor a len(recent)) retorna NUMBER_OUT_OF_RANGE sin anular nada."""
+    from dian_automation.db.models import Sale
+
+    db = db_session_factory()
+    try:
+        sale1 = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("30000.00"),
+            description="Venta 1",
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=date(2026, 9, 20),
+            created_at=datetime(2026, 9, 20, 10, 0, 0),
+        )
+        sale2 = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("40000.00"),
+            description="Venta 2",
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=date(2026, 9, 20),
+            created_at=datetime(2026, 9, 20, 11, 0, 0),
+        )
+        db.add_all([sale1, sale2])
+        db.commit()
+
+        resp = ClientTelegramBot.handle_anular_venta(
+            sender_chat_id=MANUAL_CHAT, db=db, text=cmd_text
+        )
+        assert resp["success"] is False
+        assert resp["reason"] == "NUMBER_OUT_OF_RANGE"
+        assert "❌ Ese número no está en tu lista actual. Usa /mis_ventas para ver las ventas que puedes anular." in resp["message"]
+
+        db.refresh(sale1)
+        db.refresh(sale2)
+        assert sale1.voided_at is None
+        assert sale2.voided_at is None
+    finally:
+        db.close()
+
+
+def test_anular_dos_veces_misma_posicion_recalcula_lista(db_session_factory):
+    """Anular dos veces con la misma posición anula la venta siguiente.
+
+    La numeración es posicional y sin estado: el número de /anular_venta N se calcula
+    sobre la lista list_recent_sales(db, business, 10) que existe en ese momento.
+    Al anular la posición 1, la anterior posición 2 pasa a ser la nueva posición 1.
+    """
+    from dian_automation.db.models import Sale
+
+    db = db_session_factory()
+    try:
+        base_time = datetime(2026, 9, 20, 10, 0, 0)
+        sale_a = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("10000.00"),
+            description="Venta A",
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=date(2026, 9, 18),
+            created_at=base_time - timedelta(hours=2),
+        )
+        sale_b = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("20000.00"),
+            description="Venta B",
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=date(2026, 9, 19),
+            created_at=base_time - timedelta(hours=1),
+        )
+        sale_c = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("30000.00"),
+            description="Venta C",
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=date(2026, 9, 20),
+            created_at=base_time,
+        )
+        db.add_all([sale_a, sale_b, sale_c])
+        db.commit()
+
+        # En este momento la lista es: 1=C, 2=B, 3=A
+        # Primera anulación en posición 1: anula C
+        resp1 = ClientTelegramBot.handle_anular_venta(
+            sender_chat_id=MANUAL_CHAT, db=db, text="/anular_venta 1"
+        )
+        assert resp1["success"] is True
+        assert resp1["sale_id"] == sale_c.id
+        assert "Venta C" in resp1["message"]
+
+        db.refresh(sale_c)
+        assert sale_c.voided_at is not None
+
+        # La lista se recalcula dinámicamente: ahora es 1=B, 2=A
+        # Segunda anulación en la MISMA posición 1: anula B
+        resp2 = ClientTelegramBot.handle_anular_venta(
+            sender_chat_id=MANUAL_CHAT, db=db, text="/anular_venta 1"
+        )
+        assert resp2["success"] is True
+        assert resp2["sale_id"] == sale_b.id
+        assert "Venta B" in resp2["message"]
+
+        db.refresh(sale_b)
+        assert sale_b.voided_at is not None
+
+        # La venta A sigue activa
+        db.refresh(sale_a)
+        assert sale_a.voided_at is None
+
+        # Ahora la lista solo tiene a Venta A en la posición 1
+        list_resp = ClientTelegramBot.handle_mis_ventas(sender_chat_id=MANUAL_CHAT, db=db)
+        assert list_resp["count"] == 1
+        assert "Venta A" in list_resp["message"]
+    finally:
+        db.close()
+
+
+def test_anular_venta_dian_and_blocked_business_no_void(db_session_factory):
+    """Negocio DIAN y cliente BLOQUEADO son rechazados y no anulan ventas."""
+    from dian_automation.db.models import Sale
+
+    db = db_session_factory()
+    try:
+        # Negocio DIAN
+        resp_dian = ClientTelegramBot.handle_anular_venta(
+            sender_chat_id=ANDREA_CHAT, db=db, text="/anular_venta 1"
+        )
+        assert resp_dian["success"] is False
+        assert resp_dian["reason"] == "NOT_MANUAL_SALES"
+        assert "ℹ️ Tu negocio factura electrónicamente: las ventas salen de la DIAN y no se registran a mano." in resp_dian["message"]
+
+        # Cliente BLOQUEADO
+        resp_bloq = ClientTelegramBot.handle_anular_venta(
+            sender_chat_id=CARLOS_CHAT, db=db, text="/anular_venta 1"
+        )
+        assert resp_bloq["success"] is False
+        assert resp_bloq["reason"] == "SUBSCRIPTION_BLOCKED"
+        assert "Servicio Suspendido" in resp_bloq["message"]
+
+        # A través del router
+        router_bloq = _send(db_session_factory, "/anular_venta 1", chat_id=CARLOS_CHAT)
+        assert "Servicio Suspendido" in router_bloq
+    finally:
+        db.close()
+
+
+def test_anular_venta_service_sales_error_mapping(db_session_factory, monkeypatch):
+    """handle_anular_venta mapea adecuadamente los errores tipados de SalesError."""
+    from dian_automation.core import sales_service
+    from dian_automation.subscriptions.lockout_service import SubscriptionLockoutService
+    from dian_automation.db.models import Sale
+
+    db = db_session_factory()
+    try:
+        sale = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("50000.00"),
+            description="Venta prueba",
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=date(2026, 9, 20),
+            created_at=datetime(2026, 9, 20, 10, 0, 0),
+        )
+        db.add(sale)
+        db.commit()
+
+        # 1. Error BUSINESS_BLOCKED
+        def fake_void_blocked(*args, **kwargs):
+            raise sales_service.SalesError(sales_service.SalesError.BUSINESS_BLOCKED, "bloqueado")
+
+        monkeypatch.setattr(sales_service, "void_sale", fake_void_blocked)
+        resp1 = ClientTelegramBot.handle_anular_venta(MANUAL_CHAT, db, "/anular_venta 1")
+        assert resp1["success"] is False
+        assert resp1["reason"] == "BUSINESS_BLOCKED"
+        assert resp1["message"] == SubscriptionLockoutService.BLOCKED_TELEGRAM_MESSAGE
+
+        # 2. Error SALE_NOT_FOUND
+        sale_not_found_code = getattr(sales_service.SalesError, "SALE_NOT_FOUND", "SALE_NOT_FOUND")
+
+        def fake_void_not_found(*args, **kwargs):
+            raise sales_service.SalesError(sale_not_found_code, "Venta no encontrada.")
+
+        monkeypatch.setattr(sales_service, "void_sale", fake_void_not_found)
+        resp2 = ClientTelegramBot.handle_anular_venta(MANUAL_CHAT, db, "/anular_venta 1")
+        assert resp2["success"] is False
+        assert resp2["reason"] == sale_not_found_code
+        assert resp2["message"] == "❌ Venta no encontrada. Usa /mis_ventas para ver tu lista actual."
+
+        # 3. Error ALREADY_VOIDED
+        already_voided_code = getattr(sales_service.SalesError, "ALREADY_VOIDED", "ALREADY_VOIDED")
+
+        def fake_void_already(*args, **kwargs):
+            raise sales_service.SalesError(already_voided_code, "Esta venta ya fue anulada.")
+
+        monkeypatch.setattr(sales_service, "void_sale", fake_void_already)
+        resp3 = ClientTelegramBot.handle_anular_venta(MANUAL_CHAT, db, "/anular_venta 1")
+        assert resp3["success"] is False
+        assert resp3["reason"] == already_voided_code
+        assert resp3["message"] == "❌ Esta venta ya fue anulada. Usa /mis_ventas para ver tu lista actual."
+    finally:
+        db.close()
+
+
+def test_router_handles_mis_ventas_and_anular_venta_with_bot_suffix(db_session_factory):
+    """handle_client_message responde a /mis_ventas, /anular_venta 1 y variantes con @bot."""
+    from dian_automation.db.models import Sale
+
+    db = db_session_factory()
+    try:
+        base_time = datetime(2026, 9, 20, 10, 0, 0)
+        sale1 = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("30000.00"),
+            description="Primera",
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=date(2026, 9, 20),
+            created_at=base_time,
+        )
+        sale2 = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("40000.00"),
+            description="Segunda",
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=date(2026, 9, 20),
+            created_at=base_time + timedelta(minutes=5),
+        )
+        db.add_all([sale1, sale2])
+        db.commit()
+    finally:
+        db.close()
+
+    # /mis_ventas estándar
+    resp_list = _send(db_session_factory, "/mis_ventas")
+    assert "🧾 *Tus últimas ventas*" in resp_list
+    assert "Segunda" in resp_list
+    assert "Primera" in resp_list
+
+    # /mis_ventas@KontableBot con sufijo
+    resp_list_bot = _send(db_session_factory, "/mis_ventas@KontableBot")
+    assert "🧾 *Tus últimas ventas*" in resp_list_bot
+
+    # /anular_venta@KontableBot 1 (anula la segunda, que es la más reciente)
+    resp_void_bot = _send(db_session_factory, "/anular_venta@KontableBot 1")
+    assert "🗑️ Venta anulada:" in resp_void_bot
+    assert "Segunda" in resp_void_bot
+
+    # /anular_venta 1 (anula la primera, que ahora quedó en la posición 1)
+    resp_void = _send(db_session_factory, "/anular_venta 1")
+    assert "🗑️ Venta anulada:" in resp_void
+    assert "Primera" in resp_void
+
+    # Ya no quedan ventas activas
+    resp_empty = _send(db_session_factory, "/mis_ventas")
+    assert "ℹ️ Aún no tienes ventas registradas." in resp_empty
+
+
+def test_help_menu_manual_sales_includes_mis_ventas_and_anular_venta(db_session_factory):
+    """El menú de ayuda de MANUAL_SALES incluye ambos comandos y el de DIAN no."""
+    db = db_session_factory()
+    try:
+        help_manual = ClientTelegramBot.handle_help(sender_chat_id=MANUAL_CHAT, db=db)
+        assert "🧾 */mis_ventas* — Tus últimas 10 ventas, con un número para anular." in help_manual
+        assert "🗑️ */anular_venta* — Anula una venta mal registrada: `/anular_venta 2`." in help_manual
+
+        help_dian = ClientTelegramBot.handle_help(sender_chat_id=ANDREA_CHAT, db=db)
+        assert "/mis_ventas" not in help_dian
+        assert "/anular_venta" not in help_dian
+    finally:
+        db.close()
+
+
+def test_markdown_escaping_in_mis_ventas_and_anular_venta(db_session_factory):
+    """La descripción con caracteres especiales de Markdown se escapa en /mis_ventas y /anular_venta."""
+    from dian_automation.db.models import Sale
+
+    db = db_session_factory()
+    try:
+        sale = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("100000.00"),
+            description="torta_especial *3* `promo` [box]",
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=date(2026, 9, 20),
+            created_at=datetime(2026, 9, 20, 10, 0, 0),
+        )
+        db.add(sale)
+        db.commit()
+
+        # En /mis_ventas
+        list_resp = ClientTelegramBot.handle_mis_ventas(sender_chat_id=MANUAL_CHAT, db=db)
+        assert r"torta\_especial \*3\* \`promo\` \[box]" in list_resp["message"]
+
+        # En /anular_venta
+        void_resp = ClientTelegramBot.handle_anular_venta(
+            sender_chat_id=MANUAL_CHAT, db=db, text="/anular_venta 1"
+        )
+        assert r"torta\_especial \*3\* \`promo\` \[box]" in void_resp["message"]
+    finally:
+        db.close()
+

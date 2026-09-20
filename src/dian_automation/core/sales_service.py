@@ -8,11 +8,12 @@ autenticado; el canal de origen se distingue con `recorded_via`.
 import re
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Optional, Union
+from typing import List, Optional, Union
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
+from dian_automation.core import income_service
 from dian_automation.db.models import Business, INCOME_SOURCE_MANUAL_SALES, Sale, User
 from dian_automation.subscriptions.lockout_service import SubscriptionLockoutService
 
@@ -45,6 +46,8 @@ class SalesError(Exception):
     DESCRIPTION_TOO_LONG = "DESCRIPTION_TOO_LONG"
     BUSINESS_BLOCKED = "BUSINESS_BLOCKED"
     NOT_MANUAL_SALES = "NOT_MANUAL_SALES"
+    SALE_NOT_FOUND = "SALE_NOT_FOUND"
+    ALREADY_VOIDED = "ALREADY_VOIDED"
 
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -133,6 +136,74 @@ def register_sale(
         created_at=now,
     )
     db.add(sale)
+    db.commit()
+    db.refresh(sale)
+    return sale
+
+
+def list_recent_sales(db: Session, business: Business, limit: int = 10) -> List[Sale]:
+    """Últimas `limit` ventas NO anuladas del negocio, de la más reciente a la más antigua (created_at desc, id desc)."""
+    return (
+        db.query(Sale)
+        .filter(
+            Sale.business_id == business.id,
+            Sale.voided_at.is_(None),
+        )
+        .order_by(Sale.created_at.desc(), Sale.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+
+def list_month_sales(db: Session, business: Business, month: str, limit: int = 100) -> List[Sale]:
+    """Ventas NO anuladas del negocio con sale_date dentro del mes 'YYYY-MM', orden sale_date desc, created_at desc, id desc.
+    Mes inválido -> lanza income_service.IncomeError(INVALID_MONTH) (reutiliza income_service._parse_month y _month_range)."""
+    year, month_num = income_service._parse_month(month)
+    start_date, end_date, _, _ = income_service._month_range(year, month_num)
+    return (
+        db.query(Sale)
+        .filter(
+            Sale.business_id == business.id,
+            Sale.sale_date >= start_date,
+            Sale.sale_date < end_date,
+            Sale.voided_at.is_(None),
+        )
+        .order_by(Sale.sale_date.desc(), Sale.created_at.desc(), Sale.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+
+def void_sale(db: Session, *, user: User, business: Business, sale_id: str, now: Optional[datetime] = None) -> Sale:
+    """Anula una venta del negocio. `now` es UTC naive (por defecto datetime.utcnow())."""
+    if SubscriptionLockoutService.is_client_blocked(db, user.id):
+        raise SalesError(
+            SalesError.BUSINESS_BLOCKED,
+            "Suscripción suspendida por pago pendiente: no se pueden anular ventas.",
+        )
+
+    if business.income_source != INCOME_SOURCE_MANUAL_SALES:
+        raise SalesError(
+            SalesError.NOT_MANUAL_SALES,
+            "Tu negocio factura electrónicamente: las ventas salen de la DIAN y no se registran a mano.",
+        )
+
+    sale = (
+        db.query(Sale)
+        .filter(Sale.id == sale_id, Sale.business_id == business.id)
+        .first()
+    )
+    if not sale:
+        raise SalesError(SalesError.SALE_NOT_FOUND, "No encontramos esa venta.")
+
+    if sale.voided_at is not None:
+        raise SalesError(SalesError.ALREADY_VOIDED, "Esa venta ya está anulada.")
+
+    if now is None:
+        now = datetime.utcnow()
+
+    sale.voided_at = now
+    sale.voided_by_user_id = user.id
     db.commit()
     db.refresh(sale)
     return sale

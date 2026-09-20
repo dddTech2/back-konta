@@ -8,8 +8,14 @@ from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
-from dian_automation.core import sales_service
-from dian_automation.core.sales_service import SalesError, register_sale
+from dian_automation.core import income_service, sales_service
+from dian_automation.core.sales_service import (
+    SalesError,
+    list_month_sales,
+    list_recent_sales,
+    register_sale,
+    void_sale,
+)
 from dian_automation.db.models import (
     Base,
     Business,
@@ -204,4 +210,268 @@ def test_manual_sales_business_succeeds(db):
     assert sale.id is not None
     assert sale.total_amount == Decimal("50000.00")
     assert _count(db) == 1
+
+
+def test_void_sale_own_sale_succeeds(db):
+    user = db.get(User, "usr-ok")
+    business = db.get(Business, "biz-ok")
+    sale = register_sale(db, user=user, business=business, total="50000", recorded_via=sales_service.RECORDED_VIA_TELEGRAM)
+    now = datetime(2026, 9, 20, 15, 30, 0)
+
+    result = void_sale(db, user=user, business=business, sale_id=sale.id, now=now)
+
+    assert result.id == sale.id
+    assert result.voided_at == now
+    assert result.voided_by_user_id == user.id
+
+    # La fila sigue existiendo en la base de datos y conserva sus datos
+    persisted = db.get(Sale, sale.id)
+    assert persisted is not None
+    assert persisted.voided_at == now
+    assert persisted.voided_by_user_id == user.id
+    assert persisted.total_amount == Decimal("50000.00")
+    assert _count(db) == 1
+
+
+def test_void_sale_foreign_business_raises_sale_not_found_and_does_not_modify(db):
+    user_ok = db.get(User, "usr-ok")
+    business_ok = db.get(Business, "biz-ok")
+    sale = register_sale(db, user=user_ok, business=business_ok, total="50000", recorded_via=sales_service.RECORDED_VIA_TELEGRAM)
+
+    user_other = User(id="usr-other", email="other@x.co", full_name="other", role="CLIENT", is_active=True)
+    biz_other = Business(id="biz-other", client_id=user_other.id, legal_name="other", commercial_name="other",
+                         nit="901999999", dv="3", is_active=True, income_source=INCOME_SOURCE_MANUAL_SALES)
+    db.add_all([user_other, biz_other])
+    db.commit()
+
+    with pytest.raises(SalesError) as exc:
+        void_sale(db, user=user_other, business=biz_other, sale_id=sale.id)
+
+    assert exc.value.code == SalesError.SALE_NOT_FOUND
+    assert exc.value.message == "No encontramos esa venta."
+
+    # La venta no fue modificada
+    persisted = db.get(Sale, sale.id)
+    assert persisted.voided_at is None
+    assert persisted.voided_by_user_id is None
+
+
+def test_void_sale_nonexistent_id_raises_sale_not_found(db):
+    user = db.get(User, "usr-ok")
+    business = db.get(Business, "biz-ok")
+
+    with pytest.raises(SalesError) as exc:
+        void_sale(db, user=user, business=business, sale_id="nonexistent-sale-id")
+
+    assert exc.value.code == SalesError.SALE_NOT_FOUND
+    assert exc.value.message == "No encontramos esa venta."
+
+
+def test_void_sale_twice_raises_already_voided_and_preserves_first_timestamp(db):
+    user = db.get(User, "usr-ok")
+    business = db.get(Business, "biz-ok")
+    sale = register_sale(db, user=user, business=business, total="50000", recorded_via=sales_service.RECORDED_VIA_TELEGRAM)
+    first_now = datetime(2026, 9, 20, 10, 0, 0)
+    void_sale(db, user=user, business=business, sale_id=sale.id, now=first_now)
+
+    second_now = datetime(2026, 9, 20, 12, 0, 0)
+    with pytest.raises(SalesError) as exc:
+        void_sale(db, user=user, business=business, sale_id=sale.id, now=second_now)
+
+    assert exc.value.code == SalesError.ALREADY_VOIDED
+    assert exc.value.message == "Esa venta ya está anulada."
+
+    persisted = db.get(Sale, sale.id)
+    assert persisted.voided_at == first_now
+
+
+def test_void_sale_dian_business_raises_not_manual_sales(db):
+    user_dian = db.get(User, "usr-dian")
+    biz_dian = db.get(Business, "biz-dian")
+
+    with pytest.raises(SalesError) as exc:
+        void_sale(db, user=user_dian, business=biz_dian, sale_id="any-id")
+
+    assert exc.value.code == SalesError.NOT_MANUAL_SALES
+    assert "Tu negocio factura electrónicamente" in exc.value.message
+
+
+def test_void_sale_blocked_subscription_raises_business_blocked_and_changes_nothing(db):
+    user_blocked = db.get(User, "usr-blocked")
+    biz_blocked = db.get(Business, "biz-blocked")
+
+    sale = Sale(
+        business_id=biz_blocked.id,
+        total_amount=Decimal("80000.00"),
+        recorded_via="TELEGRAM",
+        recorded_by_user_id=user_blocked.id,
+        sale_date=date(2026, 9, 20),
+        created_at=datetime(2026, 9, 20, 10, 0, 0),
+    )
+    db.add(sale)
+    db.commit()
+
+    with pytest.raises(SalesError) as exc:
+        void_sale(db, user=user_blocked, business=biz_blocked, sale_id=sale.id)
+
+    assert exc.value.code == SalesError.BUSINESS_BLOCKED
+    assert "Suscripción suspendida por pago pendiente" in exc.value.message
+
+    persisted = db.get(Sale, sale.id)
+    assert persisted.voided_at is None
+    assert persisted.voided_by_user_id is None
+
+
+def test_void_sale_previous_month_works(db):
+    user = db.get(User, "usr-ok")
+    business = db.get(Business, "biz-ok")
+    august_dt = datetime(2026, 8, 15, 12, 0, 0)
+    sale = register_sale(
+        db,
+        user=user,
+        business=business,
+        total="75000",
+        recorded_via=sales_service.RECORDED_VIA_TELEGRAM,
+        now=august_dt,
+    )
+    assert sale.sale_date == date(2026, 8, 15)
+
+    september_dt = datetime(2026, 9, 20, 16, 0, 0)
+    voided = void_sale(db, user=user, business=business, sale_id=sale.id, now=september_dt)
+
+    assert voided.voided_at == september_dt
+    assert voided.sale_date == date(2026, 8, 15)
+    assert db.get(Sale, sale.id).voided_at == september_dt
+
+
+def test_list_recent_sales_returns_max_10_most_recent_first_excludes_voided_and_isolates_businesses(db):
+    user_ok = db.get(User, "usr-ok")
+    biz_ok = db.get(Business, "biz-ok")
+
+    sales_ok = []
+    base_time = datetime(2026, 9, 20, 8, 0, 0)
+    for i in range(12):
+        s = Sale(
+            id=f"sale-ok-{i:02d}",
+            business_id=biz_ok.id,
+            total_amount=Decimal(f"{(i + 1) * 1000}.00"),
+            recorded_via="TELEGRAM",
+            recorded_by_user_id=user_ok.id,
+            sale_date=date(2026, 9, 20),
+            created_at=base_time + timedelta(minutes=i * 10),
+        )
+        sales_ok.append(s)
+
+    voided_sale = Sale(
+        id="sale-ok-voided",
+        business_id=biz_ok.id,
+        total_amount=Decimal("99999.00"),
+        recorded_via="TELEGRAM",
+        recorded_by_user_id=user_ok.id,
+        sale_date=date(2026, 9, 20),
+        created_at=base_time + timedelta(hours=5),
+        voided_at=datetime(2026, 9, 20, 14, 0, 0),
+        voided_by_user_id=user_ok.id,
+    )
+
+    user_other = User(id="usr-other-rec", email="other-rec@x.co", full_name="other", role="CLIENT", is_active=True)
+    biz_other = Business(id="biz-other-rec", client_id=user_other.id, legal_name="other", commercial_name="other",
+                         nit="901888777", dv="5", is_active=True, income_source=INCOME_SOURCE_MANUAL_SALES)
+    sale_other = Sale(
+        id="sale-other",
+        business_id=biz_other.id,
+        total_amount=Decimal("12345.00"),
+        recorded_via="TELEGRAM",
+        recorded_by_user_id=user_other.id,
+        sale_date=date(2026, 9, 20),
+        created_at=base_time + timedelta(hours=6),
+    )
+
+    db.add_all(sales_ok + [voided_sale, user_other, biz_other, sale_other])
+    db.commit()
+
+    results = list_recent_sales(db, biz_ok, limit=10)
+
+    assert len(results) == 10
+    assert "sale-ok-voided" not in [r.id for r in results]
+    assert "sale-other" not in [r.id for r in results]
+    expected_ids = [f"sale-ok-{i:02d}" for i in range(11, 1, -1)]
+    assert [r.id for r in results] == expected_ids
+
+
+def test_list_month_sales_filters_boundaries_excludes_voided_orders_and_validates_month(db):
+    user = db.get(User, "usr-ok")
+    biz = db.get(Business, "biz-ok")
+
+    s_may_01 = Sale(
+        id="s-may-01",
+        business_id=biz.id,
+        total_amount=Decimal("10000.00"),
+        recorded_via="TELEGRAM",
+        recorded_by_user_id=user.id,
+        sale_date=date(2026, 5, 1),
+        created_at=datetime(2026, 5, 1, 9, 0, 0),
+    )
+    s_may_15 = Sale(
+        id="s-may-15",
+        business_id=biz.id,
+        total_amount=Decimal("20000.00"),
+        recorded_via="TELEGRAM",
+        recorded_by_user_id=user.id,
+        sale_date=date(2026, 5, 15),
+        created_at=datetime(2026, 5, 15, 10, 0, 0),
+    )
+    s_may_31 = Sale(
+        id="s-may-31",
+        business_id=biz.id,
+        total_amount=Decimal("30000.00"),
+        recorded_via="TELEGRAM",
+        recorded_by_user_id=user.id,
+        sale_date=date(2026, 5, 31),
+        created_at=datetime(2026, 5, 31, 18, 0, 0),
+    )
+    s_may_voided = Sale(
+        id="s-may-voided",
+        business_id=biz.id,
+        total_amount=Decimal("40000.00"),
+        recorded_via="TELEGRAM",
+        recorded_by_user_id=user.id,
+        sale_date=date(2026, 5, 20),
+        created_at=datetime(2026, 5, 20, 11, 0, 0),
+        voided_at=datetime(2026, 5, 20, 12, 0, 0),
+        voided_by_user_id=user.id,
+    )
+    s_apr_30 = Sale(
+        id="s-apr-30",
+        business_id=biz.id,
+        total_amount=Decimal("50000.00"),
+        recorded_via="TELEGRAM",
+        recorded_by_user_id=user.id,
+        sale_date=date(2026, 4, 30),
+        created_at=datetime(2026, 4, 30, 23, 0, 0),
+    )
+    s_jun_01 = Sale(
+        id="s-jun-01",
+        business_id=biz.id,
+        total_amount=Decimal("60000.00"),
+        recorded_via="TELEGRAM",
+        recorded_by_user_id=user.id,
+        sale_date=date(2026, 6, 1),
+        created_at=datetime(2026, 6, 1, 8, 0, 0),
+    )
+
+    db.add_all([s_may_01, s_may_15, s_may_31, s_may_voided, s_apr_30, s_jun_01])
+    db.commit()
+
+    sales = list_month_sales(db, biz, "2026-05")
+
+    assert len(sales) == 3
+    assert [s.id for s in sales] == ["s-may-31", "s-may-15", "s-may-01"]
+    assert "s-may-voided" not in [s.id for s in sales]
+    assert "s-apr-30" not in [s.id for s in sales]
+    assert "s-jun-01" not in [s.id for s in sales]
+
+    with pytest.raises(income_service.IncomeError) as exc:
+        list_month_sales(db, biz, "2026-13")
+    assert exc.value.code == income_service.IncomeError.INVALID_MONTH
 

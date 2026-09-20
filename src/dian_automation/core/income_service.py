@@ -53,7 +53,7 @@ def summary(db: Session, business: Union[Business, Any], month: str) -> Dict[str
     """Calcula el resumen de ingresos, egresos y utilidad para un negocio en un mes específico.
 
     - month: string 'YYYY-MM' (01-12).
-    - ingresos: suma de Sale.total_amount con sale_date en el mes.
+    - ingresos: suma de Sale.total_amount con sale_date en el mes (solo ventas no anuladas).
     - egresos: suma de Invoice.total con group_type == 'Recibido' e issue_date en el mes,
       multiplicando por -1 las notas de crédito. Las facturas Emitidas no cuentan.
     - utilidad: ingresos - egresos.
@@ -64,13 +64,14 @@ def summary(db: Session, business: Union[Business, Any], month: str) -> Dict[str
 
     business_id = business.id if hasattr(business, "id") else business
 
-    # Ingresos: ventas declaradas del mes
+    # Ingresos: ventas declaradas del mes (solo ventas no anuladas)
     sales = (
         db.query(Sale.total_amount)
         .filter(
             Sale.business_id == business_id,
             Sale.sale_date >= start_date,
             Sale.sale_date < end_date,
+            Sale.voided_at.is_(None),
         )
         .all()
     )

@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
@@ -267,4 +268,255 @@ def test_post_sale_with_manual_sales_business_returns_201(client, seeded):
     assert response.status_code == 201
     assert response.json()["total_amount"] == "25000.00"
     assert seeded.query(Sale).filter(Sale.business_id == "biz-ana").count() >= 1
+
+
+def test_void_sale_route_success_marks_row_and_returns_200(client, seeded):
+    create_res = client.post("/api/sales/biz-ana", json={"total_amount": 50000.00, "description": "Torta"})
+    assert create_res.status_code == 201
+    sale_id = create_res.json()["id"]
+
+    response = client.post(f"/api/sales/biz-ana/{sale_id}/void")
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {"id", "voided_at"}
+    assert body["id"] == sale_id
+    assert body["voided_at"] is not None
+
+    sale = seeded.get(Sale, sale_id)
+    assert sale is not None
+    assert sale.voided_at is not None
+    assert sale.voided_by_user_id == "usr-ana"
+
+
+def test_void_sale_route_foreign_sale_returns_404(client, seeded):
+    sale_otro = Sale(
+        id="sale-otro-biz",
+        business_id="biz-otro",
+        total_amount=Decimal("30000.00"),
+        recorded_via="WEB",
+        recorded_by_user_id="usr-otro",
+        sale_date=date(2026, 9, 20),
+        created_at=datetime(2026, 9, 20, 10, 0, 0),
+    )
+    seeded.add(sale_otro)
+    seeded.commit()
+
+    response = client.post(f"/api/sales/biz-ana/{sale_otro.id}/void")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "No encontramos esa venta."
+
+    foreign_biz = client.post(f"/api/sales/biz-otro/{sale_otro.id}/void")
+    assert foreign_biz.status_code == 404
+
+    assert seeded.get(Sale, sale_otro.id).voided_at is None
+
+
+def test_void_sale_route_nonexistent_sale_returns_404(client, seeded):
+    response = client.post("/api/sales/biz-ana/nonexistent-id/void")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "No encontramos esa venta."
+
+
+def test_void_sale_route_second_time_returns_409(client, seeded):
+    create_res = client.post("/api/sales/biz-ana", json={"total_amount": 20000.00})
+    sale_id = create_res.json()["id"]
+
+    res1 = client.post(f"/api/sales/biz-ana/{sale_id}/void")
+    assert res1.status_code == 200
+
+    res2 = client.post(f"/api/sales/biz-ana/{sale_id}/void")
+    assert res2.status_code == 409
+    assert res2.json()["detail"] == "Esa venta ya está anulada."
+
+
+def test_void_sale_route_dian_business_returns_409(seeded, bearer):
+    sale_dian = Sale(
+        id="sale-dian-void",
+        business_id="biz-dian",
+        total_amount=Decimal("40000.00"),
+        recorded_via="WEB",
+        recorded_by_user_id="usr-dian",
+        sale_date=date(2026, 9, 20),
+        created_at=datetime(2026, 9, 20, 10, 0, 0),
+    )
+    seeded.add(sale_dian)
+    seeded.commit()
+
+    _use_db(seeded)
+    try:
+        dian_client = TestClient(app, headers=bearer("usr-dian"))
+        response = dian_client.post(f"/api/sales/biz-dian/{sale_dian.id}/void")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 409
+    assert "Tu negocio factura electrónicamente" in response.json()["detail"]
+
+
+def test_void_sale_route_blocked_subscription_returns_403(seeded, bearer):
+    sale_bloq = Sale(
+        id="sale-bloq-void",
+        business_id="biz-bloq",
+        total_amount=Decimal("50000.00"),
+        recorded_via="WEB",
+        recorded_by_user_id="usr-bloq",
+        sale_date=date(2026, 9, 20),
+        created_at=datetime(2026, 9, 20, 10, 0, 0),
+    )
+    seeded.add(sale_bloq)
+    seeded.commit()
+
+    _use_db(seeded)
+    try:
+        bloq_client = TestClient(app, headers=bearer("usr-bloq"))
+        response = bloq_client.post(f"/api/sales/biz-bloq/{sale_bloq.id}/void")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 403
+    assert response.json()["error"] == "SUBSCRIPTION_BLOCKED"
+
+
+def test_void_sale_route_without_jwt_returns_401(seeded):
+    _use_db(seeded)
+    try:
+        response = TestClient(app).post("/api/sales/biz-ana/any-sale-id/void")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 401
+
+
+def test_get_sales_list_contract_and_filters_voided(client, seeded):
+    sale_active_1 = Sale(
+        id="sale-may-1",
+        business_id="biz-ana",
+        total_amount=Decimal("150000.00"),
+        description="3 tortas",
+        recorded_via="WEB",
+        recorded_by_user_id="usr-ana",
+        sale_date=date(2026, 5, 10),
+        created_at=datetime(2026, 5, 10, 9, 0, 0),
+    )
+    sale_active_2 = Sale(
+        id="sale-may-2",
+        business_id="biz-ana",
+        total_amount=Decimal("50000.00"),
+        description=None,
+        recorded_via="TELEGRAM",
+        recorded_by_user_id="usr-ana",
+        sale_date=date(2026, 5, 15),
+        created_at=datetime(2026, 5, 15, 11, 0, 0),
+    )
+    sale_voided = Sale(
+        id="sale-may-voided",
+        business_id="biz-ana",
+        total_amount=Decimal("80000.00"),
+        description="Anulada",
+        recorded_via="WEB",
+        recorded_by_user_id="usr-ana",
+        sale_date=date(2026, 5, 12),
+        created_at=datetime(2026, 5, 12, 10, 0, 0),
+        voided_at=datetime(2026, 5, 12, 12, 0, 0),
+        voided_by_user_id="usr-ana",
+    )
+    seeded.add_all([sale_active_1, sale_active_2, sale_voided])
+    seeded.commit()
+
+    response = client.get("/api/sales/biz-ana?month=2026-05")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["month"] == "2026-05"
+    assert len(body["sales"]) == 2
+
+    expected_keys = {"id", "total_amount", "description", "recorded_via", "sale_date", "created_at"}
+    for item in body["sales"]:
+        assert set(item) == expected_keys
+        assert isinstance(item["total_amount"], str)
+
+    assert body["sales"][0]["id"] == "sale-may-2"
+    assert body["sales"][0]["total_amount"] == "50000.00"
+    assert body["sales"][0]["description"] is None
+    assert body["sales"][0]["recorded_via"] == "TELEGRAM"
+    assert body["sales"][0]["sale_date"] == "2026-05-15"
+
+    assert body["sales"][1]["id"] == "sale-may-1"
+    assert body["sales"][1]["total_amount"] == "150000.00"
+    assert body["sales"][1]["description"] == "3 tortas"
+    assert body["sales"][1]["recorded_via"] == "WEB"
+    assert body["sales"][1]["sale_date"] == "2026-05-10"
+
+    assert "sale-may-voided" not in [s["id"] for s in body["sales"]]
+
+
+def test_get_sales_list_month_param_filters_correctly(client, seeded):
+    sale_apr = Sale(
+        id="sale-apr-1",
+        business_id="biz-ana",
+        total_amount=Decimal("70000.00"),
+        recorded_via="WEB",
+        recorded_by_user_id="usr-ana",
+        sale_date=date(2026, 4, 20),
+        created_at=datetime(2026, 4, 20, 10, 0, 0),
+    )
+    seeded.add(sale_apr)
+    seeded.commit()
+
+    response_apr = client.get("/api/sales/biz-ana?month=2026-04")
+    assert response_apr.status_code == 200
+    assert response_apr.json()["month"] == "2026-04"
+    assert len(response_apr.json()["sales"]) == 1
+    assert response_apr.json()["sales"][0]["id"] == "sale-apr-1"
+
+    response_may = client.get("/api/sales/biz-ana?month=2026-05")
+    assert response_may.status_code == 200
+    assert response_may.json()["month"] == "2026-05"
+    assert len(response_may.json()["sales"]) == 0
+
+
+def test_get_sales_list_invalid_month_returns_422(client, seeded):
+    response = client.get("/api/sales/biz-ana?month=2026-13")
+    assert response.status_code == 422
+    assert "Formato de mes inválido" in response.json()["detail"]
+
+
+def test_get_sales_list_dian_business_returns_404(seeded, bearer):
+    _use_db(seeded)
+    try:
+        dian_client = TestClient(app, headers=bearer("usr-dian"))
+        response = dian_client.get("/api/sales/biz-dian?month=2026-05")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Este servicio no aplica a tu tipo de negocio."
+
+
+def test_get_sales_list_blocked_subscription_returns_403(seeded, bearer):
+    _use_db(seeded)
+    try:
+        bloq_client = TestClient(app, headers=bearer("usr-bloq"))
+        response = bloq_client.get("/api/sales/biz-bloq?month=2026-05")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 403
+    assert response.json()["error"] == "SUBSCRIPTION_BLOCKED"
+
+
+def test_get_sales_list_without_jwt_returns_401(seeded):
+    _use_db(seeded)
+    try:
+        response = TestClient(app).get("/api/sales/biz-ana")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 401
+
+
+def test_get_sales_list_without_month_defaults_to_current_bogota_month(client, seeded):
+    response = client.get("/api/sales/biz-ana")
+    assert response.status_code == 200
+    expected_month = datetime.now(ZoneInfo("America/Bogota")).strftime("%Y-%m")
+    assert response.json()["month"] == expected_month
 

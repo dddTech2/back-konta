@@ -331,3 +331,66 @@ def test_business_data_is_strictly_isolated(db, business_a, business_b):
     assert res_b["ingresos"] == Decimal("500000.00")
     assert res_b["egresos"] == Decimal("200000.00")
     assert res_b["utilidad"] == Decimal("300000.00")
+
+
+def test_voided_sale_is_excluded_from_income_utility_and_history_and_keeps_row(db, business_a):
+    sale1 = _create_sale(db, business_a, Decimal("100000.00"), date(2026, 5, 5))
+    sale2 = _create_sale(db, business_a, Decimal("50000.00"), date(2026, 5, 10))
+    _create_invoice(
+        db,
+        business_a,
+        total=Decimal("30000.00"),
+        issue_date=datetime(2026, 5, 8, 9, 0),
+        group_type="Recibido",
+    )
+
+    pre_res = summary(db, business_a, "2026-05")
+    assert pre_res["ingresos"] == Decimal("150000.00")
+    assert pre_res["utilidad"] == Decimal("120000.00")
+
+    sale2.voided_at = datetime(2026, 5, 11, 10, 0, 0)
+    sale2.voided_by_user_id = "usr-a"
+    db.commit()
+
+    post_res = summary(db, business_a, "2026-05")
+    assert post_res["ingresos"] == Decimal("100000.00")
+    assert post_res["egresos"] == Decimal("30000.00")
+    assert post_res["utilidad"] == Decimal("70000.00")
+
+    hist = history(db, business_a, "2026-05", months=2)
+    assert len(hist) == 2
+    may_item = next(item for item in hist if item["month"] == "2026-05")
+    assert may_item["ingresos"] == Decimal("100000.00")
+    assert may_item["utilidad"] == Decimal("70000.00")
+
+    db_sale2 = db.get(Sale, sale2.id)
+    assert db_sale2 is not None
+    assert db_sale2.voided_at is not None
+    assert db.query(Sale).filter(Sale.business_id == business_a.id).count() == 2
+
+
+def test_voiding_previous_month_sale_recalculates_that_month_and_history(db, business_a):
+    sale_apr = _create_sale(db, business_a, Decimal("200000.00"), date(2026, 4, 15))
+    sale_may = _create_sale(db, business_a, Decimal("100000.00"), date(2026, 5, 10))
+
+    res_apr = summary(db, business_a, "2026-04")
+    assert res_apr["ingresos"] == Decimal("200000.00")
+
+    sale_apr.voided_at = datetime(2026, 5, 12, 9, 0, 0)
+    sale_apr.voided_by_user_id = "usr-a"
+    db.commit()
+
+    res_apr_after = summary(db, business_a, "2026-04")
+    assert res_apr_after["ingresos"] == Decimal("0.00")
+    assert res_apr_after["utilidad"] == Decimal("0.00")
+
+    res_may_after = summary(db, business_a, "2026-05")
+    assert res_may_after["ingresos"] == Decimal("100000.00")
+
+    hist = history(db, business_a, "2026-05", months=2)
+    apr_item = next(item for item in hist if item["month"] == "2026-04")
+    may_item = next(item for item in hist if item["month"] == "2026-05")
+    assert apr_item["ingresos"] == Decimal("0.00")
+    assert may_item["ingresos"] == Decimal("100000.00")
+
+    assert db.get(Sale, sale_apr.id) is not None

@@ -315,6 +315,9 @@ class Sale(Base):
     recorded_by_user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
     sale_date = Column(Date, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    # La anulación conserva la fila para auditoría (Story 6.5)
+    voided_at = Column(DateTime, nullable=True)
+    voided_by_user_id = Column(String(36), ForeignKey("users.id"), nullable=True)
 
     __table_args__ = (
         CheckConstraint("total_amount > 0", name="ck_sales_total_positive"),

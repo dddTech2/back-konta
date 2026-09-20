@@ -100,6 +100,7 @@ def test_history_is_a_single_chain_rooted_at_the_baseline(alembic_cfg):
     assert script.get_revision("0005").down_revision == "0004"
     assert script.get_revision("0006").down_revision == "0005"
     assert script.get_revision("0007").down_revision == "0006"
+    assert script.get_revision("0008").down_revision == "0007"
 
 
 def test_baseline_revision_creates_only_the_nine_original_tables(alembic_cfg, engine):
@@ -490,8 +491,6 @@ def test_sales_sale_date_revision_backfills_and_downgrades(alembic_cfg, engine):
     assert "idx_sales_business_sale_date" in indexes
     assert indexes["idx_sales_business_sale_date"]["column_names"] == ["business_id", "sale_date"]
 
-    assert _diff(engine, Base.metadata) == []
-
     command.downgrade(alembic_cfg, "-1")
 
     assert _version_rows(engine) == ["0006"]
@@ -499,6 +498,62 @@ def test_sales_sale_date_revision_backfills_and_downgrades(alembic_cfg, engine):
     assert "sale_date" not in columns_after
     indexes_after = {i["name"]: i for i in inspect(engine).get_indexes("sales")}
     assert "idx_sales_business_sale_date" not in indexes_after
+
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM sales")).scalar_one() == 1
+
+
+def test_sales_voided_revision_and_downgrades(alembic_cfg, engine):
+    command.upgrade(alembic_cfg, "0007")
+    _insert_business(engine, "biz-mig-void")
+
+    # Venta insertada bajo el esquema 0007 (sin columnas de anulación)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO sales (id, business_id, total_amount, recorded_via, recorded_by_user_id, sale_date, created_at)"
+                " VALUES ('sale-void-mig', 'biz-mig-void', 30000.00, 'TELEGRAM', 'u-biz-mig-void', '2026-09-20', '2026-09-20 12:00:00')"
+            )
+        )
+
+    command.upgrade(alembic_cfg, "head")
+
+    # Filas existentes quedan con NULL en voided_at y voided_by_user_id
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT voided_at, voided_by_user_id FROM sales WHERE id = 'sale-void-mig'")
+        ).one()
+    assert row[0] is None
+    assert row[1] is None
+
+    # Columnas voided_at y voided_by_user_id son nullables
+    columns = {c["name"]: c for c in inspect(engine).get_columns("sales")}
+    assert "voided_at" in columns
+    assert columns["voided_at"]["nullable"] is True
+    assert "voided_by_user_id" in columns
+    assert columns["voided_by_user_id"]["nullable"] is True
+
+    # Clave foránea a users
+    fks = inspect(engine).get_foreign_keys("sales")
+    voided_fk = next((fk for fk in fks if "voided_by_user_id" in fk["constrained_columns"]), None)
+    assert voided_fk is not None
+    assert voided_fk["referred_table"] == "users"
+    assert voided_fk["referred_columns"] == ["id"]
+
+    # Comparación con Base.metadata no debe tener diferencias
+    assert _diff(engine, Base.metadata) == []
+
+    # Downgrade a 0007 quita las columnas y la FK
+    command.downgrade(alembic_cfg, "-1")
+
+    assert _version_rows(engine) == ["0007"]
+    columns_after = {c["name"]: c for c in inspect(engine).get_columns("sales")}
+    assert "voided_at" not in columns_after
+    assert "voided_by_user_id" not in columns_after
+
+    fks_after = inspect(engine).get_foreign_keys("sales")
+    voided_fk_after = next((fk for fk in fks_after if "voided_by_user_id" in fk["constrained_columns"]), None)
+    assert voided_fk_after is None
 
     with engine.connect() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM sales")).scalar_one() == 1
