@@ -30,7 +30,7 @@ class AppConfig:
     login_type: str = os.getenv("DIAN_LOGIN_TYPE", "persona").lower()
     dian_url: str = os.getenv("DIAN_URL", "https://catalogo-vpfe-hab.dian.gov.co/User/PersonLogin")
     dian_company_url: str = os.getenv("DIAN_COMPANY_URL", "https://catalogo-vpfe-hab.dian.gov.co/User/CompanyLogin")
-    dian_person_code: str = os.getenv("DIAN_PERSON_CODE", "1000000001")
+    dian_person_code: str = os.getenv("DIAN_PERSON_CODE", "")
     dian_representative_code: str = os.getenv("DIAN_REPRESENTATIVE_CODE", "")
     dian_company_nit: str = os.getenv("DIAN_COMPANY_NIT", "")
     

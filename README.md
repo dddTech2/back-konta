@@ -253,10 +253,10 @@ Si ya cuentas con un enlace de token emitido (los enlaces de la DIAN tienen una 
 
 ```powershell
 # En ambiente de Producción:
-uv run dian-automation --token-url "https://catalogo-vpfe.dian.gov.co/User/AuthToken?pk=00000000|10000002&rk=901008579&token=00000000-0000-0000-0000-000000000000" --mes 2026-08
+uv run dian-automation --token-url "https://catalogo-vpfe.dian.gov.co/User/AuthToken?pk=0000000|10000002&rk=901008579&token=00000000-0000-0000-0000-000000000000" --mes 2026-08
 
 # En ambiente de Habilitación:
-uv run dian-automation --token-url "https://catalogo-vpfe-hab.dian.gov.co/User/AuthToken?pk=00000000|10000002&rk=901008579&token=00000000-0000-0000-0000-000000000000" --mes 2026-08
+uv run dian-automation --token-url "https://catalogo-vpfe-hab.dian.gov.co/User/AuthToken?pk=0000000|10000002&rk=901008579&token=00000000-0000-0000-0000-000000000000" --mes 2026-08
 ```
 
 ---
