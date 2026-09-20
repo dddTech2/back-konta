@@ -10,10 +10,12 @@ Permite a los clientes consultar en tiempo real desde Telegram:
 Incluye control de acceso mediante verificación de vinculación y estado de suscripción.
 """
 
+import os
 import re
 import logging
 from datetime import datetime, date
 from typing import Optional, Dict, Any, Tuple, List
+import httpx
 from sqlalchemy.orm import Session
 
 from dian_automation.config import config
@@ -22,6 +24,9 @@ from dian_automation.db.models import User, Business, MonthlyTaxSummary, Invoice
 from dian_automation.subscriptions.lockout_service import SubscriptionLockoutService
 
 logger = logging.getLogger("client_bot")
+
+# httpx loguea a nivel INFO la URL completa de cada petición y la de Telegram lleva el token del bot.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 class ClientTelegramBot:
@@ -308,6 +313,37 @@ class ClientTelegramBot:
             "_Se abre directamente con tus cifras reales de facturación e IVA, sin necesidad de iniciar sesión._"
         )
         return {"success": True, "link": link, "message": message}
+
+    @staticmethod
+    def send_otp(chat_id: int, code: str) -> bool:
+        """Envía el código OTP de login web al chat vinculado; True si Telegram lo aceptó.
+
+        No registra el texto ni la URL (contiene el token del bot) ni el código: ante un fallo
+        solo se loguea el tipo de error.
+        """
+        token = (
+            os.getenv("TELEGRAM_BOT_TOKEN")
+            or os.getenv("TELEGRAM_ADMIN_BOT_TOKEN")
+            or os.getenv("TELEGRAM_CLIENT_BOT_TOKEN")
+        )
+        if not token:
+            logger.error("TELEGRAM_BOT_TOKEN no configurado: no se puede enviar el código OTP.")
+            return False
+
+        text = (
+            f"🔐 Tu código de acceso a Kontable es: *{code}*\n"
+            "Vence en 5 minutos y solo sirve una vez. No lo compartas con nadie."
+        )
+        try:
+            response = httpx.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+                timeout=3.0,
+            )
+            return response.status_code == 200 and bool(response.json().get("ok"))
+        except Exception as exc:  # noqa: BLE001 - red, timeout o respuesta no JSON
+            logger.error("Fallo al enviar el código OTP por Telegram (%s).", type(exc).__name__)
+            return False
 
     REGISTRAR_VENTA_HELP = (
         "📝 *Registrar venta*\n\n"

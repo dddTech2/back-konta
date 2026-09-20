@@ -5,8 +5,8 @@
 Este catálogo consolida todas las variables de entorno consumidas en el código fuente, cruzadas con los archivos `.env.example` y `.env`.
 
 ## Resumen
-- **Variables detectadas en código:** 15
-- **Variables definidas en .env.example:** 15
+- **Variables detectadas en código:** 17
+- **Variables definidas en .env.example:** 17
 
 ---
 
@@ -25,6 +25,8 @@ Este catálogo consolida todas las variables de entorno consumidas en el código
 | `EMAIL_TIMEOUT_SECONDS` | Tiempo máximo de espera para la llegada del correo con el token (segundos) | `60`, `60` (ejemplo) | `src/dian_automation/config.py:43` | ✅ Documentada |
 | `EXPORT_DOWNLOAD_TIMEOUT_SECONDS` | Tiempo máximo de espera para que la DIAN procese y ponga en 'Listo' el ZIP (segundos) | `300`, `300` (ejemplo) | `src/dian_automation/config.py:44` | ✅ Documentada |
 | `HEADLESS` | Ejecución visible o segundo plano (False recomendado para evitar bloqueos) | `False`, `False` (ejemplo) | `src/dian_automation/config.py:42` | ✅ Documentada |
+| `JWT_SECRET` | Secreto que firma el JWT de sesión y el hash HMAC de los códigos OTP del login web; sin él no se puede iniciar sesión (la app arranca igual). Cambiarlo invalida sesiones y códigos pendientes | — (obligatorio para el login web) | `src/dian_automation/config.py`, `src/dian_automation/core/auth_service.py` | ✅ Documentada |
+| `JWT_TTL_MINUTES` | Vigencia del JWT de sesión en minutos (sin refresh) | `60` | `src/dian_automation/config.py` | ✅ Documentada |
 | `STALWART_IMAP_HOST` | Servidor de Correo Stalwart (Recepción automática del token mágico) | `mail.example.com`, `mail.example.com` (ejemplo) | `src/dian_automation/config.py:37` | ✅ Documentada |
 | `STALWART_IMAP_PORT` |  | `993`, `993` (ejemplo) | `src/dian_automation/config.py:38` | ✅ Documentada |
 | `STALWART_PASSWORD` |  | —, `tu_contrasena_aqui` (ejemplo) | `src/dian_automation/config.py:40` | ✅ Documentada |
@@ -55,6 +57,14 @@ Si la base ya contiene las tablas de una revisión posterior (por ejemplo `sales
 Si un `upgrade head` sobre una base nueva falla a la mitad (SQLite no revierte el DDL), borra el archivo de la base y vuelve a ejecutarlo; nunca hagas `stamp` sobre un esquema parcial. Ojo: `alembic downgrade base` elimina todas las tablas con todos sus datos; no lo ejecutes sobre una base real.
 
 Para cambios de esquema futuros: `uv run alembic revision --autogenerate -m "<mensaje>"`, revisar y limpiar la revisión, y `uv run alembic upgrade head` a mano. `tests/test_alembic_baseline.py` falla si `models.py` diverge de las revisiones.
+
+---
+
+## Autenticación web (OTP por Telegram + JWT)
+
+El login web no usa contraseñas: `POST /api/auth/request-otp` recibe el teléfono o NIT del contribuyente (`identifier`) y envía un código de 6 dígitos a su Telegram vinculado (vigente 5 minutos, un solo uso, máximo 3 solicitudes por usuario cada 10 minutos y 5 intentos por código); `POST /api/auth/verify-otp` (`identifier` y `code`) lo canjea por un JWT Bearer de `JWT_TTL_MINUTES` minutos; `GET /api/auth/me` informa el negocio activo y el estado de la suscripción. Las rutas `/api/dashboard|iva|invoices/{negocio}` exigen ese JWT y responden 404 si el negocio no pertenece al usuario.
+
+Requisitos de entorno: `JWT_SECRET` (obligatorio; usa al menos 32 caracteres aleatorios, p. ej. `python -c "import secrets; print(secrets.token_urlsafe(48))"`) y el token del bot de clientes (`TELEGRAM_BOT_TOKEN`, o los mismos alternativos que usa el bot) en el proceso de la API, porque es la API la que envía el código. Cambiar `JWT_SECRET` invalida todas las sesiones y los códigos pendientes. La tabla `otp_codes` se crea con la revisión Alembic `0003` (`alembic upgrade head`).
 
 ---
 

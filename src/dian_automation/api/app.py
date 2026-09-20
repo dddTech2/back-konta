@@ -7,7 +7,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from dian_automation.config import config
+from dian_automation.core.auth_service import AuthServiceError
 from dian_automation.subscriptions.lockout_service import SubscriptionBlockedError
+from dian_automation.api.routes_auth import router as auth_router
 from dian_automation.api.routes_dashboard import router as dashboard_router
 from dian_automation.api.routes_iva import router as iva_router
 from dian_automation.api.routes_invoices import router as invoices_router
@@ -39,7 +41,15 @@ async def subscription_blocked_exception_handler(request: Request, exc: Subscrip
     )
 
 
+@app.exception_handler(AuthServiceError)
+async def auth_service_exception_handler(request: Request, exc: AuthServiceError):
+    """Traduce los errores de autenticación al envelope {"detail": ...}; el 401 lleva WWW-Authenticate."""
+    headers = {"WWW-Authenticate": "Bearer"} if exc.status_code == status.HTTP_401_UNAUTHORIZED else None
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=headers)
+
+
 # Registrar routers
+app.include_router(auth_router)
 app.include_router(dashboard_router)
 app.include_router(iva_router)
 app.include_router(invoices_router)

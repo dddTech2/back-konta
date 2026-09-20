@@ -32,8 +32,8 @@ def fixture_db_session():
 
 
 @pytest.fixture(name="client")
-def fixture_client(db_session):
-    """TestClient con override de la dependencia get_db."""
+def fixture_client(db_session, bearer):
+    """TestClient con override de get_db y el Bearer del dueño sembrado (usr-andrea-001)."""
     def override_get_db():
         try:
             yield db_session
@@ -41,7 +41,7 @@ def fixture_client(db_session):
             pass
 
     app.dependency_overrides[get_db] = override_get_db
-    test_client = TestClient(app)
+    test_client = TestClient(app, headers=bearer("usr-andrea-001"))
     yield test_client
     app.dependency_overrides.clear()
 

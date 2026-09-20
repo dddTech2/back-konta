@@ -132,3 +132,33 @@ class LockoutErrorDetail(BaseModel):
     redirect_url: str = "/servicio-suspendido"
     plan: Optional[str] = None
     amount_due: Optional[float] = None
+
+
+class OTPRequestSchema(BaseModel):
+    """Solicitud de código OTP: teléfono o NIT del contribuyente."""
+    identifier: str
+
+
+class OTPVerifySchema(BaseModel):
+    """Canje de un código OTP; `code` sin validar formato para responder 401 (no 422) si es inválido."""
+    identifier: str
+    code: str
+
+
+class OTPRequestResponse(BaseModel):
+    detail: str = "Código enviado por Telegram"
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class MeResponse(BaseModel):
+    """Estado de sesión para la SPA: negocio activo y visibilidad de funciones (sin datos fiscales)."""
+    business_id: Optional[str] = None
+    is_provisioned: bool
+    is_blocked: bool
+    subscription_status: Optional[str] = None
+    has_warning_banner: bool = False
+    redirect_url: Optional[str] = None

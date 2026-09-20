@@ -72,9 +72,10 @@ def fixture_client_and_db():
     db.close()
 
 
-def test_api_contract_matches_frontend_expectations(client_and_db):
+def test_api_contract_matches_frontend_expectations(client_and_db, bearer):
     """Valida que los payloads devueltos por la API cumplan exactamente con las propiedades que lee el frontend."""
     client, db = client_and_db
+    client.headers.update(bearer("usr-front-test"))
 
     # Sembrar datos de Andrea Torres
     user = User(

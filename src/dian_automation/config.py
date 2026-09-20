@@ -50,6 +50,12 @@ class AppConfig:
 
     # Worker remoto (ej. corriendo en una red residencial fuera de la IP bloqueada del VPS)
     internal_worker_token: str = os.getenv("INTERNAL_WORKER_TOKEN", "")
+
+    # Autenticación web (JWT Bearer tras el OTP por Telegram). Sin JWT_SECRET la app arranca, pero
+    # emitir o validar un JWT falla: este módulo lo importan también el bot y el worker.
+    jwt_secret: str = os.getenv("JWT_SECRET", "")
+    jwt_algorithm: str = "HS256"
+    jwt_ttl_minutes: int = int(os.getenv("JWT_TTL_MINUTES") or "60")
     
     selectors: DianSelectors = DianSelectors()
 

@@ -30,7 +30,7 @@ BASELINE_TABLES = {
     "payment_records",
     "dian_tax_calendar",
 }
-EXPECTED_TABLES = BASELINE_TABLES | {"sales"}  # esquema en head: base + revisiones posteriores
+EXPECTED_TABLES = BASELINE_TABLES | {"sales", "otp_codes"}  # esquema en head: base + revisiones posteriores
 
 
 @pytest.fixture
@@ -93,6 +93,7 @@ def test_history_is_a_single_chain_rooted_at_the_baseline(alembic_cfg):
     assert len(script.get_heads()) == 1
     assert script.get_revision("0001").down_revision is None
     assert script.get_revision("0002").down_revision == "0001"
+    assert script.get_revision("0003").down_revision == "0002"
 
 
 def test_baseline_revision_creates_only_the_nine_original_tables(alembic_cfg, engine):
@@ -103,7 +104,7 @@ def test_baseline_revision_creates_only_the_nine_original_tables(alembic_cfg, en
 
 
 def test_sales_revision_upgrade_and_downgrade_one_step(alembic_cfg, engine):
-    command.upgrade(alembic_cfg, "head")
+    command.upgrade(alembic_cfg, "0002")
     assert "sales" in _tables(engine)
     assert {i["name"] for i in inspect(engine).get_indexes("sales")} == {"idx_sales_business_created"}
 
@@ -111,6 +112,17 @@ def test_sales_revision_upgrade_and_downgrade_one_step(alembic_cfg, engine):
 
     assert _tables(engine) == BASELINE_TABLES | {"alembic_version"}
     assert _version_rows(engine) == ["0001"]
+
+
+def test_otp_codes_revision_upgrade_and_downgrade_one_step(alembic_cfg, engine):
+    command.upgrade(alembic_cfg, "head")
+    assert "otp_codes" in _tables(engine)
+    assert {i["name"] for i in inspect(engine).get_indexes("otp_codes")} == {"idx_otp_user_created"}
+
+    command.downgrade(alembic_cfg, "-1")
+
+    assert _tables(engine) == BASELINE_TABLES | {"sales", "alembic_version"}
+    assert _version_rows(engine) == ["0002"]
 
 
 def test_migrated_sales_table_enforces_positive_total(alembic_cfg, engine):

@@ -1,5 +1,6 @@
 """Script interactivo de verificación para Story 4.2: Endpoints FastAPI de Dashboard Uninegocio, Balance IVA e Historial."""
 
+import os
 import sys
 import time
 from datetime import date, datetime, timedelta
@@ -7,6 +8,9 @@ from decimal import Decimal
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
+# Los endpoints exigen JWT (Story 5.1): el script firma sus propios tokens con un secreto local.
+os.environ.setdefault("JWT_SECRET", "verify-story-4-2-secreto-local")
+
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -15,6 +19,7 @@ from sqlalchemy.pool import StaticPool
 from dian_automation.db.database import Base, get_db
 from dian_automation.db.models import User, Business, Invoice, MonthlyTaxSummary, Subscription
 from dian_automation.api.app import app
+from dian_automation.core.auth_service import create_access_token
 
 
 def run_verification():
@@ -134,6 +139,7 @@ def run_verification():
         )
 
     db.commit()
+    client.headers.update({"Authorization": f"Bearer {create_access_token(user)}"})
 
     # =========================================================================
     # 3. VERIFICACIÓN 1: GET /api/dashboard/{nit}

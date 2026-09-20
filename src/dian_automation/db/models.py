@@ -45,6 +45,7 @@ class User(Base):
     businesses = relationship("Business", back_populates="client", cascade="all, delete-orphan")
     subscriptions = relationship("Subscription", back_populates="client", cascade="all, delete-orphan")
     link_tokens = relationship("TelegramLinkToken", back_populates="user", cascade="all, delete-orphan")
+    otp_codes = relationship("OTPCode", back_populates="user", cascade="all, delete-orphan")
 
 
 class Business(Base):
@@ -167,6 +168,23 @@ class TelegramLinkToken(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     user = relationship("User", back_populates="link_tokens")
+
+
+class OTPCode(Base):
+    """Códigos OTP de un solo uso para el login web; solo se guarda el hash HMAC, nunca el código."""
+    __tablename__ = "otp_codes"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    code_hash = Column(String(255), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    is_used = Column(Boolean, default=False, nullable=False)
+    attempts = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User", back_populates="otp_codes")
+
+    __table_args__ = (Index("idx_otp_user_created", "user_id", "created_at"),)
 
 
 class Subscription(Base):
