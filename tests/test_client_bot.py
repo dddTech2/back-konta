@@ -360,6 +360,22 @@ def test_client_facturas_vacias(db_session_factory):
         db.close()
 
 
+def test_client_facturas_manual_sales_not_applicable(db_session_factory):
+    """El comando /facturas para MANUAL_SALES devuelve mensaje de no aplicabilidad con count 0 sin consultar Invoice."""
+    db = db_session_factory()
+    try:
+        resp = ClientTelegramBot.handle_facturas(sender_chat_id=MANUAL_CHAT, db=db)
+        assert resp["success"] is True
+        assert resp["count"] == 0
+        assert "ℹ️ /facturas lista las facturas electrónicas emitidas y no aplica a tu tipo de negocio." in resp["message"]
+        assert "Usa /resumen para ver tus ingresos y egresos, o /mis_ventas para tus ventas." in resp["message"]
+
+        router_resp = ClientTelegramBot.handle_client_message(sender_chat_id=MANUAL_CHAT, text="/facturas", db=db)
+        assert "no aplica a tu tipo de negocio" in router_resp
+    finally:
+        db.close()
+
+
 def test_client_vencimientos_filtered_by_nit_last_digit(db_session_factory):
     """El comando /vencimientos filtra por el último dígito del NIT del negocio (9)."""
     db = db_session_factory()
@@ -437,10 +453,33 @@ def test_client_router_and_help(db_session_factory):
         )
         assert "/resumen" in start_resp
 
+        # Mensaje no reconocido para negocio DIAN
         unknown_resp = ClientTelegramBot.handle_client_message(
             sender_chat_id=777888999, text="/comando_invalido", db=db
         )
-        assert "No reconozco ese comando" in unknown_resp
+        assert "🤖 No reconozco ese comando." in unknown_resp
+        assert "• /resumen — Resumen fiscal del mes e IVA" in unknown_resp
+        assert "• /facturas — Últimas 4 facturas emitidas" in unknown_resp
+        assert "• /vencimientos — Calendario de impuestos DIAN" in unknown_resp
+        assert "• /dashboard — Enlace a tu panel web/móvil" in unknown_resp
+        assert "• /ayuda — Menú de ayuda" in unknown_resp
+        assert "/registrar_venta" not in unknown_resp
+        assert "/mis_ventas" not in unknown_resp
+        assert "/anular_venta" not in unknown_resp
+
+        # Mensaje no reconocido para negocio MANUAL_SALES
+        unknown_manual = ClientTelegramBot.handle_client_message(
+            sender_chat_id=555666777, text="/comando_invalido", db=db
+        )
+        assert "🤖 No reconozco ese comando." in unknown_manual
+        assert "• /resumen — Ingresos, egresos y utilidad del mes" in unknown_manual
+        assert "• /dashboard — Enlace a tu panel web/móvil" in unknown_manual
+        assert "• /registrar_venta — Registra una venta (total y descripción opcional)" in unknown_manual
+        assert "• /mis_ventas — Tus últimas 10 ventas" in unknown_manual
+        assert "• /anular_venta — Anula una venta mal registrada" in unknown_manual
+        assert "• /ayuda — Menú de ayuda" in unknown_manual
+        assert "/facturas" not in unknown_manual
+        assert "/vencimientos" not in unknown_manual
     finally:
         db.close()
 
@@ -977,19 +1016,19 @@ def test_mis_ventas_listing_with_details(db_session_factory):
 
         msg = resp["message"]
         assert "🧾 *Tus últimas ventas*" in msg
-        # La más reciente primero (sale2 es del 12/09, sale1 del 10/09)
-        assert "1. 12/09/2026 — $120,000 COP" in msg
+        # La más reciente primero (sale2 es del 12/09 con número estable 2, sale1 del 10/09 con número estable 1)
+        assert "2. 12/09/2026 — $120,000 COP" in msg
         # Sin descripción: se omite el guion y la descripción
-        assert "1. 12/09/2026 — $120,000 COP —" not in msg
+        assert "2. 12/09/2026 — $120,000 COP —" not in msg
         # Con descripción
-        assert "2. 10/09/2026 — $50,000 COP — Pan integral y café" in msg
-        assert "Para anular una: `/anular_venta 2`" in msg
+        assert "1. 10/09/2026 — $50,000 COP — Pan integral y café" in msg
+        assert "Para anular una: `/anular_venta 2` (el número de cada venta no cambia)." in msg
     finally:
         db.close()
 
 
 def test_mis_ventas_max_10_even_if_12_sales(db_session_factory):
-    """/mis_ventas muestra máximo 10 aunque haya 12 ventas y la más reciente es la 1."""
+    """/mis_ventas muestra máximo 10 aunque haya 12 ventas y la más reciente es la 12."""
     from dian_automation.db.models import Sale
 
     db = db_session_factory()
@@ -1014,15 +1053,16 @@ def test_mis_ventas_max_10_even_if_12_sales(db_session_factory):
         assert resp["count"] == 10
 
         msg = resp["message"]
-        # La más reciente es la 12, que debe ser la número 1 de la lista
-        assert "1. 13/09/2026 — $120,000 COP — Venta número 12" in msg
-        # La número 10 de la lista debe ser la venta 3
-        assert "10. 04/09/2026 — $30,000 COP — Venta número 3" in msg
+        # La más reciente es la 12, con su número estable 12
+        assert "12. 13/09/2026 — $120,000 COP — Venta número 12" in msg
+        # La más antigua de las 10 recientes es la venta 3 con su número estable 3
+        assert "3. 04/09/2026 — $30,000 COP — Venta número 3" in msg
+        # El pie incluye el ejemplo con la primera venta de la lista (12)
+        assert "Para anular una: `/anular_venta 12` (el número de cada venta no cambia)." in msg
         # Las ventas 1 y 2 quedaron fuera del límite de 10
         assert "Venta número 1\n" not in msg and not msg.endswith("Venta número 1")
         assert "Venta número 2" not in msg
-        assert "11." not in msg
-        assert "12." not in msg
+        assert not any(line.startswith(("1. ", "2. ")) for line in msg.splitlines())
     finally:
         db.close()
 
@@ -1063,7 +1103,7 @@ def test_mis_ventas_excludes_voided_sales(db_session_factory):
         db.add_all([sale1, sale2, sale3])
         db.commit()
 
-        # Anular la venta 2 (posición 2 de la lista reciente: 1=sale3, 2=sale2, 3=sale1)
+        # Anular la venta con número estable 2
         res_void = ClientTelegramBot.handle_anular_venta(
             sender_chat_id=MANUAL_CHAT, db=db, text="/anular_venta 2"
         )
@@ -1074,9 +1114,10 @@ def test_mis_ventas_excludes_voided_sales(db_session_factory):
         assert resp["count"] == 2
 
         msg = resp["message"]
-        assert "Venta activa 2" in msg
-        assert "Venta activa 1" in msg
+        assert "3. 12/09/2026 — $80,000 COP — Venta activa 2" in msg
+        assert "1. 10/09/2026 — $40,000 COP — Venta activa 1" in msg
         assert "Venta a anular" not in msg
+        assert "Para anular una: `/anular_venta 3` (el número de cada venta no cambia)." in msg
     finally:
         db.close()
 
@@ -1184,13 +1225,14 @@ def test_anular_venta_position_2_success(db_session_factory):
         db.refresh(sale3)
         assert sale3.voided_at is None
 
-        # /mis_ventas ya no muestra la venta anulada
+        # /mis_ventas ya no muestra la venta anulada y muestra números estables
         list_resp = ClientTelegramBot.handle_mis_ventas(sender_chat_id=MANUAL_CHAT, db=db)
         assert list_resp["success"] is True
         assert list_resp["count"] == 2
         assert "Venta del medio" not in list_resp["message"]
-        assert "Venta reciente" in list_resp["message"]
-        assert "Venta vieja" in list_resp["message"]
+        assert "3. 20/09/2026 — $35,000 COP — Venta reciente" in list_resp["message"]
+        assert "1. 18/09/2026 — $15,000 COP — Venta vieja" in list_resp["message"]
+        assert "Para anular una: `/anular_venta 3` (el número de cada venta no cambia)." in list_resp["message"]
     finally:
         db.close()
 
@@ -1300,7 +1342,7 @@ def test_anular_venta_number_out_of_range(db_session_factory, cmd_text):
         )
         assert resp["success"] is False
         assert resp["reason"] == "NUMBER_OUT_OF_RANGE"
-        assert "❌ Ese número no está en tu lista actual. Usa /mis_ventas para ver las ventas que puedes anular." in resp["message"]
+        assert "❌ Ese número no está en tu lista actual (o la venta ya está anulada). Usa /mis_ventas para ver las ventas que puedes anular." in resp["message"]
 
         db.refresh(sale1)
         db.refresh(sale2)
@@ -1310,13 +1352,8 @@ def test_anular_venta_number_out_of_range(db_session_factory, cmd_text):
         db.close()
 
 
-def test_anular_dos_veces_misma_posicion_recalcula_lista(db_session_factory):
-    """Anular dos veces con la misma posición anula la venta siguiente.
-
-    La numeración es posicional y sin estado: el número de /anular_venta N se calcula
-    sobre la lista list_recent_sales(db, business, 10) que existe en ese momento.
-    Al anular la posición 1, la anterior posición 2 pasa a ser la nueva posición 1.
-    """
+def test_anular_dos_veces_mismo_numero_no_anula_otra(db_session_factory):
+    """Anular dos veces con el mismo número responde NUMBER_OUT_OF_RANGE y NO anula ninguna otra."""
     from dian_automation.db.models import Sale
 
     db = db_session_factory()
@@ -1352,38 +1389,93 @@ def test_anular_dos_veces_misma_posicion_recalcula_lista(db_session_factory):
         db.add_all([sale_a, sale_b, sale_c])
         db.commit()
 
-        # En este momento la lista es: 1=C, 2=B, 3=A
-        # Primera anulación en posición 1: anula C
+        # Números estables: sale_a=1, sale_b=2, sale_c=3
+        # Primera anulación para número 1 (Venta A): éxito
         resp1 = ClientTelegramBot.handle_anular_venta(
             sender_chat_id=MANUAL_CHAT, db=db, text="/anular_venta 1"
         )
         assert resp1["success"] is True
-        assert resp1["sale_id"] == sale_c.id
-        assert "Venta C" in resp1["message"]
+        assert resp1["sale_id"] == sale_a.id
+        assert "Venta A" in resp1["message"]
 
-        db.refresh(sale_c)
-        assert sale_c.voided_at is not None
+        db.refresh(sale_a)
+        assert sale_a.voided_at is not None
 
-        # La lista se recalcula dinámicamente: ahora es 1=B, 2=A
-        # Segunda anulación en la MISMA posición 1: anula B
+        # Segunda anulación con el MISMO número 1: venta ya anulada / fuera de rango, no anula ninguna otra
         resp2 = ClientTelegramBot.handle_anular_venta(
             sender_chat_id=MANUAL_CHAT, db=db, text="/anular_venta 1"
         )
-        assert resp2["success"] is True
-        assert resp2["sale_id"] == sale_b.id
-        assert "Venta B" in resp2["message"]
+        assert resp2["success"] is False
+        assert resp2["reason"] == "NUMBER_OUT_OF_RANGE"
+        assert "❌ Ese número no está en tu lista actual (o la venta ya está anulada). Usa /mis_ventas para ver las ventas que puedes anular." in resp2["message"]
 
+        # Las ventas B y C siguen activas e intactas
         db.refresh(sale_b)
-        assert sale_b.voided_at is not None
+        assert sale_b.voided_at is None
+        db.refresh(sale_c)
+        assert sale_c.voided_at is None
 
-        # La venta A sigue activa
-        db.refresh(sale_a)
-        assert sale_a.voided_at is None
+        # /mis_ventas conserva a C (3) y B (2) con sus números estables
+        list_resp = ClientTelegramBot.handle_mis_ventas(sender_chat_id=MANUAL_CHAT, db=db)
+        assert list_resp["count"] == 2
+        assert "3. 20/09/2026 — $30,000 COP — Venta C" in list_resp["message"]
+        assert "2. 19/09/2026 — $20,000 COP — Venta B" in list_resp["message"]
+    finally:
+        db.close()
 
-        # Ahora la lista solo tiene a Venta A en la posición 1
+
+def test_registrar_venta_entre_mis_ventas_y_anular_venta_mantiene_numero(db_session_factory):
+    """Tras registrar otra venta entre /mis_ventas y /anular_venta, el número mostrado sigue anulando la MISMA venta."""
+    from dian_automation.db.models import Sale
+
+    db = db_session_factory()
+    try:
+        base_time = datetime(2026, 9, 20, 10, 0, 0)
+        sale_primera = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("15000.00"),
+            description="Primera venta original",
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=date(2026, 9, 20),
+            created_at=base_time,
+        )
+        db.add(sale_primera)
+        db.commit()
+
+        # El cliente consulta /mis_ventas y ve la venta con número estable 1
         list_resp = ClientTelegramBot.handle_mis_ventas(sender_chat_id=MANUAL_CHAT, db=db)
         assert list_resp["count"] == 1
-        assert "Venta A" in list_resp["message"]
+        assert "1. 20/09/2026 — $15,000 COP — Primera venta original" in list_resp["message"]
+        assert "Para anular una: `/anular_venta 1`" in list_resp["message"]
+
+        # En el medio, se registra otra venta (obtiene número estable 2)
+        sale_segunda = Sale(
+            business_id="biz-pedro-manual",
+            total_amount=Decimal("50000.00"),
+            description="Segunda venta posterior",
+            recorded_via="TELEGRAM",
+            recorded_by_user_id="usr-pedro-manual",
+            sale_date=date(2026, 9, 20),
+            created_at=base_time + timedelta(minutes=5),
+        )
+        db.add(sale_segunda)
+        db.commit()
+
+        # El cliente ejecuta /anular_venta 1 según el número que vio en /mis_ventas
+        void_resp = ClientTelegramBot.handle_anular_venta(
+            sender_chat_id=MANUAL_CHAT, db=db, text="/anular_venta 1"
+        )
+        assert void_resp["success"] is True
+        assert void_resp["sale_id"] == sale_primera.id
+        assert "Primera venta original" in void_resp["message"]
+
+        # La primera venta fue anulada; la segunda permanece activa
+        db.refresh(sale_primera)
+        assert sale_primera.voided_at is not None
+
+        db.refresh(sale_segunda)
+        assert sale_segunda.voided_at is None
     finally:
         db.close()
 
@@ -1514,12 +1606,12 @@ def test_router_handles_mis_ventas_and_anular_venta_with_bot_suffix(db_session_f
     resp_list_bot = _send(db_session_factory, "/mis_ventas@KontableBot")
     assert "🧾 *Tus últimas ventas*" in resp_list_bot
 
-    # /anular_venta@KontableBot 1 (anula la segunda, que es la más reciente)
-    resp_void_bot = _send(db_session_factory, "/anular_venta@KontableBot 1")
+    # /anular_venta@KontableBot 2 (anula la segunda, que tiene el número estable 2)
+    resp_void_bot = _send(db_session_factory, "/anular_venta@KontableBot 2")
     assert "🗑️ Venta anulada:" in resp_void_bot
     assert "Segunda" in resp_void_bot
 
-    # /anular_venta 1 (anula la primera, que ahora quedó en la posición 1)
+    # /anular_venta 1 (anula la primera, que tiene el número estable 1)
     resp_void = _send(db_session_factory, "/anular_venta 1")
     assert "🗑️ Venta anulada:" in resp_void
     assert "Primera" in resp_void
@@ -1534,7 +1626,7 @@ def test_help_menu_manual_sales_includes_mis_ventas_and_anular_venta(db_session_
     db = db_session_factory()
     try:
         help_manual = ClientTelegramBot.handle_help(sender_chat_id=MANUAL_CHAT, db=db)
-        assert "🧾 */mis_ventas* — Tus últimas 10 ventas, con un número para anular." in help_manual
+        assert "🧾 */mis_ventas* — Tus últimas 10 ventas, cada una con su número para anular." in help_manual
         assert "🗑️ */anular_venta* — Anula una venta mal registrada: `/anular_venta 2`." in help_manual
 
         help_dian = ClientTelegramBot.handle_help(sender_chat_id=ANDREA_CHAT, db=db)

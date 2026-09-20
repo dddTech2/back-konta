@@ -82,6 +82,27 @@ class ExtractionQueueManager:
         return job
 
     @classmethod
+    def claim_job(cls, job_id: str, db: Session) -> Optional[DIANExtractionJob]:
+        """Reclama atómicamente un trabajo encolado para su procesamiento exclusivo.
+
+        Aplica un UPDATE condicional (status == ENQUEUED) para evitar condiciones de carrera entre
+        múltiples workers concurrentes. Si el trabajo ya fue tomado o no está encolado, devuelve None.
+        """
+        rows_updated = (
+            db.query(DIANExtractionJob)
+            .filter(DIANExtractionJob.id == job_id, DIANExtractionJob.status == "ENQUEUED")
+            .update({"status": "PROCESSING", "started_at": datetime.utcnow()}, synchronize_session=False)
+        )
+        db.commit()
+        if rows_updated == 0:
+            return None
+
+        job = db.query(DIANExtractionJob).filter(DIANExtractionJob.id == job_id).first()
+        if job is not None:
+            db.refresh(job)
+        return job
+
+    @classmethod
     def mark_job_success(
         cls,
         job_id: str,

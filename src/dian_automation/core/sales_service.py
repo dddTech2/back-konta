@@ -8,9 +8,10 @@ autenticado; el canal de origen se distingue con `recorded_via`.
 import re
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from dian_automation.core import income_service
@@ -155,6 +156,38 @@ def list_recent_sales(db: Session, business: Business, limit: int = 10) -> List[
     )
 
 
+def list_recent_sales_numbered(db: Session, business: Business, limit: int = 10) -> List[Tuple[int, Sale]]:
+    """Últimas `limit` ventas NO anuladas, de la más reciente a la más antigua, cada una con su número estable.
+    El número de una venta es su posición 1-based entre TODAS las ventas del negocio (anuladas incluidas) ordenadas por (created_at, id):
+    no cambia al registrar ni anular otras ventas."""
+    recent_sales = list_recent_sales(db, business, limit=limit)
+    numbered = []
+    for s in recent_sales:
+        count = (
+            db.query(func.count(Sale.id))
+            .filter(
+                Sale.business_id == business.id,
+                or_(
+                    Sale.created_at < s.created_at,
+                    and_(Sale.created_at == s.created_at, Sale.id <= s.id),
+                ),
+            )
+            .scalar()
+        )
+        numbered.append((int(count or 0), s))
+    return numbered
+
+
+def find_recent_sale_by_number(db: Session, business: Business, number: int, limit: int = 10) -> Optional[Sale]:
+    """La venta con ese número estable SOLO si está entre las últimas `limit` no anuladas; None en otro caso."""
+    if number <= 0:
+        return None
+    for num, sale in list_recent_sales_numbered(db, business, limit=limit):
+        if num == number:
+            return sale
+    return None
+
+
 def list_month_sales(db: Session, business: Business, month: str, limit: int = 100) -> List[Sale]:
     """Ventas NO anuladas del negocio con sale_date dentro del mes 'YYYY-MM', orden sale_date desc, created_at desc, id desc.
     Mes inválido -> lanza income_service.IncomeError(INVALID_MONTH) (reutiliza income_service._parse_month y _month_range)."""
@@ -202,8 +235,22 @@ def void_sale(db: Session, *, user: User, business: Business, sale_id: str, now:
     if now is None:
         now = datetime.utcnow()
 
-    sale.voided_at = now
-    sale.voided_by_user_id = user.id
+    updated = (
+        db.query(Sale)
+        .filter(
+            Sale.id == sale_id,
+            Sale.business_id == business.id,
+            Sale.voided_at.is_(None),
+        )
+        .update(
+            {"voided_at": now, "voided_by_user_id": user.id},
+            synchronize_session=False,
+        )
+    )
+    if updated == 0:
+        db.rollback()
+        raise SalesError(SalesError.ALREADY_VOIDED, "Esa venta ya está anulada.")
+
     db.commit()
     db.refresh(sale)
     return sale

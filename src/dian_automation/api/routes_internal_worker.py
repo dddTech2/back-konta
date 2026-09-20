@@ -12,6 +12,7 @@ Todas las escrituras a la base de datos (incluida la ingesta del XLSX) las sigue
 únicamente el proceso de la API en el VPS, igual que hace el worker local en worker.py.
 """
 
+import hmac
 import logging
 import os
 from typing import Optional
@@ -44,7 +45,15 @@ def require_worker_token(authorization: Optional[str] = Header(default=None)) ->
             detail="INTERNAL_WORKER_TOKEN no está configurado en el servidor.",
         )
     expected = f"Bearer {config.internal_worker_token}"
-    if not authorization or authorization != expected:
+    if not authorization:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token de worker inválido.")
+
+    try:
+        is_valid = hmac.compare_digest(authorization.encode("utf-8"), expected.encode("utf-8"))
+    except UnicodeEncodeError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token de worker inválido.")
+
+    if not is_valid:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token de worker inválido.")
 
 
@@ -85,7 +94,9 @@ def get_next_job(db: Session = Depends(get_db), x_worker_name: Optional[str] = H
     if not business:
         raise HTTPException(status_code=500, detail=f"Negocio '{job.business_id}' no encontrado para el job {job.id}")
 
-    job = ExtractionQueueManager.mark_job_processing(job_id=job.id, db=db)
+    job = ExtractionQueueManager.claim_job(job_id=job.id, db=db)
+    if not job:
+        return {"job": None}
 
     login_type = "empresa" if business.taxpayer_type == "PERSONA_JURIDICA" else "persona"
     return {

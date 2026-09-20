@@ -103,12 +103,51 @@ def _build_sample_zip_bytes() -> bytes:
     return zip_buf.getvalue()
 
 
-def test_next_job_rejects_missing_or_wrong_token(client):
-    res = client.get("/internal/jobs/next")
+@pytest.mark.parametrize(
+    "auth_header",
+    [
+        None,  # encabezado ausente
+        "",  # encabezado vacío
+        "token-sin-bearer",  # sin prefijo Bearer
+        "Bearer ",  # Bearer vacío
+        f"Bearer {FAKE_TOKEN}-extra",  # longitud distinta (más largo)
+        f"Bearer {FAKE_TOKEN[:-2]}",  # longitud distinta (más corto)
+        "Bearer token-incorrecto",  # token incorrecto
+        "Bearer tokén".encode("latin-1"),  # carácter no ASCII: por la red llega como bytes latin-1
+    ],
+)
+def test_next_job_rejects_missing_or_wrong_token(client, auth_header):
+    headers = {"Authorization": auth_header} if auth_header is not None else {}
+    res = client.get("/internal/jobs/next", headers=headers)
     assert res.status_code == 401
+    assert res.json()["detail"] == "Token de worker inválido."
 
-    res = client.get("/internal/jobs/next", headers=_auth_headers("token-incorrecto"))
-    assert res.status_code == 401
+
+def test_next_job_server_unconfigured_token_returns_503(client, monkeypatch):
+    class NoTokenConfig:
+        internal_worker_token = None
+
+    monkeypatch.setattr(internal_routes_module, "config", NoTokenConfig())
+    res = client.get("/internal/jobs/next", headers=_auth_headers())
+    assert res.status_code == 503
+    assert res.json()["detail"] == "INTERNAL_WORKER_TOKEN no está configurado en el servidor."
+
+
+def test_next_job_claim_loss_returns_none_and_leaves_job_unmarked(client, db_session, seed_business, monkeypatch):
+    """Si claim_job pierde el reclamo (devuelve None ante concurrencia), la ruta responde
+    {'job': None} y el trabajo permanece encolado sin ser marcado por esta petición."""
+    job = ExtractionQueueManager.enqueue_job(business_id=seed_business.id, target_period="2026-08", db=db_session)
+
+    monkeypatch.setattr(ExtractionQueueManager, "claim_job", classmethod(lambda cls, job_id, db: None))
+
+    res = client.get("/internal/jobs/next", headers=_auth_headers())
+    assert res.status_code == 200
+    assert res.json() == {"job": None}
+
+    db_session.refresh(job)
+    assert job.status == "ENQUEUED"
+    assert job.started_at is None
+
 
 
 def test_next_job_empty_queue_returns_none(client):

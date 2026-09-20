@@ -122,3 +122,11 @@ Un trabajo que quedó en `PROCESSING` sin respuesta se reprograma solo a las 6 h
 ## 7. Activar la programación semanal
 
 `SCHEDULER_ENABLED` nace en `false`. Actívalo (`true` en el `.env` del VPS y reinicia el servicio `scheduler`) solo cuando el worker arranque solo, el latido se vea en `worker_heartbeats` y hayas probado un reinicio del equipo.
+
+## 8. Calendario tributario del año siguiente
+
+El motor de calendario (`GET /api/calendar`, `/vencimientos` del bot, el pill de vencimiento del Dashboard y las fechas de `/api/iva`) busca las fechas del año en curso (hora de Bogotá). Si no hay ninguna fila de `dian_tax_calendar` para ese año, falla a propósito: la API responde 409, el bot avisa que el calendario no está cargado y la SPA muestra "Calendario no disponible". Para que eso no ocurra el 1 de enero:
+
+1. Antes del 1 de enero, consigue el calendario oficial del año siguiente y arma `data/calendario_dian_AAAA.csv` con el mismo formato que `data/calendario_dian_2026.csv`.
+2. Cárgalo en el servidor con `uv run python -m dian_automation.core.calendar_loader data/calendario_dian_AAAA.csv`: valida el archivo completo y, si algo falla, lo rechaza entero y deja la base intacta.
+3. Verifica con `GET /api/calendar/<business_id>` de un negocio `DIAN` que responde 200.

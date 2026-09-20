@@ -66,6 +66,74 @@ def test_concurrency_one_constraint(db_session_factory):
         db.close()
 
 
+def test_claim_job_lifecycle(db_session_factory):
+    """Verifica el reclamo atómico de trabajos con claim_job:
+    - Sobre un trabajo ENQUEUED devuelve el trabajo con status == 'PROCESSING' y started_at fijado.
+    - Una segunda llamada con el mismo id devuelve None y no cambia started_at.
+    """
+    db = db_session_factory()
+    try:
+        job = ExtractionQueueManager.enqueue_job(business_id="biz-q-1", target_period="2026-08", db=db)
+        job_id = job.id
+        assert job.status == "ENQUEUED"
+        assert job.started_at is None
+
+        # Reclamo inicial: exitoso
+        claimed = ExtractionQueueManager.claim_job(job_id=job_id, db=db)
+        assert claimed is not None
+        assert claimed.id == job_id
+        assert claimed.status == "PROCESSING"
+        assert claimed.started_at is not None
+        first_started_at = claimed.started_at
+
+        # Segundo reclamo con el mismo ID: devuelve None y NO altera started_at
+        second_claim = ExtractionQueueManager.claim_job(job_id=job_id, db=db)
+        assert second_claim is None
+
+        db.refresh(claimed)
+        assert claimed.status == "PROCESSING"
+        assert claimed.started_at == first_started_at
+    finally:
+        db.close()
+
+
+def test_claim_job_rejects_non_enqueued_and_non_existent(db_session_factory):
+    """Verifica que claim_job sobre un trabajo que no está ENQUEUED (PROCESSING, SUCCESS)
+    o con un id inexistente devuelve None sin modificar el trabajo."""
+    db = db_session_factory()
+    try:
+        # 1. Trabajo en PROCESSING no puede ser reclamado
+        job_proc = ExtractionQueueManager.enqueue_job(business_id="biz-q-1", target_period="2026-08", db=db)
+        ExtractionQueueManager.mark_job_processing(job_id=job_proc.id, db=db)
+        db.refresh(job_proc)
+        started_proc = job_proc.started_at
+
+        res_proc = ExtractionQueueManager.claim_job(job_id=job_proc.id, db=db)
+        assert res_proc is None
+        db.refresh(job_proc)
+        assert job_proc.status == "PROCESSING"
+        assert job_proc.started_at == started_proc
+
+        # 2. Trabajo en SUCCESS no puede ser reclamado
+        job_succ = ExtractionQueueManager.enqueue_job(business_id="biz-q-2", target_period="2026-08", db=db)
+        ExtractionQueueManager.mark_job_processing(job_id=job_succ.id, db=db)
+        ExtractionQueueManager.mark_job_success(job_id=job_succ.id, zip_path="dummy.zip", db=db)
+        db.refresh(job_succ)
+        finished_succ = job_succ.finished_at
+
+        res_succ = ExtractionQueueManager.claim_job(job_id=job_succ.id, db=db)
+        assert res_succ is None
+        db.refresh(job_succ)
+        assert job_succ.status == "SUCCESS"
+        assert job_succ.finished_at == finished_succ
+
+        # 3. ID inexistente devuelve None
+        res_none = ExtractionQueueManager.claim_job(job_id="id-inexistente-999", db=db)
+        assert res_none is None
+    finally:
+        db.close()
+
+
 def test_success_pacing_fifteen_minutes(db_session_factory):
     """Verifica que tras completar una tarea con éxito, la siguiente en cola deba esperar 15 minutos."""
     db = db_session_factory()

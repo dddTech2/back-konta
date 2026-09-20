@@ -323,10 +323,17 @@ def test_void_sale_route_second_time_returns_409(client, seeded):
 
     res1 = client.post(f"/api/sales/biz-ana/{sale_id}/void")
     assert res1.status_code == 200
+    first_voided_at = res1.json()["voided_at"]
+    assert first_voided_at is not None
 
     res2 = client.post(f"/api/sales/biz-ana/{sale_id}/void")
     assert res2.status_code == 409
     assert res2.json()["detail"] == "Esa venta ya está anulada."
+
+    # Verifica que voided_at conserva el valor exacto de la primera anulación
+    sale = seeded.get(Sale, sale_id)
+    assert sale.voided_at is not None
+    assert sale.voided_at.isoformat() == first_voided_at
 
 
 def test_void_sale_route_dian_business_returns_409(seeded, bearer):

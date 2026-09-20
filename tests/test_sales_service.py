@@ -11,8 +11,10 @@ from sqlalchemy.orm import sessionmaker
 from dian_automation.core import income_service, sales_service
 from dian_automation.core.sales_service import (
     SalesError,
+    find_recent_sale_by_number,
     list_month_sales,
     list_recent_sales,
+    list_recent_sales_numbered,
     register_sale,
     void_sale,
 )
@@ -474,4 +476,236 @@ def test_list_month_sales_filters_boundaries_excludes_voided_orders_and_validate
     with pytest.raises(income_service.IncomeError) as exc:
         list_month_sales(db, biz, "2026-13")
     assert exc.value.code == income_service.IncomeError.INVALID_MONTH
+
+
+def test_void_sale_atomic_update_concurrency_race_condition(db, monkeypatch):
+    """Si otra petición concurrente anula la venta entre la lectura y el UPDATE, void_sale hace rollback y lanza ALREADY_VOIDED sin alterar campos."""
+    user = db.get(User, "usr-ok")
+    business = db.get(Business, "biz-ok")
+    sale = register_sale(db, user=user, business=business, total="50000", recorded_via=sales_service.RECORDED_VIA_TELEGRAM)
+
+    first_void_time = datetime(2026, 9, 20, 10, 0, 0)
+    from sqlalchemy.orm import Query
+    orig_update = Query.update
+
+    def fake_update(self, values, *args, **kwargs):
+        # Simula que otra transacción actualizó la fila en la BD antes de este UPDATE
+        db.execute(
+            Sale.__table__.update()
+            .where(Sale.id == sale.id)
+            .values(voided_at=first_void_time, voided_by_user_id="usr-other")
+        )
+        db.commit()
+        return orig_update(self, values, *args, **kwargs)
+
+    monkeypatch.setattr(Query, "update", fake_update)
+
+    second_time = datetime(2026, 9, 20, 12, 0, 0)
+    with pytest.raises(SalesError) as exc:
+        void_sale(db, user=user, business=business, sale_id=sale.id, now=second_time)
+
+    assert exc.value.code == SalesError.ALREADY_VOIDED
+    assert exc.value.message == "Esa venta ya está anulada."
+
+    db.expire_all()
+    persisted = db.get(Sale, sale.id)
+    assert persisted.voided_at == first_void_time
+    assert persisted.voided_by_user_id == "usr-other"
+
+
+def test_list_recent_sales_numbered_stable_numbers_and_counting_voided(db):
+    """Los números son estables, crecen con el orden de creación y cuentan las anuladas."""
+    user = db.get(User, "usr-ok")
+    biz = db.get(Business, "biz-ok")
+    t0 = datetime(2026, 9, 20, 8, 0, 0)
+
+    s1 = register_sale(db, user=user, business=biz, total="10000", recorded_via="TELEGRAM", now=t0)
+    s2 = register_sale(db, user=user, business=biz, total="20000", recorded_via="TELEGRAM", now=t0 + timedelta(minutes=10))
+    s3 = register_sale(db, user=user, business=biz, total="30000", recorded_via="TELEGRAM", now=t0 + timedelta(minutes=20))
+
+    # Crecen con el orden de creación (1, 2, 3) y se listan de la más reciente a la más antigua
+    numbered = list_recent_sales_numbered(db, biz, limit=10)
+    assert len(numbered) == 3
+    assert [(num, s.id) for num, s in numbered] == [(3, s3.id), (2, s2.id), (1, s1.id)]
+
+    # Anular la venta n° 2 no hace que la n° 3 pase a ser la n° 2
+    void_sale(db, user=user, business=biz, sale_id=s2.id)
+
+    numbered_after_void = list_recent_sales_numbered(db, biz, limit=10)
+    assert len(numbered_after_void) == 2
+    assert [(num, s.id) for num, s in numbered_after_void] == [(3, s3.id), (1, s1.id)]
+
+    # Registrar una nueva venta no cambia el número de las ventas existentes
+    s4 = register_sale(db, user=user, business=biz, total="40000", recorded_via="TELEGRAM", now=t0 + timedelta(minutes=30))
+
+    numbered_after_add = list_recent_sales_numbered(db, biz, limit=10)
+    assert len(numbered_after_add) == 3
+    assert [(num, s.id) for num, s in numbered_after_add] == [(4, s4.id), (3, s3.id), (1, s1.id)]
+
+
+def test_list_recent_sales_numbered_max_10_and_excludes_voided(db):
+    """Muestra un máximo de 10 ventas no anuladas con su número posicional global."""
+    user = db.get(User, "usr-ok")
+    biz = db.get(Business, "biz-ok")
+    base_time = datetime(2026, 9, 20, 8, 0, 0)
+
+    sales = []
+    for i in range(12):
+        s = Sale(
+            id=f"sale-numbered-{i:02d}",
+            business_id=biz.id,
+            total_amount=Decimal(f"{(i + 1) * 1000}.00"),
+            recorded_via="TELEGRAM",
+            recorded_by_user_id=user.id,
+            sale_date=date(2026, 9, 20),
+            created_at=base_time + timedelta(minutes=i * 10),
+        )
+        sales.append(s)
+
+    # Anular la venta índice 5 (número 6)
+    sales[5].voided_at = base_time + timedelta(hours=5)
+    sales[5].voided_by_user_id = user.id
+
+    db.add_all(sales)
+    db.commit()
+
+    results = list_recent_sales_numbered(db, biz, limit=10)
+    # 12 ventas - 1 anulada = 11 activas. Con limit=10 devuelve 10
+    assert len(results) == 10
+    # Excluye la anulada
+    result_ids = [s.id for _, s in results]
+    assert "sale-numbered-05" not in result_ids
+
+    # Las 10 más recientes son las ventas de índice 11 down to 1 (la 0 queda afuera por límite, la 5 por anulada)
+    expected_nums = [12, 11, 10, 9, 8, 7, 5, 4, 3, 2]
+    assert [num for num, _ in results] == expected_nums
+
+
+def test_list_recent_sales_numbered_isolates_businesses(db):
+    """Dos negocios cada uno numera desde 1 sin interferir."""
+    user_ok = db.get(User, "usr-ok")
+    biz_ok = db.get(Business, "biz-ok")
+
+    user_other = User(id="usr-other-biz", email="other-biz@x.co", full_name="other", role="CLIENT", is_active=True)
+    biz_other = Business(id="biz-other-biz", client_id=user_other.id, legal_name="other", commercial_name="other",
+                         nit="901777888", dv="1", is_active=True, income_source=INCOME_SOURCE_MANUAL_SALES)
+    db.add_all([user_other, biz_other])
+    db.commit()
+
+    t = datetime(2026, 9, 20, 9, 0, 0)
+    sale_ok = register_sale(db, user=user_ok, business=biz_ok, total="15000", recorded_via="TELEGRAM", now=t)
+    sale_other = register_sale(db, user=user_other, business=biz_other, total="25000", recorded_via="TELEGRAM", now=t)
+
+    numbered_ok = list_recent_sales_numbered(db, biz_ok)
+    numbered_other = list_recent_sales_numbered(db, biz_other)
+
+    assert len(numbered_ok) == 1
+    assert numbered_ok[0][0] == 1
+    assert numbered_ok[0][1].id == sale_ok.id
+
+    assert len(numbered_other) == 1
+    assert numbered_other[0][0] == 1
+    assert numbered_other[0][1].id == sale_other.id
+
+
+def test_list_recent_sales_numbered_tiebreak_by_id(db):
+    """Desempate por id cuando created_at es exactamente el mismo."""
+    user = db.get(User, "usr-ok")
+    biz = db.get(Business, "biz-ok")
+    t = datetime(2026, 9, 20, 10, 0, 0)
+
+    sale_a = Sale(
+        id="sale-tie-a",
+        business_id=biz.id,
+        total_amount=Decimal("10000.00"),
+        recorded_via="TELEGRAM",
+        recorded_by_user_id=user.id,
+        sale_date=date(2026, 9, 20),
+        created_at=t,
+    )
+    sale_b = Sale(
+        id="sale-tie-b",
+        business_id=biz.id,
+        total_amount=Decimal("20000.00"),
+        recorded_via="TELEGRAM",
+        recorded_by_user_id=user.id,
+        sale_date=date(2026, 9, 20),
+        created_at=t,
+    )
+    db.add_all([sale_a, sale_b])
+    db.commit()
+
+    numbered = list_recent_sales_numbered(db, biz, limit=10)
+    # sale_a tiene menor id que sale_b, por ende sale_a es número 1 y sale_b es número 2
+    # La lista ordenada por (created_at desc, id desc) muestra sale_b primero (num 2), sale_a segundo (num 1)
+    assert [(num, s.id) for num, s in numbered] == [(2, "sale-tie-b"), (1, "sale-tie-a")]
+
+
+def test_find_recent_sale_by_number(db):
+    """find_recent_sale_by_number devuelve la venta correcta o None si está fuera de rango, anulada, inválida o de otro negocio."""
+    user = db.get(User, "usr-ok")
+    biz = db.get(Business, "biz-ok")
+    base_time = datetime(2026, 9, 20, 8, 0, 0)
+
+    sales = []
+    for i in range(12):
+        s = Sale(
+            id=f"sale-find-{i:02d}",
+            business_id=biz.id,
+            total_amount=Decimal(f"{(i + 1) * 1000}.00"),
+            recorded_via="TELEGRAM",
+            recorded_by_user_id=user.id,
+            sale_date=date(2026, 9, 20),
+            created_at=base_time + timedelta(minutes=i * 10),
+        )
+        sales.append(s)
+
+    # Anular venta índice 4 (número 5)
+    sales[4].voided_at = base_time + timedelta(hours=4)
+    sales[4].voided_by_user_id = user.id
+
+    user_other = User(id="usr-find-other", email="find-other@x.co", full_name="other", role="CLIENT", is_active=True)
+    biz_other = Business(id="biz-find-other", client_id=user_other.id, legal_name="other", commercial_name="other",
+                         nit="901555444", dv="2", is_active=True, income_source=INCOME_SOURCE_MANUAL_SALES)
+    sale_other = Sale(
+        id="sale-find-other",
+        business_id=biz_other.id,
+        total_amount=Decimal("99000.00"),
+        recorded_via="TELEGRAM",
+        recorded_by_user_id=user_other.id,
+        sale_date=date(2026, 9, 20),
+        created_at=base_time + timedelta(minutes=5),
+    )
+
+    db.add_all(sales + [user_other, biz_other, sale_other])
+    db.commit()
+
+    # 1. Devuelve la venta correcta
+    found_12 = find_recent_sale_by_number(db, biz, 12, limit=10)
+    assert found_12 is not None
+    assert found_12.id == "sale-find-11"
+
+    found_2 = find_recent_sale_by_number(db, biz, 2, limit=10)
+    assert found_2 is not None
+    assert found_2.id == "sale-find-01"
+
+    # 2. None para una venta anulada (número 5)
+    assert find_recent_sale_by_number(db, biz, 5, limit=10) is None
+
+    # 3. None para una venta fuera de las últimas 10 (número 1, índice 0)
+    assert find_recent_sale_by_number(db, biz, 1, limit=10) is None
+
+    # 4. None para 0 y negativos
+    assert find_recent_sale_by_number(db, biz, 0, limit=10) is None
+    assert find_recent_sale_by_number(db, biz, -1, limit=10) is None
+    assert find_recent_sale_by_number(db, biz, -10, limit=10) is None
+
+    # 5. None para número no existente
+    assert find_recent_sale_by_number(db, biz, 99, limit=10) is None
+
+    # 6. None para número de otro negocio
+    assert find_recent_sale_by_number(db, biz_other, 12, limit=10) is None
+    found_other = find_recent_sale_by_number(db, biz_other, 1, limit=10)
+    assert found_other is not None
+    assert found_other.id == "sale-find-other"
 
