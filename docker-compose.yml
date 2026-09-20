@@ -1,5 +1,6 @@
-# Despliegue de prueba en un solo servidor: 4 contenedores (api, bot, scheduler, worker) + 2 volumenes
-# compartidos (datos y perfil persistente de Chrome). Requiere que, en el servidor, la carpeta
+# Servidor: api, bot, scheduler y redis, mas un `migrate` de un solo uso, con un volumen de datos compartido.
+# NO incluye el worker de descargas: la DIAN bloquea la IP del VPS, asi que el worker corre aparte en una
+# red residencial (run_worker_remote.py o kontable-worker.exe, ver docs/DEPLOYMENT.md). Requiere que, en el servidor, la carpeta
 # ProyectoDianFront exista como hermana de esta (../ProyectoDianFront), igual que en local.
 #
 # Uso:
@@ -7,7 +8,6 @@
 #   (cd ../ProyectoDianFront && npm ci && npm run build)   # la API sirve ../ProyectoDianFront/dist
 #   docker compose up -d --build   # el servicio `migrate` crea/actualiza las tablas antes de arrancar el resto
 #   docker compose exec api python -m dian_automation.core.calendar_loader data/calendario_dian_2026.csv   # una vez
-# Worker local (solo pruebas, ver abajo): docker compose --profile local-worker up -d
 #   docker compose logs -f bot      # confirmar "Conectado con éxito como: @tu_bot"
 
 services:
@@ -91,29 +91,6 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
-  # Worker LOCAL: solo útil para pruebas desde una máquina/IP que la DIAN no bloquee. No arranca con
-  # `docker compose up`: hay que pedirlo con `--profile local-worker`. En el VPS debe quedar apagado, porque
-  # tomaría trabajos de la cola desde la IP bloqueada y los haría fallar. En el despliegue real, el worker
-  # corre aparte desde una red residencial (`run_worker_remote.py` o kontable-worker.exe): docs/DEPLOYMENT.md.
-  worker:
-    profiles: ["local-worker"]
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
-    command: ["worker"]
-    env_file: .env
-    environment:
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0   # dentro de la red de compose Redis es "redis", no localhost
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-    volumes:
-      - kontable_data:/data
-      - browser_profile:/app/.browser_profile
-    restart: unless-stopped
-    shm_size: "1gb"
-
 volumes:
   kontable_data:
-  browser_profile:
   redis_data:

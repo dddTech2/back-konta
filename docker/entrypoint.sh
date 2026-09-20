@@ -26,15 +26,6 @@ case "$1" in
     echo "[entrypoint] Iniciando programador semanal de descargas (SCHEDULER_ENABLED=${SCHEDULER_ENABLED:-false})..."
     exec python run_scheduler.py
     ;;
-  worker)
-    echo "[entrypoint] Iniciando Xvfb en :99 (pantalla virtual para Chrome no-headless)..."
-    Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
-    XVFB_PID=$!
-    trap "kill $XVFB_PID" EXIT
-    sleep 1
-    echo "[entrypoint] Iniciando worker de extraccion DIAN..."
-    exec python run_worker.py
-    ;;
   *)
     exec "$@"
     ;;

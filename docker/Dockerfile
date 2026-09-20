@@ -1,18 +1,9 @@
-# Imagen unica reutilizada por los 3 servicios (api / bot / worker) via docker-compose,
-# seleccionando el proceso con el comando pasado al entrypoint. Incluye Chrome real + Xvfb
-# porque el worker de extraccion DIAN depende de un Chrome nativo con pantalla (ver ADR-001:
-# evasion de Cloudflare Turnstile) -- no es Playwright quien lanza el navegador, solo se
-# conecta via CDP a este Chrome. api y bot no usan Chrome, pero comparten la misma imagen
-# por simplicidad en esta primera prueba de despliegue.
+# Imagen unica reutilizada por los servicios (api / bot / scheduler / migrate) via docker-compose,
+# seleccionando el proceso con el comando pasado al entrypoint. No incluye Chrome ni Xvfb: la extraccion
+# de la DIAN la hace el worker remoto, fuera del VPS (docs/DEPLOYMENT.md).
 FROM python:3.14-slim-bookworm
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        wget gnupg ca-certificates xvfb \
-        fonts-liberation libnss3 libatk-bridge2.0-0 libgtk-3-0 \
-        libasound2 libxss1 libgbm1 libxshmfence1 \
-    && wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update && apt-get install -y --no-install-recommends google-chrome-stable \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir uv
@@ -28,8 +19,7 @@ COPY . .
 RUN uv sync --frozen
 
 ENV PATH="/app/.venv/bin:${PATH}" \
-    PYTHONUNBUFFERED=1 \
-    DISPLAY=:99
+    PYTHONUNBUFFERED=1
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

@@ -151,4 +151,4 @@ En el VPS, con `ProyectoDianFront` como carpeta hermana de `ProyectoDianBack`:
 4. Carga el calendario una sola vez: `docker compose exec api python -m dian_automation.core.calendar_loader data/calendario_dian_2026.csv`. Sin él, la API responde 409 en `/api/calendar` y el bot avisa que no está cargado (sección 8 para el año siguiente).
 5. Deja `SCHEDULER_ENABLED=false` hasta que el worker remoto arranque solo.
 
-Dentro de la red de compose, Redis es el host `redis`: `docker-compose.yml` fija `REDIS_URL` de cada contenedor y no usa el del `.env`. El servicio `worker` (Chrome dentro del contenedor) no arranca por defecto; es solo para pruebas desde una IP que la DIAN no bloquee: `docker compose --profile local-worker up -d`. En el VPS debe quedar apagado.
+Dentro de la red de compose, Redis es el host `redis`: `docker-compose.yml` fija `REDIS_URL` de cada contenedor y no usa el del `.env`. El Docker no incluye worker ni Chrome: la descarga la hace siempre el worker remoto de las secciones 1 a 3.
