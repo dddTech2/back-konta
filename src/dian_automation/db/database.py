@@ -4,16 +4,30 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./kontable.db")
 
-# Ajuste para SQLite (connect_args check_same_thread)
-connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+def normalize_database_url(url: str) -> str:
+    """Normaliza URLs de base de datos para usar el driver psycopg 3 con PostgreSQL."""
+    if url.startswith("postgres://"):
+        return "postgresql+psycopg://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + url[len("postgresql://"):]
+    return url
 
-engine = create_engine(
-    DATABASE_URL,
-    connect_args=connect_args,
-    echo=False,
-)
+
+DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL", "sqlite:///./kontable.db"))
+
+if DATABASE_URL.startswith("sqlite"):
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={"check_same_thread": False},
+        echo=False,
+    )
+else:
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        echo=False,
+    )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

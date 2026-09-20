@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from dian_automation.db.database import get_db
 from dian_automation.db.models import Business, User, MonthlyTaxSummary, Invoice, INCOME_SOURCE_MANUAL_SALES
+from dian_automation.core.period_utils import period_clause
 from dian_automation.api.dependencies import get_business_with_access
 from dian_automation.api.schemas import (
     IvaDetailResponse,
@@ -61,7 +62,7 @@ def get_iva_detail(
                 db.query(Invoice)
                 .filter(
                     Invoice.business_id == business.id,
-                    Invoice.issue_date.like(f"{s.period_year_month}%"),
+                    period_clause(Invoice.issue_date, s.period_year_month),
                 )
                 .order_by(Invoice.total.desc())
                 .limit(5)

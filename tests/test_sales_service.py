@@ -389,7 +389,9 @@ def test_list_recent_sales_returns_max_10_most_recent_first_excludes_voided_and_
         created_at=base_time + timedelta(hours=6),
     )
 
-    db.add_all(sales_ok + [voided_sale, user_other, biz_other, sale_other])
+    db.add_all([user_other, biz_other])
+    db.commit()
+    db.add_all(sales_ok + [voided_sale, sale_other])
     db.commit()
 
     results = list_recent_sales(db, biz_ok, limit=10)
@@ -482,6 +484,9 @@ def test_void_sale_atomic_update_concurrency_race_condition(db, monkeypatch):
     """Si otra petición concurrente anula la venta entre la lectura y el UPDATE, void_sale hace rollback y lanza ALREADY_VOIDED sin alterar campos."""
     user = db.get(User, "usr-ok")
     business = db.get(Business, "biz-ok")
+    user_other = User(id="usr-other", email="other@x.co", full_name="other", role="CLIENT", is_active=True)
+    db.add(user_other)
+    db.commit()
     sale = register_sale(db, user=user, business=business, total="50000", recorded_via=sales_service.RECORDED_VIA_TELEGRAM)
 
     first_void_time = datetime(2026, 9, 20, 10, 0, 0)
@@ -677,7 +682,9 @@ def test_find_recent_sale_by_number(db):
         created_at=base_time + timedelta(minutes=5),
     )
 
-    db.add_all(sales + [user_other, biz_other, sale_other])
+    db.add_all([user_other, biz_other])
+    db.commit()
+    db.add_all(sales + [sale_other])
     db.commit()
 
     # 1. Devuelve la venta correcta

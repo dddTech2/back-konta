@@ -7,6 +7,7 @@ from sqlalchemy import or_
 
 from dian_automation.db.database import get_db
 from dian_automation.db.models import Business, User, Invoice
+from dian_automation.core.period_utils import period_clause
 from dian_automation.api.dependencies import get_business_with_access
 from dian_automation.api.schemas import (
     InvoicesListResponse,
@@ -37,7 +38,7 @@ def get_invoices(
         query = query.filter(Invoice.group_type == gt)
 
     if period:
-        query = query.filter(Invoice.issue_date.like(f"{period}%"))
+        query = query.filter(period_clause(Invoice.issue_date, period))
 
     if search:
         search_pattern = f"%{search}%"

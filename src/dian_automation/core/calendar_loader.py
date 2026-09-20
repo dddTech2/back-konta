@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import holidays
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from dian_automation.db.models import DIANTaxCalendar
@@ -353,7 +353,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         for error in exc.errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
-    except OperationalError as exc:
+    except DBAPIError as exc:
         print(
             f"Error de base de datos: {exc.orig}. ¿Aplicó `uv run alembic upgrade head` antes de cargar?",
             file=sys.stderr,

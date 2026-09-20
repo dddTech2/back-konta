@@ -64,18 +64,29 @@ def make_monitor(factory, telegram, **kwargs):
     return WorkerSilenceMonitor(factory, bot=bot, **kwargs)
 
 
+def add_business(factory):
+    db = factory()
+    try:
+        if not db.get(User, "usr-cli"):
+            db.add(User(id="usr-cli", email="cli@test.com", full_name="Cliente", role="CLIENT", telegram_chat_id=3003))
+        if not db.get(Business, "biz-1"):
+            db.add(
+                Business(
+                    id="biz-1", client_id="usr-cli", legal_name="Empresa Uno SAS", commercial_name="Empresa Uno",
+                    nit="900111222", dv="1", taxpayer_type="PERSONA_JURIDICA",
+                )
+            )
+        db.commit()
+    finally:
+        db.close()
+
+
 def add_recipients(factory):
+    add_business(factory)
     db = factory()
     try:
         db.add(User(id="usr-ti", email="ti@test.com", full_name="Soporte TI", role="TECH_OPS", telegram_chat_id=1001))
         db.add(User(id="usr-admin", email="admin@test.com", full_name="Administradora", role="ADMIN", telegram_chat_id=2002))
-        db.add(User(id="usr-cli", email="cli@test.com", full_name="Cliente", role="CLIENT", telegram_chat_id=3003))
-        db.add(
-            Business(
-                id="biz-1", client_id="usr-cli", legal_name="Empresa Uno SAS", commercial_name="Empresa Uno",
-                nit="900111222", dv="1", taxpayer_type="PERSONA_JURIDICA",
-            )
-        )
         db.commit()
     finally:
         db.close()
@@ -304,6 +315,7 @@ def test_the_alert_mark_is_kept_on_the_most_recent_worker(factory, monitor):
 
 
 def test_without_recipients_nothing_is_marked_and_it_is_retried_next_cycle(factory, telegram):
+    add_business(factory)
     set_heartbeat(factory, seen=NOW - timedelta(minutes=20))
     add_job(factory)
     monitor = make_monitor(factory, telegram)
