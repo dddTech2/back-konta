@@ -265,6 +265,10 @@ def worker_loop(
 def main():
     if not WORKER_TOKEN:
         logger.error("INTERNAL_WORKER_TOKEN no configurado. Configúralo igual en el .env del VPS y aquí.")
+        if getattr(sys, "frozen", False):
+            logger.error(f"Crea un archivo .env con KONTABLE_API_URL e INTERNAL_WORKER_TOKEN en: {Path.cwd()}")
+            if sys.stdin is not None and sys.stdin.isatty():
+                input("Presiona Enter para cerrar...")  # con doble clic la ventana se cerraría antes de poder leer
         return
 
     logger.info(f"Worker remoto '{WORKER_NAME}' iniciado. API destino: {API_BASE}. Ctrl+C para detener.")
