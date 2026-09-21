@@ -1,4 +1,4 @@
-"""Pruebas para el script de traslado de SQLite a PostgreSQL (scripts/migrate_sqlite_to_postgres.py)."""
+"""Pruebas para el script de traslado de SQLite a PostgreSQL (scripts/ops/migrate_sqlite_to_postgres.py)."""
 
 import importlib.util
 import os
@@ -20,7 +20,7 @@ from dian_automation.db import models  # noqa: F401
 from dian_automation.db.database import Base
 
 ROOT = Path(__file__).resolve().parent.parent
-SCRIPT_PATH = ROOT / "scripts" / "migrate_sqlite_to_postgres.py"
+SCRIPT_PATH = ROOT / "scripts" / "ops" / "migrate_sqlite_to_postgres.py"
 
 # Carga dinámica del script a probar
 spec = importlib.util.spec_from_file_location("migrate_sqlite_to_postgres", SCRIPT_PATH)

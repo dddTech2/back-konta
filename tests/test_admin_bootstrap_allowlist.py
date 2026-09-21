@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from dian_automation.db.database import Base
 from dian_automation.db.models import User
 
-import run_telegram_bot as bot_runner_module
+from dian_automation.cli import telegram_bot as bot_runner_module
 
 
 @pytest.fixture

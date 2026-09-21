@@ -14,13 +14,16 @@ consultar con trabajo pendiente, el servidor avisa. Si la subida del ZIP falla p
 reintentarlo en cada vuelta. Ver docs/DEPLOYMENT.md para instalarlo como tarea de inicio.
 
 Uso:
-    uv run python run_worker_remote.py
+    uv run kontable-worker-remote
+
+Alternativa:
+    python -m dian_automation.cli.worker_remote
 
 Variables de entorno relevantes (ver .env):
     KONTABLE_API_URL       Base de la API en el VPS, ej. http://<ip-vps>:8020
     INTERNAL_WORKER_TOKEN  Mismo secreto configurado en el .env del VPS
     WORKER_NAME            Nombre en el latido (por defecto remote)
-    PENDING_UPLOADS_DIR    Carpeta de ZIP por subir (por defecto pending_uploads/ junto a este script)
+    PENDING_UPLOADS_DIR    Carpeta de ZIP por subir (por defecto pending_uploads/ en el directorio de trabajo)
     REDIS_URL              Opcional; redis://:password@<ip-vps>:6379/0 -- si no se
                             configura, el script sigue funcionando por polling puro.
 """
@@ -33,13 +36,13 @@ import asyncio
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Any, Callable
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 import httpx
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-load_dotenv()
+load_dotenv(find_dotenv(usecwd=True))
 
 from dian_automation.dian_flow import run_flow
 from dian_automation.queue.redis_signal import wait_for_job_signal
@@ -55,8 +58,8 @@ API_BASE = os.getenv("KONTABLE_API_URL", "http://127.0.0.1:8000").rstrip("/")
 WORKER_TOKEN = os.getenv("INTERNAL_WORKER_TOKEN", "")
 WORKER_NAME = (os.getenv("WORKER_NAME") or "remote").strip() or "remote"
 POLL_INTERVAL_SECONDS = 10
-# Empaquetado con PyInstaller, __file__ apunta a una carpeta interna del programa; los ZIP pendientes van junto al .exe
-_BASE_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+# Empaquetado con PyInstaller, los ZIP pendientes van junto al .exe; en desarrollo van en el directorio de trabajo
+_BASE_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path.cwd()
 PENDING_UPLOADS_DIR = Path(os.getenv("PENDING_UPLOADS_DIR") or _BASE_DIR / "pending_uploads")
 
 # Subida del ZIP: espera 5 s que se duplica hasta 5 min, durante un máximo de 20 min
@@ -276,8 +279,12 @@ def main():
         worker_loop(client)
 
 
-if __name__ == "__main__":
+def run() -> None:
     try:
         main()
     except KeyboardInterrupt:
         logger.info("Worker remoto detenido por el usuario.")
+
+
+if __name__ == "__main__":
+    run()

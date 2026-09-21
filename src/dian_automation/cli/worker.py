@@ -1,6 +1,6 @@
 """Worker persistente de extracciones DIAN.
 
-Corre en un PROCESO APARTE del bot de Telegram (run_telegram_bot.py). Mientras el bot
+Corre en un PROCESO APARTE del bot de Telegram (kontable-bot o dian_automation.cli.telegram_bot). Mientras el bot
 solo encola trabajos (comando /ejecutar_extraccion de la administradora), este script
 es el que realmente los procesa: uno a la vez, en orden, llamando a dian_flow.run_flow()
 para descargar el listado real desde el portal DIAN VPFE y parseándolo hacia
@@ -8,7 +8,10 @@ Invoice / MonthlyTaxSummary. Si una extracción falla, notifica automáticamente
 usuarios TECH_OPS por Telegram (captura de pantalla + código de error + botón de reintento).
 
 Uso:
-    uv run python run_worker.py
+    uv run kontable-worker
+
+Alternativa:
+    python -m dian_automation.cli.worker
 
 Variables de entorno relevantes (ver .env):
     TELEGRAM_BOT_TOKEN   Token del bot único (usado también para alertar a Tech Ops).
@@ -19,12 +22,12 @@ import os
 import sys
 import time
 import logging
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-load_dotenv()
+load_dotenv(find_dotenv(usecwd=True))
 
 from dian_automation.db.database import SessionLocal
 from dian_automation.queue.worker import ExtractionWorker

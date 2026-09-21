@@ -5,7 +5,7 @@ Modo de uso para trasladar una base de datos existente:
 2) Asegurar que la base de datos SQLite origen esté en la revisión 'head' de Alembic.
 3) Detener los servicios en producción (api, bot, scheduler).
 4) Ejecutar este script apuntando al archivo SQLite y a la URL de PostgreSQL:
-     uv run python scripts/migrate_sqlite_to_postgres.py --sqlite ./kontable.db --postgres postgresql+psycopg://usuario:clave@host:5432/kontable
+     uv run python scripts/ops/migrate_sqlite_to_postgres.py --sqlite ./kontable.db --postgres postgresql+psycopg://usuario:clave@host:5432/kontable
 5) Arrancar los servicios apuntando a PostgreSQL.
 """
 

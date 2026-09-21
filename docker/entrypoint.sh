@@ -20,11 +20,11 @@ case "$1" in
     ;;
   bot)
     echo "[entrypoint] Iniciando bot de Telegram (long polling)..."
-    exec python run_telegram_bot.py
+    exec python -m dian_automation.cli.telegram_bot
     ;;
   scheduler)
     echo "[entrypoint] Iniciando programador semanal de descargas (SCHEDULER_ENABLED=${SCHEDULER_ENABLED:-false})..."
-    exec python run_scheduler.py
+    exec python -m dian_automation.cli.scheduler
     ;;
   *)
     exec "$@"

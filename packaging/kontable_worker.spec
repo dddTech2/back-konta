@@ -3,7 +3,7 @@
 
 Construir (desde la carpeta de ProyectoDianBack):
 
-    uv run --with pyinstaller pyinstaller kontable_worker.spec --noconfirm
+    uv run --with pyinstaller pyinstaller packaging/kontable_worker.spec --noconfirm
 
 Resultado: dist/kontable-worker/kontable-worker.exe (carpeta, no un único archivo).
 
@@ -11,13 +11,14 @@ Decisiones:
   * Modo carpeta (onedir) y no un solo .exe: el modo de un archivo se descomprime en %TEMP% en cada
     arranque (lento al reiniciarse la tarea cada minuto) y los antivirus lo marcan con más frecuencia.
   * Consola visible: el worker escribe su registro por stdout y la tarea programada lo redirige a
-    worker.log (ver scripts/install_worker_task.ps1).
+    worker.log (ver scripts/ops/install_worker_task.ps1).
   * No empaqueta un navegador: el flujo lanza el Chrome instalado (find_chrome_executable) y se
     conecta por CDP, así que solo hace falta el driver de Playwright, que trae el propio paquete.
   * No empaqueta el .env ni ningún dato: el .env se busca en la carpeta desde la que se lanza el
     programa (directorio de trabajo), igual que con `uv run`.
   * Solo el worker: el servidor (FastAPI, SQLAlchemy, Alembic, Uvicorn, bot de Telegram) se excluye.
 """
+import os
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 # El worker importa `dian_automation` (config, mail_client, dian_flow, queue.exceptions,
@@ -26,7 +27,7 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 hiddenimports = (
     collect_submodules("dian_automation.queue")
     + collect_submodules("httpx")
-    + ["redis", "dotenv"]
+    + ["redis", "dotenv", "dian_automation.cli.worker_remote"]
 )
 
 datas = collect_data_files("tzdata")  # zonas horarias (America/Bogota) en Windows, que no trae base de zonas
@@ -53,8 +54,8 @@ excludes = [
 ]
 
 a = Analysis(
-    ["run_worker_remote.py"],
-    pathex=["src"],
+    [os.path.join(SPECPATH, "kontable_worker_entry.py")],
+    pathex=[os.path.join(SPECPATH, "..", "src")],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,

@@ -1,6 +1,6 @@
 # Despliegue del worker remoto
 
-El servidor (API, bot, `scheduler`, Redis) corre en un VPS Linux cuya IP la DIAN bloquea. Las descargas las hace el **worker remoto** (`run_worker_remote.py`) desde una red residencial. Este documento cubre el equipo del worker; el servidor se levanta con `docker-compose.yml`.
+El servidor (API, bot, `scheduler`, Redis) corre en un VPS Linux cuya IP la DIAN bloquea. Las descargas las hace el **worker remoto** (`uv run kontable-worker-remote`) desde una red residencial. Este documento cubre el equipo del worker; el servidor se levanta con `docker-compose.yml`.
 
 ```
 VPS  ── API + bot + scheduler + Redis ──┐
@@ -42,7 +42,7 @@ Las credenciales de la DIAN **no** viven en el worker: llegan con cada trabajo d
 Prueba a mano antes de automatizar:
 
 ```bash
-uv run python run_worker_remote.py
+uv run kontable-worker-remote
 ```
 
 Debe imprimir `Worker remoto 'remote' iniciado` y, sin trabajos, quedar esperando.
@@ -54,26 +54,26 @@ Debe imprimir `Worker remoto 'remote' iniciado` y, sin trabajos, quedar esperand
 Desde la carpeta del proyecto, en PowerShell:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install_worker_task.ps1 -StartNow
+powershell -ExecutionPolicy Bypass -File scripts\ops\install_worker_task.ps1 -StartNow
 ```
 
 Registra la tarea **"Kontable Worker"**: arranca al iniciar sesión el usuario actual, se reinicia cada minuto si el worker termina con error y guarda su registro en `worker.log`. Para quitarla:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install_worker_task.ps1 -Uninstall
+powershell -ExecutionPolicy Bypass -File scripts\ops\install_worker_task.ps1 -Uninstall
 ```
 
 Si el equipo es dedicado, activa el inicio de sesión automático (`netplwiz`) y desactiva la suspensión, para que el worker vuelva solo tras un corte de luz. No es un servicio de Windows a propósito: un servicio no tiene sesión de escritorio y Chrome no podría abrir ventana. Pasar a servicio exige `HEADLESS=True` y comprobar que Turnstile lo acepta.
 
 ### Windows sin Python (ejecutable)
 
-`kontable_worker.spec` empaqueta el worker con PyInstaller para un equipo sin Python ni `uv`. En el equipo de desarrollo, desde la carpeta del proyecto:
+`packaging/kontable_worker.spec` empaqueta el worker con PyInstaller para un equipo sin Python ni `uv`. En el equipo de desarrollo, desde la raíz del proyecto:
 
 ```powershell
-uv run --with pyinstaller pyinstaller kontable_worker.spec --noconfirm
+uv run --with pyinstaller pyinstaller packaging/kontable_worker.spec --noconfirm
 ```
 
-Deja la carpeta `dist\kontable-worker\` (unos 130 MB), que se copia entera al equipo del worker. Ahí se coloca el `.env` (sección 2) y se lanza `kontable-worker.exe` con esa carpeta como directorio de trabajo: `.env`, `downloads\`, `.browser_profile\` y `pending_uploads\` quedan junto al ejecutable. Chrome debe estar instalado en el equipo; no se empaqueta. `scripts\install_worker_task.ps1` sigue lanzando el worker con `uv`; para arrancar el `.exe` al iniciar sesión hay que crear la tarea aparte.
+Genera la carpeta resultante en `dist/kontable-worker/` de la raíz del proyecto (unos 130 MB), que se copia entera al equipo del worker. Ahí se coloca el `.env` (sección 2) y se lanza `kontable-worker.exe` con esa carpeta como directorio de trabajo: `.env`, `downloads\`, `.browser_profile\` y `pending_uploads\` quedan junto al ejecutable. Chrome debe estar instalado en el equipo; no se empaqueta. `scripts\ops\install_worker_task.ps1` sigue lanzando el worker con `uv`; para arrancar el `.exe` al iniciar sesión hay que crear la tarea aparte.
 
 ### Linux / Raspberry Pi (`systemd`)
 
@@ -88,7 +88,7 @@ Wants=network-online.target
 [Service]
 User=kontable
 WorkingDirectory=/opt/kontable/ProyectoDianBack
-ExecStart=/usr/bin/env uv run python run_worker_remote.py
+ExecStart=/usr/bin/env uv run kontable-worker-remote
 Restart=always
 RestartSec=30
 
@@ -151,7 +151,7 @@ En el VPS, con `ProyectoDianFront` como carpeta hermana de `ProyectoDianBack`:
    - `TELEGRAM_BOT_TOKEN`, `ADMIN_BOOTSTRAP_CHAT_IDS`, `JWT_SECRET`, `INTERNAL_WORKER_TOKEN`.
 2. Compila la SPA, que la API sirve desde `../ProyectoDianFront/dist`: `cd ../ProyectoDianFront && npm ci && npm run build`.
 3. `docker compose up -d --build`.
-   - **Orden de arranque y dependencias:** el contenedor `postgres` inicia primero y ejecuta su comprobación de salud (`pg_isready`). Una vez sano, se ejecuta el servicio de un solo uso `migrate` (`alembic upgrade head`) para crear o actualizar el esquema. Tras completarse la migración con éxito, arrancan los servicios `api`, `bot`, `scheduler` y `backup`. Si la migración falla, `docker compose logs migrate` explica el motivo y los servicios de aplicación no inician.
+   - **Orden de arranque y dependencias:** el contenedor `postgres` inicia primero y ejecuta su comprobación de salud (`pg_isready`). Una vez sano, se ejecuta el servicio de un solo uso `migrate` (`alembic upgrade head`) para crear o actualizar el esquema. Tras completarse la migración con éxito, arrancan los servicios `api`, `bot`, `scheduler` y `backup` (en Docker el bot y el programador se lanzan con `python -m dian_automation.cli.telegram_bot` y `python -m dian_automation.cli.scheduler`, orquestados por `docker/entrypoint.sh`). Si la migración falla, `docker compose logs migrate` explica el motivo y los servicios de aplicación no inician.
    - **Aislamiento de base de datos:** el servicio `postgres` no publica puertos hacia el exterior en el host; la comunicación se realiza exclusivamente por la red interna de Docker.
 4. Carga el calendario una sola vez: `docker compose exec api python -m dian_automation.core.calendar_loader data/calendario_dian_2026.csv`. Sin él, la API responde 409 en `/api/calendar` y el bot avisa que no está cargado (sección 8 para el año siguiente).
 5. Deja `SCHEDULER_ENABLED=false` hasta que el worker remoto arranque solo.
@@ -201,7 +201,7 @@ Para migrar la información de un `kontable.db` previo a PostgreSQL sin perder t
    ```
 4. Ejecuta el script dentro del contenedor `migrate`, que ya trae `DATABASE_URL` hacia PostgreSQL (por eso no se pasa `--postgres`); el SQLite se monta de solo lectura:
    ```bash
-   docker compose run --rm -v "$PWD/kontable.db:/data/kontable.db:ro" migrate python scripts/migrate_sqlite_to_postgres.py --sqlite /data/kontable.db
+   docker compose run --rm -v "$PWD/kontable.db:/data/kontable.db:ro" migrate python scripts/ops/migrate_sqlite_to_postgres.py --sqlite /data/kontable.db
    ```
    El script cancela sin tocar nada si el destino ya tiene datos o si las revisiones de esquema difieren; usa `--truncate` solo si el destino tiene datos de prueba que quieres sobrescribir. Imprime únicamente nombres de tabla y conteos. PostgreSQL no publica puertos, por eso el script corre dentro de la red de Docker y no desde el host.
 5. Arranca los servicios apuntando a PostgreSQL:

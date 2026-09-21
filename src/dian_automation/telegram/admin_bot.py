@@ -825,7 +825,7 @@ class AdminTelegramBot:
         """Encola una extracción DIAN real para el negocio indicado por NIT.
 
         Solo AGREGA el trabajo a la cola (DIANExtractionJob). Para que se procese de
-        verdad contra el portal DIAN, el proceso `run_worker.py` debe estar corriendo
+        verdad contra el portal DIAN, el proceso `kontable-worker` debe estar corriendo
         por separado (ver mensaje de respuesta / README).
         """
         if not cls.is_authorized_admin(sender_chat_id, db):
@@ -884,7 +884,7 @@ class AdminTelegramBot:
             "⚠️ *Alcance:* este comando solo agrega el trabajo a la cola. Para que se ejecute de verdad "
             "contra el portal DIAN (Chrome + Cloudflare + correo Stalwart), necesitas tener corriendo "
             "el proceso del worker, en una terminal aparte:\n"
-            "`uv run python run_worker.py`\n\n"
+            "`uv run kontable-worker`\n\n"
             "El worker procesa un trabajo a la vez y avisa a Tech Ops por Telegram si algo falla."
         )
 
@@ -1153,7 +1153,7 @@ class AdminTelegramBot:
                 "calendario completos, sin contar el mes en curso, en una sola solicitud)\n"
                 "_Periodo opcional — si se omite, usa el mes anterior completo._\n"
                 "⚠️ _Solo encola el trabajo. Para procesarlo de verdad contra la DIAN necesitas correr por separado_ "
-                "`uv run python run_worker.py`_ (un proceso aparte del bot)._\n\n"
+                "`uv run kontable-worker`_ (un proceso aparte del bot)._\n\n"
                 "5️⃣ *Cambiar tipo de negocio:* Pasa un cliente entre facturador electrónico y ventas manuales:\n"
                 "`/cambiar_tipo NIT | FACTURADOR` o `/cambiar_tipo NIT | VENTAS_MANUALES`\n"
                 "_Ejemplo:_ `/cambiar_tipo 901008579 | VENTAS_MANUALES`\n\n"

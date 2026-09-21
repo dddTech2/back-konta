@@ -336,13 +336,14 @@ def test_divergence_detects_model_column_without_revision(alembic_cfg, engine):
 
 
 def test_bot_and_worker_runners_no_longer_call_init_db():
-    for runner in ("run_telegram_bot.py", "run_worker.py"):
-        assert "init_db" not in (ROOT / runner).read_text(encoding="utf-8"), runner
+    cli_dir = ROOT / "src" / "dian_automation" / "cli"
+    for runner in ("telegram_bot.py", "worker.py"):
+        assert "init_db" not in (cli_dir / runner).read_text(encoding="utf-8"), runner
     assert "def init_db" in (ROOT / "src/dian_automation/db/database.py").read_text(encoding="utf-8")
 
 
 def test_bot_startup_without_migrating_does_not_create_tables(engine, monkeypatch):
-    import run_telegram_bot
+    from dian_automation.cli import telegram_bot as run_telegram_bot
     from dian_automation.db import database
 
     # init_db() (si volviera a llamarse) usa database.engine: apuntarlo a la base temporal.
@@ -355,7 +356,7 @@ def test_bot_startup_without_migrating_does_not_create_tables(engine, monkeypatc
 
 
 def test_worker_startup_without_migrating_does_not_create_tables(engine, monkeypatch):
-    import run_worker
+    from dian_automation.cli import worker as run_worker
     from dian_automation.db import database
 
     class _NoLoopWorker:

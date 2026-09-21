@@ -6,7 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-import run_worker_remote as worker
+from dian_automation.cli import worker_remote as worker
 from dian_automation.queue.exceptions import is_slow_error
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -385,13 +385,13 @@ def test_main_refuses_to_start_without_a_token(monkeypatch, caplog):
 # ---------------------------------------------------------------------------
 
 def test_the_windows_task_installer_registers_and_removes_kontable_worker():
-    script = (PROJECT_ROOT / "scripts" / "install_worker_task.ps1").read_text(encoding="utf-8-sig")
+    script = (PROJECT_ROOT / "scripts" / "ops" / "install_worker_task.ps1").read_text(encoding="utf-8-sig")
 
     assert '"Kontable Worker"' in script
     assert "-AtLogOn" in script  # arranca al iniciar sesión
     assert "-RestartCount" in script and "-RestartInterval" in script  # se reinicia ante fallos
     assert "$Uninstall" in script and "Unregister-ScheduledTask" in script  # opción inversa
-    assert "run_worker_remote.py" in script
+    assert "kontable-worker-remote" in script
 
 
 def test_the_deployment_guide_covers_requirements_install_heartbeat_and_the_silence_alert():

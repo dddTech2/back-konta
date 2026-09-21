@@ -479,7 +479,7 @@ def test_invalid_weekday_or_hour_is_rejected(factory, weekday, hour):
 
 
 def test_the_runner_exits_with_an_error_on_an_invalid_schedule(monkeypatch, caplog):
-    import run_scheduler
+    from dian_automation.cli import scheduler as run_scheduler
     from types import SimpleNamespace
 
     monkeypatch.setattr(run_scheduler, "config", SimpleNamespace(scheduler_enabled=True, scheduler_weekday=9, scheduler_hour=3, worker_silence_minutes=15))
@@ -493,7 +493,7 @@ def test_the_runner_exits_with_an_error_on_an_invalid_schedule(monkeypatch, capl
 
 
 def test_the_runner_passes_the_configured_flag_and_schedule_to_the_loop(monkeypatch):
-    import run_scheduler
+    from dian_automation.cli import scheduler as run_scheduler
     from types import SimpleNamespace
 
     monkeypatch.setattr(run_scheduler, "config", SimpleNamespace(scheduler_enabled=False, scheduler_weekday=0, scheduler_hour=5, worker_silence_minutes=15))
@@ -551,8 +551,8 @@ def test_deployment_files_declare_the_scheduler_service():
     env_example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
 
     assert "scheduler:" in compose and 'command: ["scheduler"]' in compose
-    assert "scheduler)" in entrypoint and "run_scheduler.py" in entrypoint
+    assert "scheduler)" in entrypoint and "dian_automation.cli.scheduler" in entrypoint
     assert "\r" not in entrypoint  # un script de shell con CRLF no arranca en el contenedor
     assert "SCHEDULER_ENABLED=false" in env_example
     assert "SCHEDULER_WEEKDAY=6" in env_example and "SCHEDULER_HOUR=3" in env_example
-    assert (PROJECT_ROOT / "run_scheduler.py").exists()
+    assert (PROJECT_ROOT / "src" / "dian_automation" / "cli" / "scheduler.py").exists()

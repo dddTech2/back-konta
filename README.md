@@ -22,16 +22,16 @@ Permite iniciar sesión como **Persona Natural** o **Empresa (Representante Lega
 1. [Características Principales](#-características-principales)
 2. [Arquitectura y Funcionamiento](#-arquitectura-y-funcionamiento)
 3. [Requisitos Previos](#-requisitos-previos)
-4. [Instalación Paso a Paso](#-instalación-paso-a-paso)
-5. [Configuración (.env)](#-configuración-env)
-6. [Guía de Uso por Línea de Comandos (CLI)](#-guía-de-uso-por-línea-de-comandos-cli)
+4. [Estructura del Proyecto](#-estructura-del-proyecto)
+5. [Instalación Paso a Paso](#-instalación-paso-a-paso)
+6. [Configuración (.env)](#-configuración-env)
+7. [Guía de Uso por Línea de Comandos (CLI)](#-guía-de-uso-por-línea-de-comandos-cli)
    - [Modo Empresa (Representante Legal)](#1-modo-empresa-representante-legal)
    - [Modo Persona Natural](#2-modo-persona-natural)
    - [Modo Token Directo (Sesión Activa)](#3-modo-token-directo-sesión-activa)
    - [Opciones y Argumentos CLI](#4-resumen-de-argumentos-cli)
-7. [Manejo de Descargas y Evidencias](#-manejo-de-descargas-y-evidencias)
-8. [Ejecución de Pruebas Unitarias](#-ejecución-de-pruebas-unitarias)
-9. [Estructura del Proyecto](#-estructura-del-proyecto)
+8. [Manejo de Descargas y Evidencias](#-manejo-de-descargas-y-evidencias)
+9. [Ejecución de Pruebas Unitarias](#-ejecución-de-pruebas-unitarias)
 10. [Preguntas Frecuentes y Solución de Problemas](#-preguntas-frecuentes-y-solución-de-problemas)
 
 ---
@@ -98,6 +98,52 @@ Antes de ejecutar el proyecto, asegúrate de contar con:
 3. **Google Chrome:** Navegador Chrome oficial instalado en la ruta habitual del sistema.
 4. **Administrador de paquetes:** Se recomienda [`uv`](https://github.com/astral-sh/uv) para máxima velocidad de instalación y entornos reproducibles, o `pip` estándar.
 5. **Buzón Stalwart:** Acceso de lectura al servidor de correo configurado para recibir los tokens de la DIAN.
+
+---
+
+## 📁 Estructura del proyecto
+
+```
+ProyectoDianBack/
+├── pyproject.toml  uv.lock  .python-version  alembic.ini  docker-compose.yml
+├── .env.example  .gitignore  .gitattributes  .dockerignore  README.md
+├── src/dian_automation/
+│   ├── cli/            puntos de entrada (comandos: kontable-worker-remote, kontable-worker, kontable-scheduler, kontable-bot)
+│   ├── api/ core/ db/ extraction/ queue/ subscriptions/ telegram/  (+ config.py, dian_flow.py, mail_client.py)
+├── tests/
+├── alembic/            migraciones
+├── docker/             Dockerfile, entrypoint.sh, pg-backup.sh
+├── packaging/          kontable_worker.spec + kontable_worker_entry.py (empaquetado del worker como .exe con PyInstaller)
+├── scripts/
+│   ├── ops/            install_worker_task.ps1, migrate_sqlite_to_postgres.py
+│   └── dev/            seed_demo_data.py, check_turnstile.py
+├── data/               calendario_dian_2026.csv
+└── docs/               ARCHITECTURE.md, DEPLOYMENT.md, ENVIRONMENT.md, decisions/
+```
+
+Carpetas locales que git ignora: `.venv/`, `.env`, `downloads/`, `dist/`, `build/`, `.browser_profile/`, `pending_uploads/`, `backups/`, `scratch/`, `*.db`.
+
+### Qué va dónde
+
+| Ubicación | Descripción |
+|---|---|
+| `src/` | Código de la aplicación. |
+| `src/dian_automation/cli/` | Puntos de entrada de servicios (`kontable-worker-remote`, `kontable-worker`, `kontable-scheduler`, `kontable-bot`). |
+| `scripts/ops/` | Scripts operativos (`install_worker_task.ps1`, `migrate_sqlite_to_postgres.py`). |
+| `scripts/dev/` | Scripts de desarrollo (`seed_demo_data.py`, `check_turnstile.py`). |
+| `packaging/` | Empaquetado del worker como `.exe` con PyInstaller (`kontable_worker.spec`, `kontable_worker_entry.py`). |
+| Raíz (`./`) | Archivos de configuración y metadatos. Nada de scripts sueltos ni capturas en la raíz. |
+
+### Comandos principales
+
+| Comando | Descripción |
+|---|---|
+| `uv run kontable-bot` | Inicia el bot de Telegram para atención y notificaciones. |
+| `uv run kontable-worker` | Ejecuta el worker local para procesamiento de colas. |
+| `uv run kontable-worker-remote` | Ejecuta el worker remoto de descargas en red residencial. |
+| `uv run kontable-scheduler` | Ejecuta el programador de tareas automáticas y alerta de latidos. |
+| `uv run alembic upgrade head` | Aplica las migraciones pendientes en la base de datos. |
+| `uv run python -m pytest -q` | Ejecuta la suite de pruebas unitarias en modo silencioso. |
 
 ---
 
@@ -285,7 +331,7 @@ Una vez finalizada la ejecución, encontrarás los resultados organizados:
 - El ZIP contiene el listado oficial de la DIAN en formato Excel (`.xlsx`) con todos los comprobantes recibidos y emitidos en el periodo.
 
 ### 2. Evidencias Fotográficas
-Se generan automáticamente en la raíz del proyecto para auditoría:
+Se escriben automáticamente en el directorio de trabajo desde donde se lanza el proceso (ignoradas por git vía `/*.png`):
 - `screenshot_antes_exportar.png`: Demuestra que las fechas fueron ajustadas correctamente en el campo antes de enviar el formulario.
 - `screenshot_encolado.png`: Demuestra que la tarea quedó registrada en el servidor de la DIAN.
 - `screenshot_tabla_reportes.png`: Captura el estado inicial de la tabla `#tableExport`.
@@ -308,39 +354,6 @@ tests\test_login_config.py .....                                         [ 61%]
 tests\test_mail_parser.py .....                                          [100%]
 
 ============================= 13 passed in 0.77s ==============================
-```
-
----
-
-## 📁 Estructura del Proyecto
-
-```
-ProyectoDian/
-├── .agents/                        # Habilidades y agentes del framework BMad y Antigravity
-├── _bmad-output/                   # Artefactos y especificaciones BMad
-│   └── implementation-artifacts/   # Especificaciones de implementación (spec-*.md)
-├── docs/                           # Documentación formal de ingeniería
-│   ├── ARCHITECTURE.md             # Especificación C4 (Contexto, Contenedor, Componentes)
-│   ├── ENVIRONMENT.md              # Auditoría completa de variables de entorno
-│   └── decisions/                  # Registros de Decisiones de Arquitectura (ADRs)
-│       ├── README.md               # Índice de ADRs
-│       ├── ADR-001-*.md            # Evasión de Cloudflare Turnstile vía CDP
-│       └── ADR-002-*.md            # Bypass de Magic Link con Stalwart IMAP
-├── downloads/                      # Directorio destino de los archivos ZIP descargados
-├── src/
-│   └── dian_automation/
-│       ├── __init__.py             # Exportación pública del paquete
-│       ├── config.py               # DataClasses de configuración y selectores DOM
-│       ├── dian_flow.py            # Orquestación Playwright, CDP y descarga
-│       └── mail_client.py          # Cliente IMAP para captura de tokens en Stalwart
-├── tests/
-│   ├── test_download_parser.py     # Pruebas de parseo de tabla y enlaces ZIP
-│   ├── test_login_config.py        # Pruebas de sanitización de NIT y configuración
-│   └── test_mail_parser.py         # Pruebas de regex para correos de la DIAN
-├── .env.example                    # Plantilla documentada de variables de entorno
-├── .gitignore                      # Reglas de exclusión de git (ignora .env y ZIPs)
-├── pyproject.toml                  # Metadatos del proyecto y dependencias Python
-└── README.md                       # Documentación técnica completa
 ```
 
 ---

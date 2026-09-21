@@ -1,8 +1,8 @@
-"""Pruebas para los endpoints internos (/internal/jobs/*) que consume run_worker_remote.py.
+"""Pruebas para los endpoints internos (/internal/jobs/*) que consume kontable-worker-remote.
 
 Verifican que: (1) requieren el token compartido, (2) nunca exponen la base de datos
 directamente -- todo pasa por HTTP, y (3) delegan correctamente en ExtractionQueueManager
-y DIANXLSXParser, igual que hace el worker local (worker.py)."""
+y DIANXLSXParser, igual que hace el worker local (cli/worker.py)."""
 
 import io
 import zipfile

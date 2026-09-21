@@ -6,8 +6,8 @@ qué hace Turnstile. Sirve para probar esto de forma rápida y repetible sin cor
 el flujo de extracción (login completo + espera de correo + descarga).
 
 Uso:
-    uv run python scripts/check_turnstile.py --tipo persona
-    uv run python scripts/check_turnstile.py --tipo empresa --timeout 90
+    uv run python scripts/dev/check_turnstile.py --tipo persona
+    uv run python scripts/dev/check_turnstile.py --tipo empresa --timeout 90
 """
 
 import argparse

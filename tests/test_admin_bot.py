@@ -331,7 +331,7 @@ def test_ejecutar_extraccion_enqueues_job(db_session_factory):
         assert res["success"] is True
         assert res["period"] == "2026-06"
         assert "encolad" in res["message"].lower()
-        assert "run_worker.py" in res["message"]
+        assert "kontable-worker" in res["message"]
 
         job = db.query(DIANExtractionJob).filter(DIANExtractionJob.id == res["job_id"]).first()
         assert job is not None

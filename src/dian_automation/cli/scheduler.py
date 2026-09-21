@@ -10,7 +10,10 @@ Con o sin encolar, en cada ciclo vigila el latido del worker remoto: si pasan m√
 WORKER_SILENCE_MINUTES sin consultas y hay trabajos listos, avisa por Telegram a TECH_OPS y ADMIN.
 
 Uso:
-    uv run python run_scheduler.py
+    uv run kontable-scheduler
+
+Alternativa:
+    python -m dian_automation.cli.scheduler
 
 Variables de entorno relevantes (ver .env.example):
     SCHEDULER_ENABLED   'true' para encolar; cualquier otro valor lo deja apagado (por defecto false).
@@ -22,12 +25,12 @@ Variables de entorno relevantes (ver .env.example):
 
 import sys
 import logging
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-load_dotenv()
+load_dotenv(find_dotenv(usecwd=True))
 
 from dian_automation.config import config
 from dian_automation.db.database import SessionLocal

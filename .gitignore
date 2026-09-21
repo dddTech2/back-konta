@@ -45,21 +45,25 @@ backups/
 
 # AI Agents, Skills & Assistant Artifacts
 .agents/
+/.agents/
 skills/
 _bmad/
 _bmad-output/
 graphify-out/
+/graphify-out/
 .gemini/
 .antigravity/
 
 # Scratch & Temporary Testing Files
 scratch/
+/scratch/
 *.tmp
 *.temp
 *.bak
 *~
 
 # Debug Screenshots & Visual Dumps
+/*.png
 screenshot_*.png
 token_check.png
 *.webm

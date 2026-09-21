@@ -1,7 +1,7 @@
 [project]
 name = "dian-automation"
 version = "0.1.0"
-description = "Add your description here"
+description = "Automatización de descargas DIAN, bots de Telegram, API y cola de extracción de Kontable"
 authors = [
     { name = "TechRider" }
 ]
@@ -27,6 +27,10 @@ dependencies = [
 
 [project.scripts]
 dian-automation = "dian_automation:main"
+kontable-worker-remote = "dian_automation.cli.worker_remote:run"
+kontable-worker = "dian_automation.cli.worker:main"
+kontable-scheduler = "dian_automation.cli.scheduler:main"
+kontable-bot = "dian_automation.cli.telegram_bot:main"
 
 [build-system]
 requires = ["uv_build>=0.12.13,<0.13.0"]

@@ -481,7 +481,7 @@ def find_chrome_executable() -> str:
 async def launch_chrome_and_connect(initial_url: str, port: int = 9222):
     """Lanza Chrome nativo con perfil persistente (.browser_profile) y conecta Playwright
     vía CDP (ver ADR-001: evasión de Cloudflare Turnstile). Reutilizable por `run_flow` y
-    por herramientas de diagnóstico (ej. scripts/check_turnstile.py) que necesitan la misma
+    por herramientas de diagnóstico (ej. scripts/dev/check_turnstile.py) que necesitan la misma
     sesión de navegador sin repetir la lógica de lanzamiento.
 
     Yields (proc, browser, context, page). Cierra el browser y termina el proceso de Chrome

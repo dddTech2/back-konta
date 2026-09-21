@@ -1,6 +1,6 @@
-﻿<#
+<#
 .SYNOPSIS
-    Registra (o quita) la tarea programada "Kontable Worker" que mantiene corriendo run_worker_remote.py.
+    Registra (o quita) la tarea programada "Kontable Worker" que mantiene corriendo kontable-worker-remote.
 
 .DESCRIPTION
     La tarea arranca al iniciar sesión el usuario actual y se reinicia sola si el worker termina con
@@ -15,23 +15,23 @@
     Al instalar, además la inicia de inmediato sin esperar al próximo inicio de sesión.
 
 .PARAMETER ProjectDir
-    Carpeta de ProyectoDianBack (donde están run_worker_remote.py y el .env). Por defecto, la carpeta
-    padre de este script.
+    Carpeta de ProyectoDianBack (donde están pyproject.toml y el .env). Por defecto, dos niveles arriba
+    de este script.
 
 .PARAMETER TaskName
     Nombre de la tarea. Por defecto "Kontable Worker".
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File scripts\install_worker_task.ps1 -StartNow
+    powershell -ExecutionPolicy Bypass -File scripts\ops\install_worker_task.ps1 -StartNow
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File scripts\install_worker_task.ps1 -Uninstall
+    powershell -ExecutionPolicy Bypass -File scripts\ops\install_worker_task.ps1 -Uninstall
 #>
 [CmdletBinding()]
 param(
     [switch]$Uninstall,
     [switch]$StartNow,
-    [string]$ProjectDir = (Split-Path -Parent $PSScriptRoot),
+    [string]$ProjectDir = (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)),
     [string]$TaskName = "Kontable Worker"
 )
 
@@ -48,9 +48,9 @@ if ($Uninstall) {
     return
 }
 
-$scriptPath = Join-Path $ProjectDir "run_worker_remote.py"
-if (-not (Test-Path $scriptPath)) {
-    throw "No se encontró $scriptPath. Indica la carpeta de ProyectoDianBack con -ProjectDir."
+$projectFile = Join-Path $ProjectDir "pyproject.toml"
+if (-not (Test-Path $projectFile)) {
+    throw "No se encontró $projectFile. Indica la carpeta de ProyectoDianBack con -ProjectDir."
 }
 if (-not (Test-Path (Join-Path $ProjectDir ".env"))) {
     Write-Warning "No hay .env en ${ProjectDir}: el worker necesita KONTABLE_API_URL e INTERNAL_WORKER_TOKEN (ver docs/DEPLOYMENT.md)."
@@ -64,7 +64,7 @@ if (-not $uv) {
 $user = "$env:USERDOMAIN\$env:USERNAME"
 $logFile = Join-Path $ProjectDir "worker.log"
 # cmd /s /c "..." quita solo las comillas externas y deja las internas: sirve con rutas con espacios.
-$arguments = "/d /s /c `"`"$($uv.Source)`" run python run_worker_remote.py >> `"$logFile`" 2>&1`""
+$arguments = "/d /s /c `"`"$($uv.Source)`" run kontable-worker-remote >> `"$logFile`" 2>&1`""
 
 $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument $arguments -WorkingDirectory $ProjectDir
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user

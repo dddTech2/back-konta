@@ -7,6 +7,12 @@ Despacha de forma unificada:
 - Consultas tributarias de Clientes: /resumen, /facturas, /vencimientos, /ayuda
 - Utilidades de prueba local: /mi_id, /hacerme_admin
 - Notificaciones salientes en tiempo real hacia los chats de los clientes al confirmar pagos.
+
+Uso:
+    uv run kontable-bot
+
+Alternativa:
+    python -m dian_automation.cli.telegram_bot
 """
 
 import os
@@ -14,14 +20,14 @@ import sys
 import time
 import logging
 from typing import Optional, Dict, Any
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 import httpx
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 # Cargar variables de entorno
-load_dotenv()
+load_dotenv(find_dotenv(usecwd=True))
 
 from dian_automation.db.database import SessionLocal
 from dian_automation.db.models import User, Business, Subscription

@@ -1,7 +1,7 @@
 # Servidor: postgres, redis, api, bot, scheduler, backup y el migrate de un solo uso, con un volumen de datos compartido.
 # SQLite ya no se usa en el servidor.
 # NO incluye el worker de descargas: la DIAN bloquea la IP del VPS, asi que el worker corre aparte en una
-# red residencial (run_worker_remote.py o kontable-worker.exe, ver docs/DEPLOYMENT.md). Requiere que, en el servidor, la carpeta
+# red residencial (kontable-worker-remote o kontable-worker.exe, ver docs/DEPLOYMENT.md). Requiere que, en el servidor, la carpeta
 # ProyectoDianFront exista como hermana de esta (../ProyectoDianFront), igual que en local.
 #
 # Uso:

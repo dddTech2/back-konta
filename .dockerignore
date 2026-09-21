@@ -15,6 +15,8 @@ scratch/
 _bmad/
 _bmad-output/
 graphify-out/
+.agents/
+packaging/
 docs/
 
 # Datos, secretos y artefactos que no deben entrar a la imagen

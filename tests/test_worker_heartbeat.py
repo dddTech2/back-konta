@@ -439,7 +439,7 @@ def test_a_scheduler_without_watch_behaves_as_before(factory):
 # ---------------------------------------------------------------------------
 
 def test_the_runner_wires_the_monitor_into_the_scheduler(monkeypatch):
-    import run_scheduler
+    from dian_automation.cli import scheduler as run_scheduler
 
     monkeypatch.setattr(
         run_scheduler, "config",
@@ -456,7 +456,7 @@ def test_the_runner_wires_the_monitor_into_the_scheduler(monkeypatch):
 
 
 def test_the_runner_exits_with_an_error_on_invalid_silence_minutes(monkeypatch, caplog):
-    import run_scheduler
+    from dian_automation.cli import scheduler as run_scheduler
 
     monkeypatch.setattr(
         run_scheduler, "config",
