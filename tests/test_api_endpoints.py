@@ -1,4 +1,4 @@
-"""Pruebas unitarias y de integración para los Endpoints FastAPI de Kontable."""
+"""Pruebas unitarias y de integración para los Endpoints FastAPI de Konta."""
 
 import time
 import pytest
@@ -212,7 +212,8 @@ def test_root_and_health_endpoints(client):
     """Verifica que la API raíz y health check respondan 200 OK."""
     r_root = client.get("/")
     assert r_root.status_code == 200
-    assert r_root.json()["app"] == "Kontable API"
+    assert r_root.json()["app"] == "Konta API"
+    assert r_root.json()["tagline"] == "Con K, contabilidad para emprendedores"
 
     r_health = client.get("/health")
     assert r_health.status_code == 200

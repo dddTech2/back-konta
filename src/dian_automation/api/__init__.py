@@ -1,1 +1,1 @@
-"""Módulo API REST de Kontable para la interfaz Web y Móvil."""
+"""Módulo API REST de Konta para la interfaz Web y Móvil."""

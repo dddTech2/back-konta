@@ -1,4 +1,4 @@
-"""Pruebas automatizadas de integración para el frontend móvil Kontable."""
+"""Pruebas automatizadas de integración para el frontend móvil Konta."""
 
 import os
 import re

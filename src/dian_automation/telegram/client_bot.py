@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from sqlalchemy.orm import Session
 
+from dian_automation.branding import BRAND_NAME, BRAND_TAGLINE
 from dian_automation.config import config
 from dian_automation.core import income_service, sales_service
 from dian_automation.db.models import (
@@ -82,7 +83,7 @@ class ClientTelegramBot:
                 None,
                 "UNLINKED",
                 "⛔ *Cuenta no vinculada*\n\n"
-                "No encontramos ninguna cuenta de Kontable asociada a este chat de Telegram.\n\n"
+                f"No encontramos ninguna cuenta de {BRAND_NAME} asociada a este chat de Telegram.\n\n"
                 "📲 Si acabas de adquirir tu plan, pulsa en el enlace de invitación de un solo uso "
                 "que te envió tu administradora comercial para activar tu acceso.",
             )
@@ -374,7 +375,7 @@ class ClientTelegramBot:
                 lines.append(f"   _{ob.description}_")
             lines.append("")
 
-        lines.append("💡 *Tip Kontable:* Presenta y paga con anticipación para evitar sanciones e intereses de mora.")
+        lines.append(f"💡 *Tip {BRAND_NAME}:* Presenta y paga con anticipación para evitar sanciones e intereses de mora.")
 
         return {
             "success": True,
@@ -392,7 +393,7 @@ class ClientTelegramBot:
 
         link = f"{config.kontable_web_url}?nit={business.nit}"
         message = (
-            f"📱 *Tu Dashboard Kontable — {business.commercial_name}*\n\n"
+            f"📱 *Tu Dashboard {BRAND_NAME} — {business.commercial_name}*\n\n"
             f"{link}\n\n"
             "_Inicia sesión con tu celular o el NIT de tu negocio: te enviaremos un código por este chat._"
         )
@@ -415,7 +416,7 @@ class ClientTelegramBot:
             return False
 
         text = (
-            f"🔐 Tu código de acceso a Kontable es: *{code}*\n"
+            f"🔐 Tu código de acceso a {BRAND_NAME} es: *{code}*\n"
             "Vence en 5 minutos y solo sirve una vez. No lo compartas con nadie."
         )
         try:
@@ -623,7 +624,8 @@ class ClientTelegramBot:
 
         if business and business.income_source == INCOME_SOURCE_MANUAL_SALES:
             return (
-                f"👋 *¡Hola, bienvenido a Kontable Bot!*\n"
+                f"👋 *¡Hola, bienvenido a {BRAND_NAME} Bot!*\n"
+                f"_{BRAND_TAGLINE}_\n"
                 f"Asistente contable inteligente para *{biz_name}*.\n\n"
                 "Puedes consultar tu información en cualquier momento con estos comandos:\n\n"
                 "📊 */resumen* — Ingresos, egresos y utilidad del mes.\n"
@@ -636,7 +638,8 @@ class ClientTelegramBot:
             )
 
         return (
-            f"👋 *¡Hola, bienvenido a Kontable Bot!*\n"
+            f"👋 *¡Hola, bienvenido a {BRAND_NAME} Bot!*\n"
+            f"_{BRAND_TAGLINE}_\n"
             f"Asistente tributario inteligente para *{biz_name}*.\n\n"
             "Puedes consultar tu información fiscal en cualquier momento con estos comandos:\n\n"
             "📊 */resumen* — Facturación mensual, IVA generado/descontable y saldo a pagar o a favor.\n"

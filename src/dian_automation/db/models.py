@@ -1,4 +1,4 @@
-"""Modelos de datos SQLAlchemy para Kontable."""
+"""Modelos de datos SQLAlchemy para Konta."""
 
 import uuid
 from datetime import datetime

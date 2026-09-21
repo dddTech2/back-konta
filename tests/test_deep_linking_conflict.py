@@ -73,7 +73,7 @@ def test_process_start_payload_conflict_when_chat_id_already_linked(db_session_f
 
         assert res_conflict["success"] is False
         assert res_conflict["reason"] == "CHAT_ALREADY_LINKED"
-        assert "Este Telegram ya está asociado a otra cuenta de Kontable" in res_conflict["message"]
+        assert "Este Telegram ya está asociado a otra cuenta de Konta" in res_conflict["message"]
         assert "libere" in res_conflict["message"]
 
         # Verificar que el token sigue sin consumir
@@ -149,6 +149,6 @@ def test_process_start_payload_integrity_error_handled(db_session_factory, monke
 
         assert res["success"] is False
         assert res["reason"] == "CHAT_ALREADY_LINKED"
-        assert "Este Telegram ya está asociado a otra cuenta de Kontable" in res["message"]
+        assert "Este Telegram ya está asociado a otra cuenta de Konta" in res["message"]
     finally:
         db.close()

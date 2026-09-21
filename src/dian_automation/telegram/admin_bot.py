@@ -14,6 +14,7 @@ from datetime import datetime, date, timedelta
 from typing import Optional, Dict, Any, Tuple, List, Callable
 from sqlalchemy.orm import Session
 
+from dian_automation.branding import BRAND_NAME
 from dian_automation.db.models import (
     INCOME_SOURCE_DIAN,
     INCOME_SOURCE_MANUAL_SALES,
@@ -253,7 +254,7 @@ class AdminTelegramBot:
         sender_chat_id: int,
         text: str,
         db: Session,
-        bot_username: str = "KontableBot",
+        bot_username: str = "KontaBot",
     ) -> Dict[str, Any]:
         """Flujo completo de alta de cliente invocado por la administradora comercial."""
         # 1. Autorización
@@ -676,7 +677,7 @@ class AdminTelegramBot:
                 f"📅 *Nuevo próximo corte:* {sub.cutoff_date.strftime('%d/%m/%Y')}\n"
                 f"⏳ *Periodo de gracia hasta:* {sub.grace_period_end.strftime('%d/%m/%Y')}\n\n"
                 "🔓 El acceso a la plataforma web y las consultas en este bot de Telegram han sido "
-                "completamente restablecidos. ¡Gracias por confiar en Kontable!"
+                f"completamente restablecidos. ¡Gracias por confiar en {BRAND_NAME}!"
             )
 
             client_notified = False
@@ -1183,7 +1184,7 @@ class AdminTelegramBot:
         sender_chat_id: int,
         text: str,
         db: Session,
-        bot_username: str = "KontableBot",
+        bot_username: str = "KontaBot",
         telegram_sender: Optional[Callable[[int, str], bool]] = None,
     ) -> str:
         """Punto de entrada unificado para despachar comandos de la administradora."""

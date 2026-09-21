@@ -1,4 +1,5 @@
-# 🤖 DianAutomation - Extractor Desatendido de Listados DIAN VPFE
+# Konta
+Con K, contabilidad para emprendedores
 
 [![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.14-blue.svg)](https://python.org)
 [![Playwright Stealth](https://img.shields.io/badge/browser-Playwright%20Stealth-green.svg)](https://playwright.dev)
@@ -144,6 +145,8 @@ Carpetas locales que git ignora: `.venv/`, `.env`, `downloads/`, `dist/`, `build
 | `uv run kontable-scheduler` | Ejecuta el programador de tareas automáticas y alerta de latidos. |
 | `uv run alembic upgrade head` | Aplica las migraciones pendientes en la base de datos. |
 | `uv run python -m pytest -q` | Ejecuta la suite de pruebas unitarias en modo silencioso. |
+
+> **Nombre de marca vs. nombres técnicos:** el producto se llama Konta; los identificadores internos (variables `KONTABLE_*`, comandos `kontable-*`, base y usuario `kontable`) conservan el nombre anterior a propósito para no romper despliegues existentes; el nombre visible se define en `src/dian_automation/branding.py`.
 
 ---
 

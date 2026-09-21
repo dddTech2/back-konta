@@ -1,4 +1,4 @@
-"""Dependencias de FastAPI para Kontable."""
+"""Dependencias de FastAPI para Konta."""
 
 from typing import Dict, Any, Optional, Tuple
 from fastapi import Depends, HTTPException, status

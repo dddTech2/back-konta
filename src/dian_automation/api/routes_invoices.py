@@ -1,4 +1,4 @@
-"""Rutas para la consulta del Historial de Facturas de Kontable."""
+"""Rutas para la consulta del Historial de Facturas de Konta."""
 
 from typing import Tuple, Dict, Any, Optional, List
 from fastapi import APIRouter, Depends, Query

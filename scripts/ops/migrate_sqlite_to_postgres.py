@@ -1,4 +1,4 @@
-"""Script de migración de datos desde SQLite hacia PostgreSQL para Kontable.
+"""Script de migración de datos desde SQLite hacia PostgreSQL para Konta.
 
 Modo de uso para trasladar una base de datos existente:
 1) Ejecutar 'alembic upgrade head' sobre un PostgreSQL vacío para crear el esquema en head.
@@ -134,7 +134,7 @@ def copy_database(
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Punto de entrada de línea de comandos."""
     parser = argparse.ArgumentParser(
-        description="Traslada datos de Kontable desde SQLite hacia PostgreSQL."
+        description="Traslada datos de Konta desde SQLite hacia PostgreSQL."
     )
     parser.add_argument(
         "--sqlite",

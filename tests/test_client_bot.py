@@ -442,7 +442,7 @@ def test_client_router_and_help(db_session_factory):
         help_resp = ClientTelegramBot.handle_client_message(
             sender_chat_id=777888999, text="/ayuda", db=db
         )
-        assert "¡Hola, bienvenido a Kontable Bot!" in help_resp
+        assert "¡Hola, bienvenido a Konta Bot!" in help_resp
         assert "/resumen" in help_resp
         assert "/facturas" in help_resp
         assert "/vencimientos" in help_resp

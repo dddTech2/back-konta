@@ -1,4 +1,4 @@
-"""Runner interactivo en tiempo real para el Bot de Telegram de Kontable.
+"""Runner interactivo en tiempo real para el Bot de Telegram de Konta.
 
 Conecta con la API oficial de Telegram mediante Long Polling (sin requerir túneles ni ngrok).
 Despacha de forma unificada:
@@ -30,6 +30,7 @@ if hasattr(sys.stdout, "reconfigure"):
 # Cargar variables de entorno
 load_dotenv(find_dotenv(usecwd=True))
 
+from dian_automation.branding import BRAND_NAME, BRAND_TAGLINE
 from dian_automation.db.database import SessionLocal
 from dian_automation.db.models import User, Business, Subscription
 from dian_automation.telegram.admin_bot import AdminTelegramBot
@@ -62,8 +63,8 @@ class TelegramBotRunner:
         )
         self.admin_bootstrap_allowlist = {cid.strip() for cid in allowlist_raw.split(",") if cid.strip()}
         self.base_url = f"https://api.telegram.org/bot{self.bot_token}" if self.bot_token else ""
-        self.bot_username = "KontableBot"
-        self.bot_name = "Kontable"
+        self.bot_username = "KontaBot"
+        self.bot_name = BRAND_NAME
         self.offset = 0
         self.is_running = False
 
@@ -114,8 +115,8 @@ class TelegramBotRunner:
                 res = client.get(f"{self.base_url}/getMe")
                 if res.status_code == 200:
                     data = res.json().get("result", {})
-                    self.bot_username = data.get("username", "KontableBot")
-                    self.bot_name = data.get("first_name", "Kontable")
+                    self.bot_username = data.get("username", "KontaBot")
+                    self.bot_name = data.get("first_name", BRAND_NAME)
                     return True
                 else:
                     print(f"\n❌ Error validando token en Telegram API: {res.text}")
@@ -172,7 +173,7 @@ class TelegramBotRunner:
                     "🆔 *INFORMACIÓN DE TU CHAT TELEGRAM*\n\n"
                     f"• *Chat ID:* `{chat_id}`\n"
                     f"• *Usuario:* @{username or 'sin_username'}\n"
-                    f"• *Rol en Kontable:* `{role_str}`\n"
+                    f"• *Rol en {BRAND_NAME}:* `{role_str}`\n"
                     f"• *Cuenta Vinculada:* `{linked_str}`"
                 )
                 self.send_message(chat_id, msg)
@@ -241,7 +242,7 @@ class TelegramBotRunner:
                     reply_text = (
                         link_result.get("welcome_message")
                         or link_result.get("message")
-                        or "👋 ¡Cuenta vinculada exitosamente a Kontable!"
+                        or f"👋 ¡Cuenta vinculada exitosamente a {BRAND_NAME}!"
                     )
                     self.send_message(chat_id, reply_text)
                     return
@@ -263,7 +264,8 @@ class TelegramBotRunner:
                         return
                     else:
                         msg = (
-                            f"👋 *¡Hola, {first_name}! Bienvenido a Kontable.*\n\n"
+                            f"👋 *¡Hola, {first_name}! Bienvenido a {BRAND_NAME}.*\n"
+                            f"_{BRAND_TAGLINE}_\n\n"
                             "Este es el bot de asistencia fiscal y facturación electrónica.\n\n"
                             "📱 *¿Eres cliente nuevo?*\n"
                             "Pídele a tu administradora comercial tu enlace de activación personal "
@@ -304,7 +306,7 @@ class TelegramBotRunner:
             # 6. Remitente no vinculado
             msg = (
                 "⛔ *Cuenta no vinculada*\n\n"
-                "No encontramos ninguna cuenta de Kontable asociada a este chat de Telegram.\n\n"
+                f"No encontramos ninguna cuenta de {BRAND_NAME} asociada a este chat de Telegram.\n\n"
                 "• Si eres cliente, usa el enlace de invitación que te envió tu administradora para activar tu cuenta.\n"
                 "• Para recibir ayuda, escribe `/mi_id` y comparte ese número con soporte."
             )
@@ -327,7 +329,7 @@ class TelegramBotRunner:
         """Bucle principal de Long Polling."""
 
         print("\n" + "=" * 75)
-        print("🤖 INICIANDO SERVIDOR BOT TELEGRAM KONTABLE (LONG POLLING)")
+        print("🤖 INICIANDO SERVIDOR BOT TELEGRAM KONTA (LONG POLLING)")
         print("=" * 75)
 
         if not self.verify_token():

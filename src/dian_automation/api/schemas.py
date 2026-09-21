@@ -1,4 +1,4 @@
-"""Esquemas Pydantic para los endpoints REST de Kontable."""
+"""Esquemas Pydantic para los endpoints REST de Konta."""
 
 from datetime import date, datetime
 from decimal import Decimal

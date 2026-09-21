@@ -1,4 +1,4 @@
-"""Aplicación principal FastAPI para el backend de Kontable."""
+"""Aplicación principal FastAPI para el backend de Konta."""
 
 import logging
 import os
@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
+from dian_automation.branding import BRAND_TAGLINE
 from dian_automation.config import config
 from dian_automation.core.auth_service import AuthServiceError
 from dian_automation.subscriptions.lockout_service import SubscriptionBlockedError
@@ -21,8 +22,8 @@ from dian_automation.api.routes_internal_worker import router as internal_worker
 from dian_automation.api.routes_calendar import router as calendar_router
 
 app = FastAPI(
-    title="Kontable API",
-    description="API REST de gestión tributaria DIAN, resúmenes contables y control de suscripción.",
+    title="Konta API",
+    description=BRAND_TAGLINE,
     version="1.0.0",
 )
 
@@ -90,7 +91,8 @@ if os.path.isdir(_frontend_dir):
 @app.get("/", tags=["General"])
 def root():
     return {
-        "app": "Kontable API",
+        "app": "Konta API",
+        "tagline": BRAND_TAGLINE,
         "version": "1.0.0",
         "status": "online",
         "docs_url": "/docs",

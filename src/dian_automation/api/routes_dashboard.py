@@ -1,4 +1,4 @@
-"""Rutas para el Dashboard principal de Kontable."""
+"""Rutas para el Dashboard principal de Konta."""
 
 from typing import Tuple, Dict, Any, List
 from fastapi import APIRouter, Depends, HTTPException

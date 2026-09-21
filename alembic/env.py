@@ -1,4 +1,4 @@
-"""Entorno de Alembic para Kontable.
+"""Entorno de Alembic para Konta.
 
 Usa la misma DATABASE_URL que la aplicación (dian_automation.db.database) y
 Base.metadata como fuente del esquema.

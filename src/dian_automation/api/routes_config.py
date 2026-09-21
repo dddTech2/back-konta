@@ -20,7 +20,7 @@ def _resolve_bot_username() -> Optional[str]:
     """Obtiene el @username real del bot configurado en .env consultando la API de Telegram.
 
     Usa el mismo TELEGRAM_BOT_TOKEN que corre en el bot de Telegram (cli/telegram_bot.py), así el frontend
-    nunca apunta a un nombre de bot inventado o desactualizado (ej. 'KontableBot' genérico,
+    nunca apunta a un nombre de bot inventado o desactualizado (ej. 'KontaBot' genérico,
     que en Telegram puede pertenecer a un bot de un tercero).
     """
     global _cached_bot_username

@@ -202,7 +202,7 @@ def test_confirmar_pago_reactivates_blocked_subscription_and_lifts_lockout(db_se
         tg_check_after = ClientTelegramBot.handle_client_message(
             sender_chat_id=777888999, text="/ayuda", db=db
         )
-        assert "¡Hola, bienvenido a Kontable Bot!" in tg_check_after
+        assert "¡Hola, bienvenido a Konta Bot!" in tg_check_after
         assert "Servicio Suspendido" not in tg_check_after
     finally:
         db.close()

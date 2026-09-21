@@ -84,7 +84,7 @@ Register-ScheduledTask `
     -Trigger $trigger `
     -Principal $principal `
     -Settings $settings `
-    -Description "Worker remoto de Kontable: descarga los reportes de la DIAN y los sube a la API." `
+    -Description "Worker remoto de Konta: descarga los reportes de la DIAN y los sube a la API." `
     -Force | Out-Null
 
 Write-Host "Tarea '$TaskName' registrada para ${user}: arranca al iniciar sesión y se reinicia si falla."

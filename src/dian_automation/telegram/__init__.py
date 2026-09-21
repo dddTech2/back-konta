@@ -1,1 +1,1 @@
-"""Módulo de integraciones de Telegram para Kontable."""
+"""Módulo de integraciones de Telegram para Konta."""

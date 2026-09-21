@@ -1,4 +1,4 @@
-"""Motor de Suscripciones y Tarifas de Kontable.
+"""Motor de Suscripciones y Tarifas de Konta.
 
 Implementa la matriz de precios periódicos con descuentos comerciales automáticos:
 - TRIMESTRAL: 3 meses, -5% descuento.

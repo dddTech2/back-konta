@@ -10,6 +10,7 @@ from datetime import datetime, date, timedelta
 from typing import Optional, Dict, Any, List, Callable
 from sqlalchemy.orm import Session
 
+from dian_automation.branding import BRAND_NAME
 from dian_automation.db.models import Subscription, User
 
 logger = logging.getLogger("grace_cron")
@@ -34,7 +35,7 @@ class SubscriptionGraceCron:
 
         if day_of_grace <= 1:
             return (
-                "⚠️ *Recordatorio de Pago Kontable (Día 1 de 3 de Gracia)*\n\n"
+                f"⚠️ *Recordatorio de Pago {BRAND_NAME} (Día 1 de 3 de Gracia)*\n\n"
                 f"Hola *{user.full_name}*, tu plan *{subscription.plan}* para *{business_name}* "
                 f"ha llegado a su fecha de corte hoy ({cutoff_fmt}).\n\n"
                 "🎁 Cuentas con un *periodo de gracia de 72 horas (3 días)* para realizar tu renovación sin interrupción del servicio.\n"
@@ -44,7 +45,7 @@ class SubscriptionGraceCron:
             )
         elif day_of_grace == 2:
             return (
-                "⏳ *Aviso de Pago Kontable (Día 2 de 3 de Gracia)*\n\n"
+                f"⏳ *Aviso de Pago {BRAND_NAME} (Día 2 de 3 de Gracia)*\n\n"
                 f"Hola *{user.full_name}*, te recordamos que restan *2 días* de gracia para tu plan *{subscription.plan}* (*{business_name}*).\n\n"
                 f"💰 *Valor pendiente:* ${price_cop:,.0f} COP\n"
                 f"📅 *Tu servicio continuará activo hasta el:* {grace_end_fmt}\n\n"

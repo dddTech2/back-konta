@@ -12,6 +12,7 @@ from typing import Optional, Dict, Any, Tuple, Callable
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
+from dian_automation.branding import BRAND_NAME, BRAND_TAGLINE
 from dian_automation.config import config
 from dian_automation.db.models import User, Business, TelegramLinkToken
 
@@ -29,7 +30,7 @@ class TelegramDeepLinkingService:
         user_id: str,
         db: Session,
         expires_in_hours: int = DEFAULT_EXPIRATION_HOURS,
-        bot_username: str = "KontableBot",
+        bot_username: str = "KontaBot",
     ) -> Tuple[TelegramLinkToken, str]:
         """Genera un token seguro de un solo uso y su enlace correspondiente."""
         user = db.query(User).filter(User.id == user_id).first()
@@ -59,12 +60,13 @@ class TelegramDeepLinkingService:
         """Construye el mensaje de bienvenida personalizado en Markdown para el cliente."""
         biz_name = business.commercial_name if business and business.commercial_name else (business.legal_name if business else "tu negocio")
         # Se muestra el NIT tal como fue registrado, sin el dígito de verificación
-        # (ese DV es calculado internamente por Kontable, nunca lo suministra el cliente).
+        # (ese DV es calculado internamente por Konta, nunca lo suministra el cliente).
         nit_str = business.nit if business else "N/A"
         dashboard_link = f"{config.kontable_web_url}?nit={business.nit}" if business else None
 
         message = (
-            f"👋 ¡Hola, *{user.full_name}*! Bienvenido a *Kontable*.\n\n"
+            f"👋 ¡Hola, *{user.full_name}*! Bienvenido a *{BRAND_NAME}*.\n"
+            f"_{BRAND_TAGLINE}_\n\n"
             "🏢 Tu cuenta ha sido vinculada exitosamente con tu empresa:\n"
             f"*{biz_name}* (NIT: `{nit_str}`)\n\n"
             "A partir de ahora recibirás en este chat:\n"
@@ -139,7 +141,7 @@ class TelegramDeepLinkingService:
                 "success": False,
                 "reason": "CHAT_ALREADY_LINKED",
                 "message": (
-                    "⚠️ Este Telegram ya está asociado a otra cuenta de Kontable. "
+                    f"⚠️ Este Telegram ya está asociado a otra cuenta de {BRAND_NAME}. "
                     "Pide a tu administradora que lo libere y vuelve a abrir tu enlace."
                 ),
             }
@@ -164,7 +166,7 @@ class TelegramDeepLinkingService:
                 "success": False,
                 "reason": "CHAT_ALREADY_LINKED",
                 "message": (
-                    "⚠️ Este Telegram ya está asociado a otra cuenta de Kontable. "
+                    f"⚠️ Este Telegram ya está asociado a otra cuenta de {BRAND_NAME}. "
                     "Pide a tu administradora que lo libere y vuelve a abrir tu enlace."
                 ),
             }
