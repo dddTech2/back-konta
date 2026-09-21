@@ -331,7 +331,8 @@ def test_ejecutar_extraccion_enqueues_job(db_session_factory):
         assert res["success"] is True
         assert res["period"] == "2026-06"
         assert "encolad" in res["message"].lower()
-        assert "kontable-worker" in res["message"]
+        assert "El trabajo se procesa automáticamente" in res["message"]
+        assert "kontable-worker" not in res["message"]
 
         job = db.query(DIANExtractionJob).filter(DIANExtractionJob.id == res["job_id"]).first()
         assert job is not None
@@ -733,5 +734,161 @@ def test_handle_admin_message_routes_the_new_commands_and_help_lists_them(db_ses
         assert "registra sus ventas a mano" in perfil  # el negocio ya es MANUAL_SALES: el perfil no aplica
         assert "/cambiar_tipo NIT | FACTURADOR" in ayuda and "/perfil_tributario NIT | IVA=" in ayuda
         assert "VENTAS_MANUALES" in ayuda
+        assert "/liberar_telegram" in ayuda
+    finally:
+        db.close()
+
+
+def test_admin_bot_help_and_extraccion_texts_are_professional(db_session_factory):
+    """Verifica que los textos de /ayuda y /ejecutar_extraccion no contengan términos de desarrollo."""
+    db = db_session_factory()
+    try:
+        _seed_business(db)
+        ayuda = AdminTelegramBot.handle_admin_message(ADMIN_CHAT, "/ayuda", db)
+        res_ext = AdminTelegramBot.execute_ejecutar_extraccion(
+            sender_chat_id=ADMIN_CHAT,
+            text="/ejecutar_extraccion 901008579 | 2026-08",
+            db=db,
+        )
+        msg_ext = res_ext["message"]
+
+        prohibited = ["prueba", "local", ".env", "uv run", "terminal"]
+        for msg in [ayuda, msg_ext]:
+            msg_lower = msg.lower()
+            for word in prohibited:
+                assert word not in msg_lower, f"'{word}' encontrado en: {msg}"
+    finally:
+        db.close()
+
+
+def test_crear_cliente_templates_and_usage_mention_ventas_manuales(db_session_factory):
+    """Verifica que USAGE_MESSAGE y /ayuda muestren VENTAS_MANUALES y que se cree el negocio correctamente."""
+    db = db_session_factory()
+    try:
+        ayuda = AdminTelegramBot.handle_admin_message(ADMIN_CHAT, "/ayuda", db)
+        usage = AdminTelegramBot.USAGE_MESSAGE
+
+        assert "VENTAS_MANUALES" in ayuda
+        assert "| VENTAS_MANUALES" in ayuda
+        assert "*Tipo de cliente*" in ayuda
+        assert "*Módulo*" in ayuda
+
+        assert "VENTAS_MANUALES" in usage
+        assert "| VENTAS_MANUALES" in usage
+        assert "*Tipo de cliente*" in usage
+        assert "*Módulo*" in usage
+
+        # Crear cliente con VENTAS_MANUALES
+        res = AdminTelegramBot.execute_crear_cliente(
+            sender_chat_id=ADMIN_CHAT,
+            text="/crear_cliente PERSONA | Andrea Torres | 3001234567 | 1000000001 | TRIMESTRAL | VENTAS_MANUALES",
+            db=db,
+        )
+        assert res["success"] is True
+        assert res["income_source"] == "MANUAL_SALES"
+        biz = db.query(Business).filter(Business.nit == "1000000001").first()
+        assert biz is not None
+        assert biz.income_source == "MANUAL_SALES"
+
+        # Mensaje de error para módulo no reconocido
+        res_bad_mod = AdminTelegramBot.execute_crear_cliente(
+            sender_chat_id=ADMIN_CHAT,
+            text="/crear_cliente PERSONA | Andrea Torres | 3001234567 | 1000000001 | TRIMESTRAL | OTRO_MODULO",
+            db=db,
+        )
+        assert res_bad_mod["success"] is False
+        assert "Módulo 'OTRO_MODULO' no reconocido" in res_bad_mod["message"]
+    finally:
+        db.close()
+
+
+def test_liberar_telegram_success_and_validations(db_session_factory):
+    """Pruebas completas del comando /liberar_telegram."""
+    db = db_session_factory()
+    try:
+        # Crear un cliente y vincularle un chat de Telegram
+        client = User(
+            id="usr-client-to-free",
+            email="cliente.liberar@kontable.co",
+            full_name="Cliente A Liberar",
+            role="CLIENT",
+            telegram_chat_id=888777666,
+            telegram_username="clientelibera",
+            is_telegram_linked=True,
+            is_active=True,
+        )
+        db.add(client)
+        db.commit()
+
+        # 1. No-admin intenta usar el comando -> rechazado
+        res_unauth = AdminTelegramBot.execute_liberar_telegram(
+            sender_chat_id=INTRUDER_CHAT,
+            text="/liberar_telegram 888777666",
+            db=db,
+        )
+        assert res_unauth["success"] is False
+        assert res_unauth["reason"] == "UNAUTHORIZED"
+
+        # 2. Admin intenta liberarse a sí mismo -> rechazado
+        res_self = AdminTelegramBot.execute_liberar_telegram(
+            sender_chat_id=ADMIN_CHAT,
+            text=f"/liberar_telegram {ADMIN_CHAT}",
+            db=db,
+        )
+        assert res_self["success"] is False
+        assert res_self["reason"] == "CANNOT_FREE_SELF"
+        assert "No puedes desvincular" in res_self["message"]
+
+        # 3. Argumento no numérico o faltante -> error de sintaxis
+        res_bad_arg = AdminTelegramBot.execute_liberar_telegram(
+            sender_chat_id=ADMIN_CHAT,
+            text="/liberar_telegram abc",
+            db=db,
+        )
+        assert res_bad_arg["success"] is False
+        assert res_bad_arg["reason"] == "INVALID_SYNTAX"
+
+        res_empty_arg = AdminTelegramBot.execute_liberar_telegram(
+            sender_chat_id=ADMIN_CHAT,
+            text="/liberar_telegram",
+            db=db,
+        )
+        assert res_empty_arg["success"] is False
+        assert res_empty_arg["reason"] == "INVALID_SYNTAX"
+
+        # 4. ID inexistente
+        res_not_found = AdminTelegramBot.execute_liberar_telegram(
+            sender_chat_id=ADMIN_CHAT,
+            text="/liberar_telegram 999999999",
+            db=db,
+        )
+        assert res_not_found["success"] is False
+        assert res_not_found["reason"] == "USER_NOT_FOUND"
+        assert "No hay ninguna cuenta vinculada a ese ID." in res_not_found["message"]
+
+        # 5. Liberación exitosa por ADMIN
+        res_ok = AdminTelegramBot.execute_liberar_telegram(
+            sender_chat_id=ADMIN_CHAT,
+            text="/liberar_telegram 888777666",
+            db=db,
+        )
+        assert res_ok["success"] is True
+        assert "Cliente A Liberar" in res_ok["message"]
+        assert "cliente.liberar@kontable.co" in res_ok["message"]
+        assert "Ya puede vincular su Telegram con un enlace nuevo." in res_ok["message"]
+
+        db.refresh(client)
+        assert client.telegram_chat_id is None
+        assert client.telegram_username is None
+        assert client.is_telegram_linked is False
+
+        # 6. Despacho vía handle_admin_message
+        client.telegram_chat_id = 888777666
+        client.is_telegram_linked = True
+        db.commit()
+
+        msg_routed = AdminTelegramBot.handle_admin_message(ADMIN_CHAT, "/liberar_telegram 888777666", db)
+        assert "Cuenta liberada" in msg_routed
+        assert "Ya puede vincular su Telegram" in msg_routed
     finally:
         db.close()

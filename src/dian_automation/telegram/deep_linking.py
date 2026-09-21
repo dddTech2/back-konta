@@ -10,6 +10,7 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Tuple, Callable
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from dian_automation.config import config
 from dian_automation.db.models import User, Business, TelegramLinkToken
@@ -121,8 +122,29 @@ class TelegramDeepLinkingService:
                 "message": "⌛ El enlace de vinculación ha expirado (vigencia de 72 horas). Solicita uno nuevo a tu administrador.",
             }
 
-        # Vincular usuario y consumir token
         user = record.user
+
+        # Verificar si otro usuario ya tiene asignado este telegram_chat_id
+        conflicting_user = (
+            db.query(User)
+            .filter(User.telegram_chat_id == chat_id, User.id != user.id)
+            .first()
+        )
+        if conflicting_user:
+            logger.warning(
+                f"Conflicto de vinculación: chat_id={chat_id} ya asignado a user_id={conflicting_user.id}, "
+                f"intento desde user_id={user.id}"
+            )
+            return {
+                "success": False,
+                "reason": "CHAT_ALREADY_LINKED",
+                "message": (
+                    "⚠️ Este Telegram ya está asociado a otra cuenta de Kontable. "
+                    "Pide a tu administradora que lo libere y vuelve a abrir tu enlace."
+                ),
+            }
+
+        # Vincular usuario y consumir token
         user.telegram_chat_id = chat_id
         user.telegram_username = telegram_username
         user.is_telegram_linked = True
@@ -130,8 +152,22 @@ class TelegramDeepLinkingService:
         record.is_used = True
         record.used_at = now
 
-        db.commit()
-        db.refresh(user)
+        try:
+            db.commit()
+            db.refresh(user)
+        except IntegrityError:
+            db.rollback()
+            logger.warning(
+                f"IntegrityError al vincular chat_id={chat_id} a user_id={user.id}"
+            )
+            return {
+                "success": False,
+                "reason": "CHAT_ALREADY_LINKED",
+                "message": (
+                    "⚠️ Este Telegram ya está asociado a otra cuenta de Kontable. "
+                    "Pide a tu administradora que lo libere y vuelve a abrir tu enlace."
+                ),
+            }
 
         # Obtener negocio principal
         primary_biz = user.businesses[0] if user.businesses else None

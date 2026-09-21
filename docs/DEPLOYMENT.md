@@ -209,3 +209,24 @@ Para migrar la información de un `kontable.db` previo a PostgreSQL sin perder t
    docker compose start api bot scheduler
    ```
 
+### Corregir un ID de Telegram mal configurado
+
+Si se configuró un ID erróneo en las variables de Telegram o un Chat ID quedó vinculado a una cuenta equivocada:
+
+1. **Obtener el Chat ID real:** El usuario debe escribir `/mi_id` en Telegram para conocer su identificador numérico exacto.
+2. **Actualizar variables en el VPS:** En el `.env` del VPS, ajusta `ADMIN_TELEGRAM_CHAT_ID` (para la administradora principal) y/o `ADMIN_BOOTSTRAP_CHAT_IDS` (lista de chats autorizados separada por comas). Ten presente que `/hacerme_admin` solo funciona para los chats listados en esas variables; si no se configura ninguna allowlist, el comando queda deshabilitado por seguridad por defecto.
+3. **Recrear el contenedor del bot:** Aplica los cambios forzando la recreación del servicio para que tome las nuevas variables del archivo `.env`:
+   ```bash
+   docker compose up -d --force-recreate bot
+   ```
+   *(Nota: un simple `docker compose restart` no relee modificaciones en el archivo `.env`).*
+4. **Desvincular un ID asociado a una cuenta equivocada:**
+   - **Con una administradora vigente:** Ejecuta desde Telegram el comando:
+     ```text
+     /liberar_telegram <chat_id>
+     ```
+   - **Si no hay ningún administrador disponible:** Ejecuta la actualización directamente en la base de datos PostgreSQL:
+     ```bash
+     docker compose exec postgres psql -U kontable -d kontable -c "UPDATE users SET telegram_chat_id = NULL, is_telegram_linked = false WHERE telegram_chat_id = <chat_id>;"
+     ```
+

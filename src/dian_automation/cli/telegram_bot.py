@@ -5,7 +5,7 @@ Despacha de forma unificada:
 - Vinculación atómica por Deep Linking (/start <token>)
 - Comandos comerciales de Administradora (Katerinn): /crear_cliente, /confirmar_pago, /clientes
 - Consultas tributarias de Clientes: /resumen, /facturas, /vencimientos, /ayuda
-- Utilidades de prueba local: /mi_id, /hacerme_admin
+- Diagnóstico y administración: /mi_id, /hacerme_admin
 - Notificaciones salientes en tiempo real hacia los chats de los clientes al confirmar pagos.
 
 Uso:
@@ -22,6 +22,7 @@ import logging
 from typing import Optional, Dict, Any
 from dotenv import load_dotenv, find_dotenv
 import httpx
+from sqlalchemy.exc import IntegrityError
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -55,9 +56,7 @@ class TelegramBotRunner:
         self.admin_chat_id_env = os.getenv("ADMIN_TELEGRAM_CHAT_ID")
         # Allowlist de chat_id autorizados a auto-asignarse ADMIN vía /hacerme_admin.
         # Se arma con ADMIN_BOOTSTRAP_CHAT_IDS (lista separada por comas) y/o ADMIN_TELEGRAM_CHAT_ID.
-        # Si queda vacía (nada configurado), el comando sigue abierto -- conveniente para pruebas
-        # locales cuando el bot no es alcanzable por nadie más -- pero basta con configurar
-        # cualquiera de las dos variables para cerrar la puerta a cualquier otro chat_id.
+        # Por seguridad por defecto, si queda vacía (nada configurado), el comando queda deshabilitado.
         allowlist_raw = ",".join(
             filter(None, [os.getenv("ADMIN_BOOTSTRAP_CHAT_IDS", ""), self.admin_chat_id_env or ""])
         )
@@ -147,14 +146,22 @@ class TelegramBotRunner:
         try:
             # Sincronizar admin de .env si está configurado
             if self.admin_chat_id_env and str(chat_id) == str(self.admin_chat_id_env).strip():
-                admin_user = db.query(User).filter(User.telegram_chat_id == chat_id).first()
-                if not admin_user:
+                existing_with_chat = db.query(User).filter(User.telegram_chat_id == chat_id).first()
+                if existing_with_chat and existing_with_chat.role != "ADMIN":
+                    logger.warning(
+                        f"Sincronización admin de .env omitida: chat_id={chat_id} ya asignado a usuario id={existing_with_chat.id} con rol {existing_with_chat.role}"
+                    )
+                elif not existing_with_chat:
                     admin_by_email = db.query(User).filter(User.email == "admin@kontable.com").first()
                     if admin_by_email:
                         admin_by_email.telegram_chat_id = chat_id
                         admin_by_email.role = "ADMIN"
                         admin_by_email.is_telegram_linked = True
-                        db.commit()
+                        try:
+                            db.commit()
+                        except IntegrityError as ie:
+                            db.rollback()
+                            logger.warning(f"IntegrityError al sincronizar admin de .env para chat_id={chat_id}: {ie}")
 
             # 1. Comando de ayuda de ID / Diagnóstico
             if text in ("/mi_id", "/id", "/chat_id"):
@@ -166,19 +173,16 @@ class TelegramBotRunner:
                     f"• *Chat ID:* `{chat_id}`\n"
                     f"• *Usuario:* @{username or 'sin_username'}\n"
                     f"• *Rol en Kontable:* `{role_str}`\n"
-                    f"• *Cuenta Vinculada:* `{linked_str}`\n\n"
-                    "💡 *Opciones de Prueba Rápida:*\n"
-                    "- Para ser la **Administradora Comercial (Katerinn)**, escribe `/hacerme_admin`\n"
-                    "- O agrega `ADMIN_TELEGRAM_CHAT_ID=" f"{chat_id}` en tu `.env`"
+                    f"• *Cuenta Vinculada:* `{linked_str}`"
                 )
                 self.send_message(chat_id, msg)
                 return
 
-            # 2. Comando rápido para convertirse en Administradora Katerinn (ideal para pruebas locales,
-            #    pero es una puerta de escalación de privilegios: si hay allowlist configurada
-            #    (ADMIN_BOOTSTRAP_CHAT_IDS o ADMIN_TELEGRAM_CHAT_ID), solo esos chat_id pueden usarlo).
+            # 2. Comando para activar privilegios de administración comercial.
+            #    Por seguridad por defecto, solo funciona si el chat_id está configurado
+            #    en la allowlist (ADMIN_BOOTSTRAP_CHAT_IDS o ADMIN_TELEGRAM_CHAT_ID).
             if text == "/hacerme_admin":
-                if self.admin_bootstrap_allowlist and str(chat_id) not in self.admin_bootstrap_allowlist:
+                if not self.admin_bootstrap_allowlist or str(chat_id) not in self.admin_bootstrap_allowlist:
                     self.send_message(
                         chat_id,
                         "⛔ *No autorizado*\n\n"
@@ -212,19 +216,13 @@ class TelegramBotRunner:
                     user.is_telegram_linked = True
 
                 db.commit()
-                msg = (
-                    "👑 *¡Privilegios de Administradora Comercial Concedidos!*\n\n"
-                    f"Hola *{user.full_name}*, ahora tienes acceso a los comandos de Katerinn:\n\n"
-                    "1️⃣ *Persona:* `/crear_cliente PERSONA | Nombre | Celular | Cédula | Plan`\n"
-                    "_Ejemplo:_ `/crear_cliente PERSONA | Andrea Torres | 3001234567 | 1000000001 | TRIMESTRAL`\n\n"
-                    "1️⃣ *Empresa:* `/crear_cliente EMPRESA | Nombre Contacto | Celular | Nombre Empresa | NIT Empresa | Cédula Representante | Plan`\n"
-                    "_Ejemplo:_ `/crear_cliente EMPRESA | Andrea Torres | 3001234567 | Ferretería El Roble SAS | 901008579 | 10000002 | TRIMESTRAL`\n\n"
-                    "2️⃣ `/confirmar_pago NIT | Monto | Referencia`\n"
-                    "_Ejemplo:_ `/confirmar_pago 901008579 | 142500 | TR-778899`\n\n"
-                    "3️⃣ `/clientes` — Listado y estado de clientes\n"
-                    "4️⃣ `/ejecutar_extraccion NIT | Periodo` — Encola una descarga real de la DIAN\n"
-                    "5️⃣ `/ayuda` — Menú de administración"
+                help_menu = AdminTelegramBot.handle_admin_message(
+                    sender_chat_id=chat_id,
+                    text="/ayuda",
+                    db=db,
+                    bot_username=self.bot_username,
                 )
+                msg = f"✅ *Acceso de administración activado*\n\n{help_menu}"
                 self.send_message(chat_id, msg)
                 return
 
@@ -306,16 +304,22 @@ class TelegramBotRunner:
             # 6. Remitente no vinculado
             msg = (
                 "⛔ *Cuenta no vinculada*\n\n"
-                "No encontramos ninguna cuenta de Kontable asociada a tu chat de Telegram.\n\n"
-                "• Si acabas de adquirir tu plan, pulsa el enlace de invitación enviado por tu administradora.\n"
-                "• Si estás realizando pruebas en local, escribe `/hacerme_admin` para usar los comandos comerciales.\n"
-                "• Escribe `/mi_id` para conocer tu Chat ID."
+                "No encontramos ninguna cuenta de Kontable asociada a este chat de Telegram.\n\n"
+                "• Si eres cliente, usa el enlace de invitación que te envió tu administradora para activar tu cuenta.\n"
+                "• Para recibir ayuda, escribe `/mi_id` y comparte ese número con soporte."
             )
             self.send_message(chat_id, msg)
 
         except Exception as e:
+            try:
+                db.rollback()
+            except Exception:
+                pass
             logger.error(f"Error procesando mensaje: {e}", exc_info=True)
-            self.send_message(chat_id, f"❌ Ocurrió un error procesando tu solicitud: {e}")
+            self.send_message(
+                chat_id,
+                "❌ No pudimos procesar tu solicitud. Inténtalo de nuevo en unos minutos; si el problema continúa, contacta a soporte.",
+            )
         finally:
             db.close()
 

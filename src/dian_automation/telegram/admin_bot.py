@@ -94,16 +94,19 @@ class AdminTelegramBot:
         return admin is not None
 
     USAGE_MESSAGE = (
-        "⚠️ *Uso incorrecto.* La plantilla depende del *Tipo de Cliente* (primer campo):\n\n"
+        "⚠️ *Uso incorrecto.* La plantilla depende del *Tipo de cliente* (primer campo):\n\n"
         "👤 *Persona Natural:*\n"
-        "`/crear_cliente PERSONA | Nombre Completo | Celular | Cédula | Plan`\n"
-        "_Ejemplo:_ `/crear_cliente PERSONA | Andrea Torres | 3001234567 | 1000000001 | TRIMESTRAL`\n\n"
+        "`/crear_cliente PERSONA | Nombre Completo | Celular | Cédula | Plan [| Módulo]`\n"
+        "_Ejemplo (DIAN):_ `/crear_cliente PERSONA | Andrea Torres | 3001234567 | 1000000001 | TRIMESTRAL`\n"
+        "_Ejemplo (Ventas):_ `/crear_cliente PERSONA | Andrea Torres | 3001234567 | 1000000001 | TRIMESTRAL | VENTAS_MANUALES`\n\n"
         "🏢 *Empresa (Representante Legal):*\n"
-        "`/crear_cliente EMPRESA | Nombre Contacto | Celular | Nombre Empresa | NIT Empresa | Cédula Representante | Plan`\n"
-        "_Ejemplo:_ `/crear_cliente EMPRESA | Andrea Torres | 3001234567 | Ferretería El Roble SAS | 901008579 | 10000002 | TRIMESTRAL`\n\n"
+        "`/crear_cliente EMPRESA | Nombre Contacto | Celular | Nombre Empresa | NIT Empresa | Cédula Representante | Plan [| Módulo]`\n"
+        "_Ejemplo (DIAN):_ `/crear_cliente EMPRESA | Andrea Torres | 3001234567 | Ferretería El Roble SAS | 901008579 | 10000002 | TRIMESTRAL`\n"
+        "_Ejemplo (Ventas):_ `/crear_cliente EMPRESA | Andrea Torres | 3001234567 | Ferretería El Roble SAS | 901008579 | 10000002 | TRIMESTRAL | VENTAS_MANUALES`\n\n"
         "_Planes disponibles: TRIMESTRAL, SEMESTRAL, ANUAL_\n"
-        "_Opcional, al final de cualquiera de las dos plantillas:_ `| TIPO` con `FACTURADOR` (por defecto, factura "
-        "electrónicamente) o `VENTAS_MANUALES` (registra sus ventas a mano)."
+        "*Módulo* (último campo, opcional):\n"
+        "• `FACTURADOR` (por defecto): factura electrónicamente, cifras e IVA desde la DIAN.\n"
+        "• `VENTAS_MANUALES`: registra sus ventas a mano en el módulo de ingresos, sin IVA ni calendario tributario."
     )
 
     # Tipo de negocio que la administradora escribe en los comandos -> valor guardado en `businesses.income_source`.
@@ -229,7 +232,7 @@ class AdminTelegramBot:
                 return (
                     False,
                     None,
-                    f"⚠️ Tipo de negocio '{negocio_raw}' no reconocido. Debe ser `FACTURADOR` o `VENTAS_MANUALES`.\n\n"
+                    f"⚠️ Módulo '{negocio_raw}' no reconocido. Debe ser `FACTURADOR` o `VENTAS_MANUALES`.\n\n"
                     + cls.USAGE_MESSAGE,
                 )
 
@@ -881,11 +884,7 @@ class AdminTelegramBot:
             f"📅 *{periodo_label} objetivo:* `{period}`\n"
             f"🆔 *Job:* `{job.id}`\n"
             f"⏳ *Estado:* {job.status}\n\n"
-            "⚠️ *Alcance:* este comando solo agrega el trabajo a la cola. Para que se ejecute de verdad "
-            "contra el portal DIAN (Chrome + Cloudflare + correo Stalwart), necesitas tener corriendo "
-            "el proceso del worker, en una terminal aparte:\n"
-            "`uv run kontable-worker`\n\n"
-            "El worker procesa un trabajo a la vez y avisa a Tech Ops por Telegram si algo falla."
+            "El trabajo se procesa automáticamente; recibirás un aviso si algo falla."
         )
 
         logger.info(f"Admin chat {sender_chat_id} encoló extracción para NIT {nit_clean} periodo {period} (job {job.id})")
@@ -1092,6 +1091,92 @@ class AdminTelegramBot:
             ),
         }
 
+    LIBERAR_TELEGRAM_USAGE = (
+        "⚠️ *Uso incorrecto.* Formato requerido:\n"
+        "`/liberar_telegram <chat_id>`\n\n"
+        "_Ejemplo:_ `/liberar_telegram 123456789`"
+    )
+
+    @classmethod
+    def parse_liberar_telegram_command(cls, text: str) -> Tuple[bool, Optional[int], Optional[str]]:
+        """Analiza el comando /liberar_telegram <chat_id>."""
+        match = re.match(r"^/liberar_telegram\b\s*(.*)", text, re.IGNORECASE | re.DOTALL)
+        if not match:
+            return False, None, "Comando no reconocido."
+
+        payload = match.group(1).strip()
+        if not payload:
+            return False, None, cls.LIBERAR_TELEGRAM_USAGE
+
+        clean_val = payload.strip()
+        if not clean_val.lstrip("-").isdigit():
+            return (
+                False,
+                None,
+                f"⚠️ El Chat ID '{payload}' no es válido. Debe ser un valor numérico.\n\n"
+                + cls.LIBERAR_TELEGRAM_USAGE,
+            )
+
+        return True, int(clean_val), None
+
+    @classmethod
+    def execute_liberar_telegram(cls, sender_chat_id: int, text: str, db: Session) -> Dict[str, Any]:
+        """Libera la vinculación de Telegram de un usuario registrado."""
+        if not cls.is_authorized_admin(sender_chat_id, db):
+            logger.warning(f"Intento de /liberar_telegram no autorizado desde chat_id={sender_chat_id}")
+            return {
+                "success": False,
+                "reason": "UNAUTHORIZED",
+                "message": "⛔ *Acceso denegado:* Este comando está restringido a la administración comercial autorizada.",
+            }
+
+        is_valid, target_chat_id, error_msg = cls.parse_liberar_telegram_command(text)
+        if not is_valid:
+            return {"success": False, "reason": "INVALID_SYNTAX", "message": error_msg}
+
+        if target_chat_id == sender_chat_id:
+            return {
+                "success": False,
+                "reason": "CANNOT_FREE_SELF",
+                "message": "⚠️ No puedes desvincular tu propia cuenta de administrador.",
+            }
+
+        user = db.query(User).filter(User.telegram_chat_id == target_chat_id).first()
+        if not user:
+            return {
+                "success": False,
+                "reason": "USER_NOT_FOUND",
+                "message": "No hay ninguna cuenta vinculada a ese ID.",
+            }
+
+        try:
+            user_name = user.full_name
+            user_email = user.email
+            user.telegram_chat_id = None
+            user.telegram_username = None
+            user.is_telegram_linked = False
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error liberando Telegram para chat_id={target_chat_id}: {e}", exc_info=True)
+            return {
+                "success": False,
+                "reason": "INTERNAL_ERROR",
+                "message": "❌ No pudimos liberar la cuenta. Inténtalo de nuevo; si el problema continúa, contacta a soporte.",
+            }
+
+        logger.info(f"Admin chat {sender_chat_id} liberó Telegram de {user_email} (chat_id={target_chat_id})")
+        return {
+            "success": True,
+            "user_id": user.id,
+            "user_name": user_name,
+            "user_email": user_email,
+            "message": (
+                f"✅ Cuenta liberada: *{user_name}* ({user_email}).\n"
+                "Ya puede vincular su Telegram con un enlace nuevo."
+            ),
+        }
+
     @classmethod
     def handle_admin_message(
         cls,
@@ -1128,38 +1213,46 @@ class AdminTelegramBot:
             res = cls.execute_perfil_tributario(sender_chat_id, text_clean, db)
             return res["message"]
 
+        elif text_clean.startswith("/liberar_telegram"):
+            res = cls.execute_liberar_telegram(sender_chat_id, text_clean, db)
+            return res["message"]
+
         elif text_clean.startswith("/ayuda") or text_clean.startswith("/help"):
             return (
                 "💼 *COMANDOS DE ADMINISTRACIÓN COMERCIAL (Katerinn)*\n\n"
                 "1️⃣ *Crear Cliente:* Da de alta a un usuario, negocio y suscripción con enlace mágico.\n"
-                "La plantilla depende del *Tipo* (primer campo: `PERSONA` o `EMPRESA`):\n\n"
+                "La plantilla depende del *Tipo de cliente* (primer campo: `PERSONA` o `EMPRESA`):\n\n"
                 "👤 *Persona Natural:*\n"
-                "`/crear_cliente PERSONA | Nombre | Celular | Cédula | Plan`\n"
-                "_Ejemplo:_ `/crear_cliente PERSONA | Andrea Torres | 3001234567 | 1000000001 | TRIMESTRAL`\n\n"
+                "`/crear_cliente PERSONA | Nombre | Celular | Cédula | Plan [| Módulo]`\n"
+                "_Ejemplo (DIAN):_ `/crear_cliente PERSONA | Andrea Torres | 3001234567 | 1000000001 | TRIMESTRAL`\n"
+                "_Ejemplo (Ventas):_ `/crear_cliente PERSONA | Andrea Torres | 3001234567 | 1000000001 | TRIMESTRAL | VENTAS_MANUALES`\n\n"
                 "🏢 *Empresa (Representante Legal):*\n"
-                "`/crear_cliente EMPRESA | Nombre Contacto | Celular | Nombre Empresa | NIT Empresa | Cédula Representante | Plan`\n"
-                "_Ejemplo:_ `/crear_cliente EMPRESA | Andrea Torres | 3001234567 | Ferretería El Roble SAS | 901008579 | 10000002 | TRIMESTRAL`\n\n"
-                "_Al final de cualquiera de las dos plantillas puedes agregar_ `| TIPO`: `FACTURADOR` (por defecto, "
-                "factura electrónicamente) o `VENTAS_MANUALES` (registra sus ventas a mano).\n\n"
+                "`/crear_cliente EMPRESA | Nombre Contacto | Celular | Nombre Empresa | NIT Empresa | Cédula Representante | Plan [| Módulo]`\n"
+                "_Ejemplo (DIAN):_ `/crear_cliente EMPRESA | Andrea Torres | 3001234567 | Ferretería El Roble SAS | 901008579 | 10000002 | TRIMESTRAL`\n"
+                "_Ejemplo (Ventas):_ `/crear_cliente EMPRESA | Andrea Torres | 3001234567 | Ferretería El Roble SAS | 901008579 | 10000002 | TRIMESTRAL | VENTAS_MANUALES`\n\n"
+                "*Módulo* (último campo, opcional):\n"
+                "• `FACTURADOR` (por defecto): factura electrónicamente, cifras e IVA desde la DIAN.\n"
+                "• `VENTAS_MANUALES`: registra sus ventas a mano en el módulo de ingresos, sin IVA ni calendario tributario.\n\n"
                 "2️⃣ *Confirmar Pago:* Registra transferencias, reactiva cuentas y levanta suspensiones:\n"
                 "`/confirmar_pago NIT | Monto | Referencia`\n"
                 "_Ejemplo:_ `/confirmar_pago 901008579 | 142500 | TR-998822`\n\n"
                 "3️⃣ *Listar Clientes:* Consulta los últimos clientes registrados y su estado de vinculación:\n"
                 "`/clientes`\n\n"
                 "4️⃣ *Ejecutar Extracción DIAN:* Encola la descarga real de facturas de un negocio:\n"
-                "`/ejecutar_extraccion NIT | Periodo`\n"
+                "`/ejecutar_extraccion NIT | Periodo`\n\n"
                 "_Ejemplo (un mes):_ `/ejecutar_extraccion 901008579 | 2026-08`\n"
                 "_Ejemplo (rango):_ `/ejecutar_extraccion 901008579 | 6 meses` (últimos 6 meses "
                 "calendario completos, sin contar el mes en curso, en una sola solicitud)\n"
-                "_Periodo opcional — si se omite, usa el mes anterior completo._\n"
-                "⚠️ _Solo encola el trabajo. Para procesarlo de verdad contra la DIAN necesitas correr por separado_ "
-                "`uv run kontable-worker`_ (un proceso aparte del bot)._\n\n"
+                "_Periodo opcional — si se omite, usa el mes anterior completo._\n\n"
                 "5️⃣ *Cambiar tipo de negocio:* Pasa un cliente entre facturador electrónico y ventas manuales:\n"
                 "`/cambiar_tipo NIT | FACTURADOR` o `/cambiar_tipo NIT | VENTAS_MANUALES`\n"
                 "_Ejemplo:_ `/cambiar_tipo 901008579 | VENTAS_MANUALES`\n\n"
                 "6️⃣ *Perfil tributario (solo facturadores):* Periodicidad de IVA y agente de retención, para el calendario:\n"
                 "`/perfil_tributario NIT | IVA=BIMESTRAL|CUATRIMESTRAL|NINGUNO | RETENCION=SI|NO`\n"
-                "_Ejemplo:_ `/perfil_tributario 901008579 | IVA=CUATRIMESTRAL | RETENCION=SI`"
+                "_Ejemplo:_ `/perfil_tributario 901008579 | IVA=CUATRIMESTRAL | RETENCION=SI`\n\n"
+                "7️⃣ *Liberar Telegram:* Desvincula un chat de Telegram asociado a una cuenta:\n"
+                "`/liberar_telegram <chat_id>`\n"
+                "_Ejemplo:_ `/liberar_telegram 123456789`"
             )
 
         return (

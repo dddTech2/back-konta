@@ -39,6 +39,9 @@ Este catálogo consolida todas las variables de entorno consumidas en el código
 | `STALWART_IMAP_PORT` |  | `993`, `993` (ejemplo) | `src/dian_automation/config.py:38` | ✅ Documentada |
 | `STALWART_PASSWORD` |  | —, `tu_contrasena_aqui` (ejemplo) | `src/dian_automation/config.py:40` | ✅ Documentada |
 | `STALWART_USER` |  | `token@example.com`, `token@example.com` (ejemplo) | `src/dian_automation/config.py:39` | ✅ Documentada |
+| `TELEGRAM_BOT_TOKEN` | Token HTTP API del bot de Telegram emitido por @BotFather | — | `src/dian_automation/cli/telegram_bot.py:49` | ✅ Documentada |
+| `ADMIN_TELEGRAM_CHAT_ID` | Chat ID de la administradora comercial (Katerinn). Habilita el comando `/hacerme_admin` para ese chat y sincroniza el usuario admin. Sin allowlist configurada, `/hacerme_admin` queda deshabilitado por seguridad | — | `src/dian_automation/cli/telegram_bot.py:55` | ✅ Documentada |
+| `ADMIN_BOOTSTRAP_CHAT_IDS` | Lista de Chat IDs autorizados a auto-asignarse el rol ADMIN mediante `/hacerme_admin`, separados por comas | — | `src/dian_automation/cli/telegram_bot.py:62` | ✅ Documentada |
 
 ---
 
