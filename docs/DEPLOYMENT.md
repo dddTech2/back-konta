@@ -143,13 +143,13 @@ El motor de calendario (`GET /api/calendar`, `/vencimientos` del bot, el pill de
 
 ## 9. Levantar el servidor (Docker)
 
-En el VPS, con `ProyectoDianFront` como carpeta hermana de `ProyectoDianBack`:
+En el VPS, con el repositorio `front-konta` como carpeta hermana de `back-konta`/`ProyectoDianBack`:
 
 1. `cp .env.example .env` y completa al menos:
    - `POSTGRES_PASSWORD`: contraseña de PostgreSQL (usa solo letras y números para que la URL de conexión no requiera escapes de caracteres, ej. `openssl rand -hex 24`).
    - `REDIS_PASSWORD`: contraseña segura para el servidor Redis.
    - `TELEGRAM_BOT_TOKEN`, `ADMIN_BOOTSTRAP_CHAT_IDS`, `JWT_SECRET`, `INTERNAL_WORKER_TOKEN`.
-2. Compila la SPA, que la API sirve desde `../ProyectoDianFront/dist`: `cd ../ProyectoDianFront && npm ci && npm run build`.
+2. Compila la SPA, que la API sirve desde `../front-konta/dist`: `cd ../front-konta && npm ci && npm run build`.
 3. `docker compose up -d --build`.
    - **Orden de arranque y dependencias:** el contenedor `postgres` inicia primero y ejecuta su comprobación de salud (`pg_isready`). Una vez sano, se ejecuta el servicio de un solo uso `migrate` (`alembic upgrade head`) para crear o actualizar el esquema. Tras completarse la migración con éxito, arrancan los servicios `api`, `bot`, `scheduler` y `backup` (en Docker el bot y el programador se lanzan con `python -m dian_automation.cli.telegram_bot` y `python -m dian_automation.cli.scheduler`, orquestados por `docker/entrypoint.sh`). Si la migración falla, `docker compose logs migrate` explica el motivo y los servicios de aplicación no inician.
    - **Aislamiento de base de datos:** el servicio `postgres` no publica puertos hacia el exterior en el host; la comunicación se realiza exclusivamente por la red interna de Docker.

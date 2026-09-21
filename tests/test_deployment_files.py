@@ -103,3 +103,9 @@ def test_env_example_and_ignore_files():
 
     dockerignore_text = (ROOT_DIR / ".dockerignore").read_text(encoding="utf-8")
     assert "backups/" in dockerignore_text, ".dockerignore debe excluir la carpeta backups/"
+
+
+def test_api_frontend_volume_uses_frontend_dir_variable():
+    compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "${FRONTEND_DIR:-" in compose and ":/frontend/dist:ro" in compose
+    assert "../ProyectoDianFront:/frontend" not in compose  # la carpeta del front ya no se asume por nombre

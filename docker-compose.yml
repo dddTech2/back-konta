@@ -2,7 +2,7 @@
 # SQLite ya no se usa en el servidor.
 # NO incluye el worker de descargas: la DIAN bloquea la IP del VPS, asi que el worker corre aparte en una
 # red residencial (kontable-worker-remote o kontable-worker.exe, ver docs/DEPLOYMENT.md). Requiere que, en el servidor, la carpeta
-# ProyectoDianFront exista como hermana de esta (../ProyectoDianFront), igual que en local.
+# la SPA compilada exista en el servidor (por defecto ../front-konta/dist; cambia la ruta con FRONTEND_DIR en .env).
 #
 # Uso:
 #   cp .env.example .env   # definir POSTGRES_PASSWORD en .env (ej. openssl rand -hex 24; usa solo letras y números para que la URL de conexión no necesite escapes), TELEGRAM_BOT_TOKEN, ADMIN_TELEGRAM_CHAT_ID, etc.
@@ -68,7 +68,7 @@ services:
       - "8020:8000"
     volumes:
       - kontable_data:/data
-      - ../ProyectoDianFront:/frontend:ro
+      - ${FRONTEND_DIR:-../front-konta/dist}:/frontend/dist:ro   # carpeta dist de la SPA compilada (ruta relativa a este archivo)
     depends_on:
       postgres:
         condition: service_healthy

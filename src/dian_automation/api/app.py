@@ -1,5 +1,6 @@
 """Aplicación principal FastAPI para el backend de Kontable."""
 
+import logging
 import os
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
@@ -77,6 +78,11 @@ def _resolve_frontend_dir() -> str:
 
 
 _frontend_dir = _resolve_frontend_dir()
+if not os.path.isfile(os.path.join(_frontend_dir, "index.html")):
+    logging.getLogger(__name__).warning(
+        "No se encontró la SPA compilada en %s: /app/ responderá 404. Compílala con `npm ci && npm run build` "
+        "y revisa FRONTEND_DIR.", _frontend_dir
+    )
 if os.path.isdir(_frontend_dir):
     app.mount("/app", StaticFiles(directory=_frontend_dir, html=True), name="frontend")
 
