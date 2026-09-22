@@ -42,7 +42,26 @@ import httpx
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-load_dotenv(find_dotenv(usecwd=True))
+
+def _load_env() -> str:
+    """Carga el .env y devuelve una descripción de su origen (para el registro).
+
+    Empaquetado como .exe, el .env que interesa es el que está JUNTO al ejecutable, sin importar
+    desde dónde se lance; en desarrollo se busca desde el directorio actual hacia arriba.
+    """
+    if getattr(sys, "frozen", False):
+        exe_env = Path(sys.executable).resolve().parent / ".env"
+        if exe_env.is_file():
+            load_dotenv(exe_env)
+            return str(exe_env)
+    found = find_dotenv(usecwd=True)
+    if found:
+        load_dotenv(found)
+        return found
+    return "(no se encontró ningún .env)"
+
+
+_ENV_SOURCE = _load_env()
 
 from dian_automation.dian_flow import run_flow
 from dian_automation.queue.redis_signal import wait_for_job_signal
@@ -266,14 +285,20 @@ def worker_loop(
 
 
 def main():
+    logger.info(f"Configuración cargada desde: {_ENV_SOURCE}")
     if not WORKER_TOKEN:
         logger.error("INTERNAL_WORKER_TOKEN no configurado. Configúralo igual en el .env del VPS y aquí.")
         if getattr(sys, "frozen", False):
-            logger.error(f"Crea un archivo .env con KONTABLE_API_URL e INTERNAL_WORKER_TOKEN en: {Path.cwd()}")
+            exe_dir = Path(sys.executable).resolve().parent
+            logger.error(f"Crea un archivo .env con KONTABLE_API_URL e INTERNAL_WORKER_TOKEN junto al ejecutable, en: {exe_dir}")
             if sys.stdin is not None and sys.stdin.isatty():
-                input("Presiona Enter para cerrar...")  # con doble clic la ventana se cerraría antes de poder leer
+                try:
+                    input("Presiona Enter para cerrar...")  # con doble clic la ventana se cerraría antes de poder leer
+                except EOFError:
+                    pass
         return
 
+    # Se registra el destino sin el token; nunca se escribe el secreto en el log.
     logger.info(f"Worker remoto '{WORKER_NAME}' iniciado. API destino: {API_BASE}. Ctrl+C para detener.")
     with httpx.Client() as client:
         worker_loop(client)
