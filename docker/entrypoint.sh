@@ -16,7 +16,9 @@ case "$1" in
     ;;
   api)
     echo "[entrypoint] Iniciando API FastAPI (uvicorn) en 0.0.0.0:8000..."
-    exec uvicorn dian_automation.api.app:app --host 0.0.0.0 --port 8000
+    # Detrás de nginx, uvicorn confía en X-Forwarded-* para conocer el esquema https y la IP real;
+    # es seguro una vez que el puerto 8020 se publica solo en 127.0.0.1 (ver docs/DEPLOYMENT.md).
+    exec uvicorn dian_automation.api.app:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips "*"
     ;;
   bot)
     echo "[entrypoint] Iniciando bot de Telegram (long polling)..."

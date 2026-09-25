@@ -1,0 +1,27 @@
+# Bloque de servidor independiente para Konta en una instancia existente de nginx.
+# No modifica ni interfiere con los bloques de otros sitios que ya sirva el servidor.
+# Copiar a /etc/nginx/sites-available/, reemplazar konta.example.com por el dominio real
+# y certbot --nginx agregará el bloque HTTPS y la redirección correspondiente.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name konta.example.com;
+
+    # El worker sube ZIP de reportes de la DIAN; el límite por defecto de nginx (1 MB) los rechazaría con 413
+    client_max_body_size 100m;
+
+    location = / {
+        return 302 /app/;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8020;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+    }
+}

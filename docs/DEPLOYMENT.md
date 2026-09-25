@@ -230,3 +230,94 @@ Si se configuró un ID erróneo en las variables de Telegram o un Chat ID quedó
      docker compose exec postgres psql -U kontable -d kontable -c "UPDATE users SET telegram_chat_id = NULL, is_telegram_linked = false WHERE telegram_chat_id = <chat_id>;"
      ```
 
+## 10. HTTPS con dominio propio (nginx existente)
+
+Si el servidor ya ejecuta nginx en los puertos 80 y 443 para otros sitios, no se añade ningún contenedor de proxy inverso adicional. Konta se integra como un virtual host independiente que delega el tráfico a la API (`127.0.0.1:8020`).
+
+1. **Requisitos:**
+   - Registro DNS tipo A del dominio hacia la IP del servidor.
+   - Nginx ya instalado y escuchando en 80 y 443:
+     ```bash
+     ss -tlnp | grep -E ':80 |:443 '
+     ```
+   - Permisos de administrador (`sudo`).
+
+2. **Copiar y habilitar el bloque de nginx:**
+   - Copiar la plantilla:
+     ```bash
+     sudo cp docs/nginx-konta.conf.example /etc/nginx/sites-available/konta.conf
+     ```
+   - Editar `server_name` reemplazando `konta.example.com` por el dominio real.
+   - Habilitar el sitio mediante enlace simbólico:
+     ```bash
+     sudo ln -s /etc/nginx/sites-available/konta.conf /etc/nginx/sites-enabled/konta.conf
+     ```
+   - *Nota:* Si el servidor organiza nginx con `conf.d/` en vez de `sites-available`, el archivo va en `/etc/nginx/conf.d/konta.conf`.
+   - Validar la sintaxis de configuración:
+     ```bash
+     sudo nginx -t
+     ```
+   - Aplicar la configuración en nginx:
+     ```bash
+     sudo systemctl reload nginx
+     ```
+
+3. **Certificado SSL con Certbot:**
+   - Si no está instalado:
+     ```bash
+     sudo apt install certbot python3-certbot-nginx
+     ```
+   - Emitir el certificado y configurar HTTPS automáticamente:
+     ```bash
+     sudo certbot --nginx -d konta.example.com
+     ```
+     Certbot agrega el bloque HTTPS y la redirección solo en este sitio y programa la renovación automática.
+   - Comprobar la renovación automática:
+     ```bash
+     sudo certbot renew --dry-run
+     ```
+
+4. **Actualizar el entorno del servidor:**
+   - En el archivo `.env` del servidor configurar:
+     ```ini
+     KONTABLE_WEB_URL=https://konta.example.com/app/
+     ```
+   - Descargar cambios:
+     ```bash
+     git pull
+     ```
+   - Reconstruir y reiniciar los servicios `api` y `bot`:
+     ```bash
+     docker compose up -d --build api bot
+     ```
+     *(No toca los demás servicios).*
+
+5. **Probar el acceso web:**
+   - Debe responder `200`:
+     ```bash
+     curl -I https://konta.example.com/app/
+     ```
+
+6. **Migrar el worker:**
+   - En el `.env` del worker cambiar `KONTABLE_API_URL=https://konta.example.com` (sin puerto).
+   - Reiniciarlo y confirmar en `worker.log` que consulta sin errores.
+
+7. **Cerrar el puerto sin cifrar:**
+   - Cuando el worker funcione por HTTPS, en `docker-compose.yml` cambiar `"8020:8000"` por `"127.0.0.1:8020:8000"`.
+   - Aplicar el cambio:
+     ```bash
+     docker compose up -d api
+     ```
+     Nginx sigue llegando a la API por `127.0.0.1:8020`.
+
+8. **Solución de problemas (lista corta):**
+   - `413` al subir el ZIP → falta `client_max_body_size` en el bloque de nginx.
+   - `502` → la API no está arriba o el puerto no es 8020:
+     ```bash
+     docker compose ps api
+     ```
+     ```bash
+     curl -I http://127.0.0.1:8020/
+     ```
+   - El certificado no se emite → DNS sin propagar o el bloque HTTP del dominio no está activo.
+

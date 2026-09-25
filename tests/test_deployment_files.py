@@ -109,3 +109,56 @@ def test_api_frontend_volume_uses_frontend_dir_variable():
     compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
     assert "${FRONTEND_DIR:-" in compose and ":/frontend/dist:ro" in compose
     assert "../ProyectoDianFront:/frontend" not in compose  # la carpeta del front ya no se asume por nombre
+
+
+def test_nginx_konta_conf_example():
+    """(h) docs/nginx-konta.conf.example existe y contiene directivas proxy_pass, client_max_body_size y X-Forwarded-Proto."""
+    nginx_conf_path = ROOT_DIR / "docs" / "nginx-konta.conf.example"
+    assert nginx_conf_path.is_file(), "docs/nginx-konta.conf.example debe existir"
+    conf_text = nginx_conf_path.read_text(encoding="utf-8")
+    assert "proxy_pass http://127.0.0.1:8020" in conf_text
+    assert "client_max_body_size" in conf_text
+    assert "X-Forwarded-Proto" in conf_text
+
+
+def test_entrypoint_api_proxy_headers():
+    """(i) docker/entrypoint.sh incluye --proxy-headers en el comando uvicorn de la API."""
+    entrypoint_text = (ROOT_DIR / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+    assert "--proxy-headers" in entrypoint_text
+
+
+def test_no_real_domain_leak():
+    """(j) Ningún archivo en docker/, docker-compose.yml, .env.example, docs/ ni README.md contiene 'visioncontable'."""
+    forbidden = "visioncontable"
+    files_to_check: list[Path] = [
+        ROOT_DIR / "docker-compose.yml",
+        ROOT_DIR / ".env.example",
+        ROOT_DIR / "README.md",
+    ]
+    docker_dir = ROOT_DIR / "docker"
+    if docker_dir.is_dir():
+        files_to_check.extend([p for p in docker_dir.rglob("*") if p.is_file()])
+
+    docs_dir = ROOT_DIR / "docs"
+    if docs_dir.is_dir():
+        files_to_check.extend([p for p in docs_dir.rglob("*") if p.is_file()])
+
+    for file_path in files_to_check:
+        if file_path.exists():
+            content = file_path.read_text(encoding="utf-8", errors="ignore").lower()
+            assert forbidden not in content, (
+                f"El archivo {file_path.relative_to(ROOT_DIR)} contiene el dominio real prohibido '{forbidden}'"
+            )
+
+
+def test_api_service_ports_published():
+    """(k) El servicio api del compose sigue publicando el puerto 8020:8000 o 127.0.0.1:8020:8000."""
+    compose_text = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+    api_block = _extract_service_block(compose_text, "api")
+    assert api_block, "Bloque del servicio api no pudo ser extraído"
+
+    has_public_port = '- "8020:8000"' in api_block or "- '8020:8000'" in api_block
+    has_loopback_port = '- "127.0.0.1:8020:8000"' in api_block or "- '127.0.0.1:8020:8000'" in api_block
+    assert has_public_port or has_loopback_port, (
+        "El servicio api debe publicar el puerto en formato '8020:8000' o '127.0.0.1:8020:8000'"
+    )

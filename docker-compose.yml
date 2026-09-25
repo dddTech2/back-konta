@@ -65,6 +65,7 @@ services:
       FRONTEND_DIR: /frontend/dist
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0   # dentro de la red de compose Redis es "redis", no localhost
     ports:
+      # Cuando el worker use https://<dominio>, cambia a "127.0.0.1:8020:8000" para no exponer la API sin cifrar.
       - "8020:8000"
     volumes:
       - kontable_data:/data
