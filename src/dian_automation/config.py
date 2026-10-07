@@ -72,6 +72,10 @@ class AppConfig:
     jwt_secret: str = os.getenv("JWT_SECRET", "")
     jwt_algorithm: str = "HS256"
     jwt_ttl_minutes: int = int(os.getenv("JWT_TTL_MINUTES") or "60")
+
+    # Almacenamiento de documentos de clientes (Story 7.4a)
+    documents_dir: str = os.getenv("DOCUMENTS_DIR", "./data/documents")
+    document_max_mb: int = int(os.getenv("DOCUMENT_MAX_MB") or "10")
     
     selectors: DianSelectors = DianSelectors()
 

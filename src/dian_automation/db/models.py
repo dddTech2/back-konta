@@ -87,6 +87,7 @@ class Business(Base):
     invoices = relationship("Invoice", back_populates="business", cascade="all, delete-orphan")
     summaries = relationship("MonthlyTaxSummary", back_populates="business", cascade="all, delete-orphan")
     extraction_jobs = relationship("DIANExtractionJob", back_populates="business", cascade="all, delete-orphan")
+    documents = relationship("BusinessDocument", back_populates="business", cascade="all, delete-orphan")
 
 
 class Invoice(Base):
@@ -324,3 +325,43 @@ class Sale(Base):
         Index("idx_sales_business_created", "business_id", "created_at"),
         Index("idx_sales_business_sale_date", "business_id", "sale_date"),
     )
+
+
+# Tipos de documentos de clientes (Story 7.4a)
+DOC_TYPE_RUT = "RUT"
+DOC_TYPE_CAMARA_COMERCIO = "CAMARA_COMERCIO"
+DOC_TYPE_CEDULA_REPRESENTANTE = "CEDULA_REPRESENTANTE"
+DOC_TYPE_CERTIFICACION_BANCARIA = "CERTIFICACION_BANCARIA"
+DOC_TYPE_OTRO = "OTRO"
+DOCUMENT_TYPES = (
+    DOC_TYPE_RUT,
+    DOC_TYPE_CAMARA_COMERCIO,
+    DOC_TYPE_CEDULA_REPRESENTANTE,
+    DOC_TYPE_CERTIFICACION_BANCARIA,
+    DOC_TYPE_OTRO,
+)
+
+
+class BusinessDocument(Base):
+    """Documento comercial o legal del cliente (Story 7.4a)."""
+
+    __tablename__ = "business_documents"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    business_id = Column(String(36), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False, index=True)
+    doc_type = Column(String(50), nullable=False)
+    description = Column(String(120), nullable=True)
+    original_filename = Column(String(255), nullable=False)
+    content_type = Column(String(100), nullable=False)
+    size_bytes = Column(Integer, nullable=False)
+    storage_key = Column(String(500), nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    uploaded_by_user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    deleted_at = Column(DateTime, nullable=True)
+    deleted_by_user_id = Column(String(36), ForeignKey("users.id"), nullable=True)
+
+    business = relationship("Business", back_populates="documents")
+    uploaded_by = relationship("User", foreign_keys=[uploaded_by_user_id])
+    deleted_by = relationship("User", foreign_keys=[deleted_by_user_id])
+

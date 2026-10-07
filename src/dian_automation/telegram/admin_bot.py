@@ -10,11 +10,14 @@ import logging
 import calendar
 import unicodedata
 from decimal import Decimal
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from typing import Optional, Dict, Any, Tuple, List, Callable
+from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from dian_automation.branding import BRAND_NAME
+from dian_automation.config import config
+from dian_automation.core import document_service
 from dian_automation.db.models import (
     INCOME_SOURCE_DIAN,
     INCOME_SOURCE_MANUAL_SALES,
@@ -119,6 +122,59 @@ class AdminTelegramBot:
         INCOME_SOURCE_DIAN: "🧾 Facturador electrónico (cifras desde la DIAN)",
         INCOME_SOURCE_MANUAL_SALES: "✍️ Ventas manuales (registra sus ventas a mano)",
     }
+
+    # Tipos de documentos y alias aceptados por el bot (Story 7.4a)
+    DOC_TYPE_ALIASES: Dict[str, str] = {
+        "RUT": document_service.DOC_TYPE_RUT,
+        "CAMARA": document_service.DOC_TYPE_CAMARA_COMERCIO,
+        "CAMARA_COMERCIO": document_service.DOC_TYPE_CAMARA_COMERCIO,
+        "CEDULA": document_service.DOC_TYPE_CEDULA_REPRESENTANTE,
+        "CEDULA_REPRESENTANTE": document_service.DOC_TYPE_CEDULA_REPRESENTANTE,
+        "BANCARIA": document_service.DOC_TYPE_CERTIFICACION_BANCARIA,
+        "CERTIFICACION_BANCARIA": document_service.DOC_TYPE_CERTIFICACION_BANCARIA,
+        "OTRO": document_service.DOC_TYPE_OTRO,
+    }
+
+    SUBIR_DOCUMENTO_USAGE = (
+        "📄 *Uso de /subir_documento:*\n"
+        "Envía el archivo (PDF, PNG o JPG) con el siguiente mensaje adjunto (caption):\n"
+        "`/subir_documento <NIT> <TIPO> [descripción]`\n\n"
+        "*Tipos disponibles:* `RUT`, `CAMARA` (o `CAMARA_COMERCIO`), `CEDULA`, `BANCARIA` (o `CERTIFICACION_BANCARIA`), `OTRO`.\n"
+        "_Nota:_ Si usas `OTRO`, la descripción es obligatoria.\n\n"
+        "_Ejemplo:_ `/subir_documento 901008579 RUT`\n"
+        "_Ejemplo con descripción:_ `/subir_documento 901008579 OTRO Contrato de arrendamiento`"
+    )
+
+    DOCUMENTOS_USAGE = (
+        "📄 *Uso de /documentos:*\n"
+        "`/documentos <NIT>`\n\n"
+        "_Ejemplo:_ `/documentos 901008579`"
+    )
+
+    RETIRAR_DOCUMENTO_USAGE = (
+        "🗑️ *Uso de /retirar_documento:*\n"
+        "`/retirar_documento <NIT> <número>`\n\n"
+        "_Ejemplo:_ `/retirar_documento 901008579 1`"
+    )
+
+    @classmethod
+    def _format_doc_size(cls, size_bytes: int) -> str:
+        """Formatea el tamaño de un archivo en B, KB o MB."""
+        if size_bytes < 1024:
+            return f"{size_bytes} B"
+        elif size_bytes < 1024 * 1024:
+            return f"{size_bytes / 1024:.1f} KB"
+        else:
+            return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+    @classmethod
+    def _format_doc_date(cls, dt: datetime) -> str:
+        """Formatea la fecha de creación en hora de Bogotá (UTC-5)."""
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        bogota_dt = dt.astimezone(ZoneInfo("America/Bogota"))
+        return bogota_dt.strftime("%d/%m/%Y %H:%M")
+
 
     @staticmethod
     def _plain_upper(raw: str) -> str:
@@ -1179,6 +1235,295 @@ class AdminTelegramBot:
         }
 
     @classmethod
+    def handle_admin_document(
+        cls,
+        sender_chat_id: int,
+        message: Dict[str, Any],
+        db: Session,
+        telegram_sender: Optional[Callable[[int, str], bool]] = None,
+        file_downloader: Optional[Callable[[str], bytes]] = None,
+    ) -> str:
+        """Procesa un archivo (documento o foto) enviado por la administradora comercial."""
+        if not cls.is_authorized_admin(sender_chat_id, db):
+            return "⛔ *Acceso denegado:* Este comando está restringido a la administración comercial autorizada."
+
+        caption = (message.get("caption") or "").strip()
+        if not caption:
+            return cls.SUBIR_DOCUMENTO_USAGE
+
+        match = re.match(r"^/subir_documento\b\s*(.*)", caption, re.IGNORECASE | re.DOTALL)
+        if not match:
+            return cls.SUBIR_DOCUMENTO_USAGE
+
+        payload = match.group(1).strip()
+        if not payload:
+            return cls.SUBIR_DOCUMENTO_USAGE
+
+        parts = payload.split(maxsplit=2)
+        if len(parts) < 2:
+            return cls.SUBIR_DOCUMENTO_USAGE
+
+        raw_nit, raw_tipo = parts[0], parts[1]
+        raw_desc = parts[2].strip() if len(parts) > 2 else None
+
+        nit = cls.normalize_nit(raw_nit)
+        if not nit:
+            return (
+                f"⚠️ El NIT '{raw_nit}' no es válido (debe tener al menos 6 dígitos numéricos).\n\n"
+                + cls.SUBIR_DOCUMENTO_USAGE
+            )
+
+        biz = db.query(Business).filter(Business.nit == nit).first()
+        if not biz:
+            return f"❌ No se encontró ningún negocio registrado con NIT `{nit}`."
+
+        clean_tipo = cls._plain_upper(raw_tipo)
+        doc_type = cls.DOC_TYPE_ALIASES.get(clean_tipo)
+        if not doc_type:
+            return (
+                f"⚠️ Tipo de documento '{raw_tipo}' no reconocido.\n\n"
+                "Tipos válidos: `RUT`, `CAMARA` (o `CAMARA_COMERCIO`), `CEDULA`, `BANCARIA` (o `CERTIFICACION_BANCARIA`), `OTRO`."
+            )
+
+        if doc_type == document_service.DOC_TYPE_OTRO and not raw_desc:
+            return "⚠️ Los documentos de tipo 'OTRO' requieren una descripción.\n\n_Ejemplo:_ `/subir_documento 901008579 OTRO Contrato de arrendamiento`"
+
+        if raw_desc and len(raw_desc) > 120:
+            return "⚠️ La descripción no puede superar 120 caracteres."
+
+        # Identificar archivo y metadatos reportados por Telegram
+        doc = message.get("document")
+        photos = message.get("photo")
+
+        if doc:
+            file_id = doc.get("file_id")
+            file_name = doc.get("file_name") or f"{doc_type}.pdf"
+            file_size = doc.get("file_size") or 0
+        elif photos and isinstance(photos, list):
+            largest_photo = max(photos, key=lambda p: p.get("file_size") or 0)
+            file_id = largest_photo.get("file_id")
+            file_size = largest_photo.get("file_size") or 0
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            file_name = f"{doc_type}_{today_str}.jpg"
+        else:
+            return "⚠️ No se encontró ningún archivo adjunto en el mensaje.\n\n" + cls.SUBIR_DOCUMENTO_USAGE
+
+        if not file_id:
+            return "⚠️ No se pudo obtener el identificador del archivo desde Telegram."
+
+        max_bytes = config.document_max_mb * 1024 * 1024
+        if file_size and file_size > max_bytes:
+            mb_size = file_size / (1024 * 1024)
+            return (
+                f"❌ El archivo ({mb_size:.1f} MB) supera el tamaño máximo permitido de "
+                f"{config.document_max_mb} MB. No se descargó."
+            )
+
+        if not file_downloader:
+            return "❌ Error interno: descargador de archivos no disponible."
+
+        try:
+            content = file_downloader(file_id)
+        except Exception as e:
+            # Solo el tipo de error: el mensaje o la traza pueden incluir la URL con el token del bot.
+            logger.error("Error descargando archivo de Telegram (%s).", type(e).__name__)
+            return "❌ Ocurrió un error al descargar el archivo desde Telegram. Inténtalo de nuevo."
+
+        admin_user = db.query(User).filter(User.telegram_chat_id == sender_chat_id).first()
+        if not admin_user:
+            admin_user = db.query(User).filter(User.role == "ADMIN").first()
+
+        try:
+            saved_doc = document_service.save_document(
+                db=db,
+                business=biz,
+                doc_type=doc_type,
+                description=raw_desc,
+                filename=file_name,
+                content=content,
+                uploaded_by=admin_user,
+            )
+        except document_service.DocumentError as de:
+            return f"❌ {de.message}"
+        except Exception as e:
+            logger.error(f"Error guardando documento de negocio NIT {nit}: {e}", exc_info=True)
+            return "❌ Error interno guardando el documento."
+
+        doc_number = document_service.get_document_number(db, biz, saved_doc.id)
+        doc_label = document_service.DOC_TYPE_LABELS.get(saved_doc.doc_type, saved_doc.doc_type)
+
+        # Notificar al cliente si tiene Telegram vinculado (AC #8)
+        owner = db.query(User).filter(User.id == biz.client_id).first()
+        if owner and owner.is_telegram_linked and owner.telegram_chat_id and telegram_sender:
+            client_msg = f"📄 Katerinn cargó tu {doc_label} en tu panel. Escribe /dashboard para verlo."
+            try:
+                telegram_sender(owner.telegram_chat_id, client_msg)
+            except Exception as e:
+                logger.warning(f"Error notificando al cliente sobre documento cargado: {e}")
+
+        num_str = f"#{doc_number}" if doc_number else ""
+        reply = (
+            "✅ *Documento guardado con éxito*\n\n"
+            f"📄 *Tipo:* {doc_label}\n"
+            f"🏢 *Negocio:* {biz.commercial_name} (NIT `{biz.nit}-{biz.dv}`)\n"
+            f"🔢 *Número:* {num_str}\n"
+        )
+        if saved_doc.description:
+            reply += f"📝 *Descripción:* {saved_doc.description}\n"
+        return reply.strip()
+
+    @classmethod
+    def parse_documentos_command(cls, text: str) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Analiza la sintaxis de /documentos <NIT>."""
+        match = re.match(r"^/documentos\b\s*(.*)", text, re.IGNORECASE | re.DOTALL)
+        if not match:
+            return False, None, "Comando no reconocido."
+
+        payload = match.group(1).strip()
+        if not payload:
+            return False, None, cls.DOCUMENTOS_USAGE
+
+        nit = cls.normalize_nit(payload)
+        if not nit:
+            return (
+                False,
+                None,
+                f"⚠️ El NIT '{payload}' no es válido (debe tener al menos 6 dígitos numéricos).\n\n"
+                + cls.DOCUMENTOS_USAGE,
+            )
+
+        return True, nit, None
+
+    @classmethod
+    def execute_documentos(cls, sender_chat_id: int, text: str, db: Session) -> Dict[str, Any]:
+        """Consulta y lista los documentos activos de un negocio con numeración estable."""
+        if not cls.is_authorized_admin(sender_chat_id, db):
+            return {
+                "success": False,
+                "reason": "UNAUTHORIZED",
+                "message": "⛔ *Acceso denegado:* Este comando está restringido a la administración comercial autorizada.",
+            }
+
+        is_valid, nit, error_msg = cls.parse_documentos_command(text)
+        if not is_valid:
+            return {"success": False, "reason": "INVALID_SYNTAX", "message": error_msg}
+
+        biz = db.query(Business).filter(Business.nit == nit).first()
+        if not biz:
+            return {
+                "success": False,
+                "reason": "BUSINESS_NOT_FOUND",
+                "message": f"❌ No se encontró ningún negocio registrado con NIT `{nit}`.",
+            }
+
+        numbered_docs = document_service.list_active_numbered(db, biz)
+        if not numbered_docs:
+            return {
+                "success": True,
+                "count": 0,
+                "message": f"ℹ️ El negocio *{biz.commercial_name}* (NIT `{biz.nit}-{biz.dv}`) no tiene documentos activos.",
+            }
+
+        lines = [
+            f"📄 *Documentos activos de {biz.commercial_name}* (NIT `{biz.nit}-{biz.dv}`):",
+            "",
+        ]
+        for num, doc in numbered_docs:
+            doc_label = document_service.DOC_TYPE_LABELS.get(doc.doc_type, doc.doc_type)
+            date_str = cls._format_doc_date(doc.created_at)
+            size_str = cls._format_doc_size(doc.size_bytes)
+            if doc.description:
+                lines.append(f"{num}. *{doc_label}* — {date_str} — {size_str} — {doc.description}")
+            else:
+                lines.append(f"{num}. *{doc_label}* — {date_str} — {size_str}")
+
+        lines.append("")
+        lines.append(f"Para retirar un documento: `/retirar_documento {biz.nit} <número>`")
+
+        return {
+            "success": True,
+            "count": len(numbered_docs),
+            "message": "\n".join(lines),
+        }
+
+    @classmethod
+    def parse_retirar_documento_command(cls, text: str) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
+        """Analiza la sintaxis de /retirar_documento <NIT> <número>."""
+        match = re.match(r"^/retirar_documento\b\s*(.*)", text, re.IGNORECASE | re.DOTALL)
+        if not match:
+            return False, None, "Comando no reconocido."
+
+        payload = match.group(1).strip()
+        if not payload:
+            return False, None, cls.RETIRAR_DOCUMENTO_USAGE
+
+        parts = payload.split()
+        if len(parts) != 2:
+            return False, None, cls.RETIRAR_DOCUMENTO_USAGE
+
+        raw_nit, raw_num = parts[0], parts[1]
+        nit = cls.normalize_nit(raw_nit)
+        if not nit:
+            return (
+                False,
+                None,
+                f"⚠️ El NIT '{raw_nit}' no es válido (debe tener al menos 6 dígitos numéricos).\n\n"
+                + cls.RETIRAR_DOCUMENTO_USAGE,
+            )
+
+        if not raw_num.isdigit() or int(raw_num) <= 0:
+            return (
+                False,
+                None,
+                f"⚠️ El número '{raw_num}' no es válido. Debe ser un entero positivo.\n\n"
+                + cls.RETIRAR_DOCUMENTO_USAGE,
+            )
+
+        return True, {"nit": nit, "number": int(raw_num)}, None
+
+    @classmethod
+    def execute_retirar_documento(cls, sender_chat_id: int, text: str, db: Session) -> Dict[str, Any]:
+        """Da de baja un documento por su número estable."""
+        if not cls.is_authorized_admin(sender_chat_id, db):
+            return {
+                "success": False,
+                "reason": "UNAUTHORIZED",
+                "message": "⛔ *Acceso denegado:* Este comando está restringido a la administración comercial autorizada.",
+            }
+
+        is_valid, data, error_msg = cls.parse_retirar_documento_command(text)
+        if not is_valid:
+            return {"success": False, "reason": "INVALID_SYNTAX", "message": error_msg}
+
+        biz = db.query(Business).filter(Business.nit == data["nit"]).first()
+        if not biz:
+            return {
+                "success": False,
+                "reason": "BUSINESS_NOT_FOUND",
+                "message": f"❌ No se encontró ningún negocio registrado con NIT `{data['nit']}`.",
+            }
+
+        admin_user = db.query(User).filter(User.telegram_chat_id == sender_chat_id).first()
+        if not admin_user:
+            admin_user = db.query(User).filter(User.role == "ADMIN").first()
+
+        try:
+            retired_doc = document_service.retire(db, biz, data["number"], by_user=admin_user)
+        except document_service.DocumentError as de:
+            return {"success": False, "reason": de.code, "message": f"❌ {de.message}"}
+
+        doc_label = document_service.DOC_TYPE_LABELS.get(retired_doc.doc_type, retired_doc.doc_type)
+        return {
+            "success": True,
+            "document_id": retired_doc.id,
+            "number": data["number"],
+            "message": (
+                f"✅ Documento #{data['number']} (*{doc_label}*) retirado exitosamente del negocio "
+                f"*{biz.commercial_name}* (NIT `{biz.nit}-{biz.dv}`)."
+            ),
+        }
+
+    @classmethod
     def handle_admin_message(
         cls,
         sender_chat_id: int,
@@ -1218,6 +1563,17 @@ class AdminTelegramBot:
             res = cls.execute_liberar_telegram(sender_chat_id, text_clean, db)
             return res["message"]
 
+        elif text_clean.startswith("/documentos"):
+            res = cls.execute_documentos(sender_chat_id, text_clean, db)
+            return res["message"]
+
+        elif text_clean.startswith("/retirar_documento"):
+            res = cls.execute_retirar_documento(sender_chat_id, text_clean, db)
+            return res["message"]
+
+        elif text_clean.startswith("/subir_documento"):
+            return cls.SUBIR_DOCUMENTO_USAGE
+
         elif text_clean.startswith("/ayuda") or text_clean.startswith("/help"):
             return (
                 "💼 *COMANDOS DE ADMINISTRACIÓN COMERCIAL (Katerinn)*\n\n"
@@ -1253,9 +1609,21 @@ class AdminTelegramBot:
                 "_Ejemplo:_ `/perfil_tributario 901008579 | IVA=CUATRIMESTRAL | RETENCION=SI`\n\n"
                 "7️⃣ *Liberar Telegram:* Desvincula un chat de Telegram asociado a una cuenta:\n"
                 "`/liberar_telegram <chat_id>`\n"
-                "_Ejemplo:_ `/liberar_telegram 123456789`"
+                "_Ejemplo:_ `/liberar_telegram 123456789`\n\n"
+                "8️⃣ *Subir Documento:* Carga un documento (PDF, PNG o JPG) al panel del cliente:\n"
+                "Adjunta el archivo y escribe en el caption:\n"
+                "`/subir_documento <NIT> <TIPO> [descripción]`\n"
+                "_Tipos:_ `RUT`, `CAMARA`, `CEDULA`, `BANCARIA`, `OTRO`\n"
+                "_Ejemplo:_ `/subir_documento 901008579 RUT`\n\n"
+                "9️⃣ *Consultar Documentos:* Lista los documentos activos de un cliente:\n"
+                "`/documentos <NIT>`\n"
+                "_Ejemplo:_ `/documentos 901008579`\n\n"
+                "🔟 *Retirar Documento:* Da de baja un documento del cliente por su número:\n"
+                "`/retirar_documento <NIT> <número>`\n"
+                "_Ejemplo:_ `/retirar_documento 901008579 1`"
             )
 
         return (
             "ℹ️ Comando no reconocido. Escribe /ayuda para ver las opciones disponibles para la administración comercial."
         )
+

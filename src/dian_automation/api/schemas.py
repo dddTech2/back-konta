@@ -237,3 +237,28 @@ class CalendarObligation(BaseModel):
 class CalendarResponse(BaseModel):
     """Respuesta de GET /api/calendar/{business_id}."""
     obligaciones: List[CalendarObligation]
+
+
+class DocumentItem(BaseModel):
+    """Elemento de documento de cliente para el panel web (Story 7.4a)."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    doc_type: str
+    description: Optional[str] = None
+    original_filename: str
+    content_type: str
+    size_bytes: int
+    created_at: datetime
+
+
+class DocumentListResponse(BaseModel):
+    """Respuesta de GET /api/documents/{business_id}."""
+    documents: List[DocumentItem]
+
+
+class DocumentLinkResponse(BaseModel):
+    """Respuesta de POST /api/documents/{business_id}/{document_id}/link."""
+    url: str
+    expires_in: int = 300
+

@@ -44,16 +44,23 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("telegram_runner")
+# httpx registra en INFO cada URL que consulta, y las de Telegram llevan el token del bot.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 class TelegramBotRunner:
-    def __init__(self, bot_token: Optional[str] = None):
+    def __init__(
+        self,
+        bot_token: Optional[str] = None,
+        file_downloader: Optional[Callable[[str], bytes]] = None,
+    ):
         self.bot_token = (
             bot_token
             or os.getenv("TELEGRAM_BOT_TOKEN")
             or os.getenv("TELEGRAM_ADMIN_BOT_TOKEN")
             or os.getenv("TELEGRAM_CLIENT_BOT_TOKEN")
         )
+        self.file_downloader = file_downloader
         self.admin_chat_id_env = os.getenv("ADMIN_TELEGRAM_CHAT_ID")
         # Allowlist de chat_id autorizados a auto-asignarse ADMIN vía /hacerme_admin.
         # Se arma con ADMIN_BOOTSTRAP_CHAT_IDS (lista separada por comas) y/o ADMIN_TELEGRAM_CHAT_ID.
@@ -67,6 +74,28 @@ class TelegramBotRunner:
         self.bot_name = BRAND_NAME
         self.offset = 0
         self.is_running = False
+
+    def download_file(self, file_id: str) -> bytes:
+        """Descarga un archivo desde Telegram Bot API a partir de su file_id."""
+        if self.file_downloader:
+            return self.file_downloader(file_id)
+        if not self.bot_token:
+            raise RuntimeError("TELEGRAM_BOT_TOKEN no configurado.")
+        with httpx.Client(timeout=30.0) as client:
+            res = client.get(f"{self.base_url}/getFile", params={"file_id": file_id})
+            if res.status_code != 200:
+                raise RuntimeError(f"Error en getFile de Telegram: status {res.status_code}")
+            data = res.json()
+            if not data.get("ok"):
+                raise RuntimeError(f"Telegram getFile no fue ok: {data.get('description')}")
+            file_path = data.get("result", {}).get("file_path")
+            if not file_path:
+                raise RuntimeError("Telegram getFile no devolvió file_path.")
+            file_url = f"https://api.telegram.org/file/bot{self.bot_token}/{file_path}"
+            file_res = client.get(file_url)
+            if file_res.status_code != 200:
+                raise RuntimeError(f"Error descargando archivo de Telegram: status {file_res.status_code}")
+            return file_res.content
 
     def send_message(self, chat_id: int, text: str, parse_mode: str = "Markdown") -> bool:
         """Envía un mensaje de texto a un chat específico en Telegram."""
@@ -133,15 +162,23 @@ class TelegramBotRunner:
 
         chat = message.get("chat", {})
         chat_id = chat.get("id")
-        text = message.get("text", "").strip()
+        text = message.get("text", "")
+        caption = message.get("caption", "")
+        has_document = "document" in message
+        has_photo = "photo" in message
+        has_file = has_document or has_photo
+
+        effective_text = (text or caption or "").strip()
         from_user = message.get("from", {})
         username = from_user.get("username")
         first_name = from_user.get("first_name", "Usuario")
 
-        if not chat_id or not text:
+        if not chat_id or (not effective_text and not has_file):
             return
 
-        logger.info(f"Mensaje de {first_name} (@{username}, chat_id={chat_id}): '{text}'")
+        logger.info(
+            f"Mensaje de {first_name} (@{username}, chat_id={chat_id}): '{effective_text}' (archivo={has_file})"
+        )
 
         db = SessionLocal()
         try:
@@ -165,7 +202,7 @@ class TelegramBotRunner:
                             logger.warning(f"IntegrityError al sincronizar admin de .env para chat_id={chat_id}: {ie}")
 
             # 1. Comando de ayuda de ID / Diagnóstico
-            if text in ("/mi_id", "/id", "/chat_id"):
+            if effective_text in ("/mi_id", "/id", "/chat_id"):
                 user = db.query(User).filter(User.telegram_chat_id == chat_id).first()
                 role_str = user.role if user else "NO REGISTRADO"
                 linked_str = "SÍ" if (user and user.is_telegram_linked) else "NO"
@@ -182,7 +219,7 @@ class TelegramBotRunner:
             # 2. Comando para activar privilegios de administración comercial.
             #    Por seguridad por defecto, solo funciona si el chat_id está configurado
             #    en la allowlist (ADMIN_BOOTSTRAP_CHAT_IDS o ADMIN_TELEGRAM_CHAT_ID).
-            if text == "/hacerme_admin":
+            if effective_text == "/hacerme_admin":
                 if not self.admin_bootstrap_allowlist or str(chat_id) not in self.admin_bootstrap_allowlist:
                     self.send_message(
                         chat_id,
@@ -228,8 +265,8 @@ class TelegramBotRunner:
                 return
 
             # 3. Flujo Deep Linking: /start <token>
-            if text.startswith("/start"):
-                parts = text.split(maxsplit=1)
+            if effective_text.startswith("/start"):
+                parts = effective_text.split(maxsplit=1)
                 if len(parts) > 1 and parts[1].strip():
                     payload_token = parts[1].strip()
                     logger.info(f"Procesando Deep Link con token: {payload_token[:8]}... para chat {chat_id}")
@@ -276,15 +313,43 @@ class TelegramBotRunner:
                         self.send_message(chat_id, msg)
                         return
 
-            # 4. Verificar si el remitente es Administrador
+            # 4. Verificar usuario y rol
             user = db.query(User).filter(User.telegram_chat_id == chat_id).first()
             is_admin = user and user.role == "ADMIN"
 
+            # 5. Despacho de mensajes con archivos adjuntos (Story 7.4a)
+            if has_file:
+                if is_admin:
+                    reply = AdminTelegramBot.handle_admin_document(
+                        sender_chat_id=chat_id,
+                        message=message,
+                        db=db,
+                        telegram_sender=lambda target_cid, notif_text: self.send_message(target_cid, notif_text),
+                        file_downloader=self.download_file,
+                    )
+                    self.send_message(chat_id, reply)
+                    return
+                elif user and user.is_telegram_linked:
+                    self.send_message(
+                        chat_id,
+                        "Por aquí no recibimos archivos. Envíaselos a Katerinn y ella los cargará en tu panel.",
+                    )
+                    return
+                else:
+                    msg = (
+                        "⛔ *Cuenta no vinculada*\n\n"
+                        f"No encontramos ninguna cuenta de {BRAND_NAME} asociada a este chat de Telegram.\n\n"
+                        "• Si eres cliente, usa el enlace de invitación que te envió tu administradora para activar tu cuenta.\n"
+                        "• Para recibir ayuda, escribe `/mi_id` y comparte ese número con soporte."
+                    )
+                    self.send_message(chat_id, msg)
+                    return
+
+            # 6. Remitente Administrador (mensajes de texto)
             if is_admin:
-                # Despachador hacia AdminTelegramBot
                 reply = AdminTelegramBot.handle_admin_message(
                     sender_chat_id=chat_id,
-                    text=text,
+                    text=effective_text,
                     db=db,
                     bot_username=self.bot_username,
                     telegram_sender=lambda target_cid, notif_text: self.send_message(target_cid, notif_text),
@@ -292,18 +357,17 @@ class TelegramBotRunner:
                 self.send_message(chat_id, reply)
                 return
 
-            # 5. Verificar si el remitente es Cliente vinculado
+            # 7. Remitente Cliente vinculado (mensajes de texto)
             if user and user.is_telegram_linked:
-                # Despachador hacia ClientTelegramBot
                 reply = ClientTelegramBot.handle_client_message(
                     sender_chat_id=chat_id,
-                    text=text,
+                    text=effective_text,
                     db=db,
                 )
                 self.send_message(chat_id, reply)
                 return
 
-            # 6. Remitente no vinculado
+            # 8. Remitente no vinculado
             msg = (
                 "⛔ *Cuenta no vinculada*\n\n"
                 f"No encontramos ninguna cuenta de {BRAND_NAME} asociada a este chat de Telegram.\n\n"
@@ -311,6 +375,7 @@ class TelegramBotRunner:
                 "• Para recibir ayuda, escribe `/mi_id` y comparte ese número con soporte."
             )
             self.send_message(chat_id, msg)
+
 
         except Exception as e:
             try:

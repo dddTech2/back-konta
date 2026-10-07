@@ -5,7 +5,9 @@ from datetime import date, datetime, timedelta
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from dian_automation.db.models import Base, User, Business, Subscription, TelegramLinkToken, DIANExtractionJob
+from dian_automation.db.models import Base, User, Business, Subscription, TelegramLinkToken, DIANExtractionJob, BusinessDocument
+from dian_automation.config import config
+from dian_automation.core import document_service
 from dian_automation.telegram.admin_bot import AdminTelegramBot
 
 
@@ -890,5 +892,324 @@ def test_liberar_telegram_success_and_validations(db_session_factory):
         msg_routed = AdminTelegramBot.handle_admin_message(ADMIN_CHAT, "/liberar_telegram 888777666", db)
         assert "Cuenta liberada" in msg_routed
         assert "Ya puede vincular su Telegram" in msg_routed
+    finally:
+        db.close()
+
+
+# --------------------------------------------------------------------------- Story 7.4a: Documentos del cliente
+
+
+def test_ayuda_includes_document_commands(db_session_factory):
+    """Verifica que el menú /ayuda contenga los comandos de documentos (/subir_documento, /documentos, /retirar_documento)."""
+    db = db_session_factory()
+    try:
+        _seed_business(db)
+        ayuda = AdminTelegramBot.handle_admin_message(ADMIN_CHAT, "/ayuda", db)
+
+        assert "/subir_documento <NIT> <TIPO>" in ayuda
+        assert "/documentos <NIT>" in ayuda
+        assert "/retirar_documento <NIT> <número>" in ayuda
+        assert "RUT" in ayuda
+        assert "CAMARA" in ayuda
+        assert "CEDULA" in ayuda
+        assert "BANCARIA" in ayuda
+    finally:
+        db.close()
+
+
+def test_subir_documento_success_and_client_notification(db_session_factory, tmp_path, monkeypatch):
+    """Admin sube un documento PDF y se notifica al cliente si tiene Telegram vinculado."""
+    monkeypatch.setattr(document_service.config, "documents_dir", str(tmp_path))
+    db = db_session_factory()
+    try:
+        biz = _seed_business(db)
+        client = db.query(User).filter(User.id == biz.client_id).first()
+        client.telegram_chat_id = 999111222
+        client.is_telegram_linked = True
+        db.commit()
+
+        notifications = []
+
+        def fake_sender(chat_id, text):
+            notifications.append((chat_id, text))
+            return True
+
+        pdf_bytes = b"%PDF-1.4 sample content for RUT"
+
+        def fake_downloader(file_id):
+            assert file_id == "file-doc-123"
+            return pdf_bytes
+
+        attachment = {
+            "document": {
+                "file_id": "file-doc-123",
+                "file_name": "mi_rut_2026.pdf",
+                "file_size": len(pdf_bytes),
+                "mime_type": "application/pdf",
+            }
+        }
+        caption = f"/subir_documento {biz.nit} RUT Registro unico tributario"
+
+        reply = AdminTelegramBot.handle_admin_document(
+            sender_chat_id=ADMIN_CHAT,
+            message={**attachment, "caption": caption},
+            db=db,
+            file_downloader=fake_downloader,
+            telegram_sender=fake_sender,
+        )
+
+        assert "✅ *Documento guardado con éxito*" in reply
+        assert "RUT" in reply
+        assert biz.commercial_name in reply
+        assert f"NIT `{biz.nit}-{biz.dv}`" in reply
+        assert "#1" in reply
+        assert "Registro unico tributario" in reply
+
+        # Verificar BD
+        doc = db.query(BusinessDocument).filter(BusinessDocument.business_id == biz.id).first()
+        assert doc is not None
+        assert doc.doc_type == "RUT"
+        assert doc.original_filename == "mi_rut_2026.pdf"
+        assert doc.description == "Registro unico tributario"
+        assert doc.size_bytes == len(pdf_bytes)
+        assert doc.content_type == "application/pdf"
+        assert doc.deleted_at is None
+
+        # Verificar notificación al cliente
+        assert len(notifications) == 1
+        client_chat, client_msg = notifications[0]
+        assert client_chat == 999111222
+        assert "📄 Katerinn cargó tu RUT en tu panel. Escribe /dashboard para verlo." in client_msg
+    finally:
+        db.close()
+
+
+def test_subir_documento_photo_takes_largest_and_names_jpg(db_session_factory, tmp_path, monkeypatch):
+    """Envío de foto: toma la de mayor resolución y nombra el archivo <TIPO>_<YYYY-MM-DD>.jpg."""
+    monkeypatch.setattr(document_service.config, "documents_dir", str(tmp_path))
+    db = db_session_factory()
+    try:
+        biz = _seed_business(db)
+        jpeg_bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF" + b"\x00" * 30
+
+        downloaded_ids = []
+
+        def fake_downloader(file_id):
+            downloaded_ids.append(file_id)
+            return jpeg_bytes
+
+        attachment = {
+            "photo": [
+                {"file_id": "photo-thumb", "file_size": 100},
+                {"file_id": "photo-medium", "file_size": 500},
+                {"file_id": "photo-large", "file_size": 1200},
+            ]
+        }
+        caption = f"/subir_documento {biz.nit} CAMARA Camara comercio renovada"
+
+        reply = AdminTelegramBot.handle_admin_document(
+            sender_chat_id=ADMIN_CHAT,
+            message={**attachment, "caption": caption},
+            db=db,
+            file_downloader=fake_downloader,
+        )
+
+        assert "✅ *Documento guardado con éxito*" in reply
+        assert downloaded_ids == ["photo-large"]
+
+        doc = db.query(BusinessDocument).filter(BusinessDocument.business_id == biz.id).first()
+        assert doc is not None
+        assert doc.doc_type == "CAMARA_COMERCIO"
+        today_str = date.today().isoformat()
+        assert doc.original_filename == f"CAMARA_COMERCIO_{today_str}.jpg"
+        assert doc.content_type == "image/jpeg"
+    finally:
+        db.close()
+
+
+def test_subir_documento_oversized_rejected_without_downloader(db_session_factory, monkeypatch):
+    """Archivo con file_size mayor al límite se rechaza sin llamar al downloader."""
+    db = db_session_factory()
+    try:
+        biz = _seed_business(db)
+        max_bytes = document_service.config.document_max_mb * 1024 * 1024
+        oversized_attachment = {
+            "document": {
+                "file_id": "file-huge",
+                "file_size": max_bytes + 1,
+            }
+        }
+
+        def fail_downloader(file_id):
+            raise AssertionError("No debió llamarse al downloader")
+
+        reply = AdminTelegramBot.handle_admin_document(
+            sender_chat_id=ADMIN_CHAT,
+            message={**oversized_attachment, "caption": f"/subir_documento {biz.nit} RUT"},
+            db=db,
+            file_downloader=fail_downloader,
+        )
+
+        assert "supera el tamaño máximo" in reply
+        assert str(document_service.config.document_max_mb) in reply
+    finally:
+        db.close()
+
+
+def test_subir_documento_validations(db_session_factory, tmp_path, monkeypatch):
+    """Validaciones de /subir_documento: autorización, caption, NIT, tipo, 'OTRO' sin descripción, contenido corrupto."""
+    monkeypatch.setattr(document_service.config, "documents_dir", str(tmp_path))
+    db = db_session_factory()
+    try:
+        biz = _seed_business(db)
+        pdf_bytes = b"%PDF-1.4 dummy"
+        valid_doc = {"document": {"file_id": "f1", "file_size": len(pdf_bytes)}}
+        downloader = lambda fid: pdf_bytes
+
+        # 1. Remitente no autorizado
+        reply_unauth = AdminTelegramBot.handle_admin_document(
+            sender_chat_id=INTRUDER_CHAT,
+            message={**valid_doc, "caption": f"/subir_documento {biz.nit} RUT"},
+            db=db,
+            file_downloader=downloader,
+        )
+        assert "Acceso denegado" in reply_unauth
+
+        # 2. Sin caption o caption inválido
+        reply_no_caption = AdminTelegramBot.handle_admin_document(
+            sender_chat_id=ADMIN_CHAT,
+            message={**valid_doc, "caption": ""},
+            db=db,
+            file_downloader=downloader,
+        )
+        assert "/subir_documento <NIT> <TIPO>" in reply_no_caption
+
+        # 3. NIT no encontrado
+        reply_no_biz = AdminTelegramBot.handle_admin_document(
+            sender_chat_id=ADMIN_CHAT,
+            message={**valid_doc, "caption": "/subir_documento 999999999 RUT"},
+            db=db,
+            file_downloader=downloader,
+        )
+        assert "No se encontró ningún negocio" in reply_no_biz
+
+        # 4. Tipo no reconocido
+        reply_bad_type = AdminTelegramBot.handle_admin_document(
+            sender_chat_id=ADMIN_CHAT,
+            message={**valid_doc, "caption": f"/subir_documento {biz.nit} PASAPORTE"},
+            db=db,
+            file_downloader=downloader,
+        )
+        assert "Tipo de documento 'PASAPORTE' no reconocido" in reply_bad_type
+        assert "RUT" in reply_bad_type
+
+        # 5. OTRO sin descripción
+        reply_otro_no_desc = AdminTelegramBot.handle_admin_document(
+            sender_chat_id=ADMIN_CHAT,
+            message={**valid_doc, "caption": f"/subir_documento {biz.nit} OTRO"},
+            db=db,
+            file_downloader=downloader,
+        )
+        assert "requieren una descripción" in reply_otro_no_desc
+
+        # 6. Contenido no soportado (texto plano o binario desconocido)
+        bad_downloader = lambda fid: b"Este no es un archivo PDF ni imagen"
+        reply_bad_bytes = AdminTelegramBot.handle_admin_document(
+            sender_chat_id=ADMIN_CHAT,
+            message={**valid_doc, "caption": f"/subir_documento {biz.nit} RUT"},
+            db=db,
+            file_downloader=bad_downloader,
+        )
+        assert "Tipo de archivo no permitido" in reply_bad_bytes
+    finally:
+        db.close()
+
+
+def test_documentos_and_retirar_documento_flow(db_session_factory, tmp_path, monkeypatch):
+    """Flujo completo de /documentos y /retirar_documento con numeración estable."""
+    monkeypatch.setattr(document_service.config, "documents_dir", str(tmp_path))
+    db = db_session_factory()
+    try:
+        biz = _seed_business(db)
+
+        # 1. No autorizados
+        res_docs_unauth = AdminTelegramBot.execute_documentos(INTRUDER_CHAT, f"/documentos {biz.nit}", db)
+        assert res_docs_unauth["success"] is False
+        assert res_docs_unauth["reason"] == "UNAUTHORIZED"
+
+        res_ret_unauth = AdminTelegramBot.execute_retirar_documento(INTRUDER_CHAT, f"/retirar_documento {biz.nit} 1", db)
+        assert res_ret_unauth["success"] is False
+        assert res_ret_unauth["reason"] == "UNAUTHORIZED"
+
+        # 2. Negocio sin documentos
+        res_empty = AdminTelegramBot.execute_documentos(ADMIN_CHAT, f"/documentos {biz.nit}", db)
+        assert res_empty["success"] is True
+        assert res_empty["count"] == 0
+        assert "no tiene documentos activos" in res_empty["message"]
+
+        # 3. Subir 2 documentos
+        pdf_bytes = b"%PDF-1.4 test"
+        downloader = lambda fid: pdf_bytes
+
+        AdminTelegramBot.handle_admin_document(
+            sender_chat_id=ADMIN_CHAT,
+            message={**{"document": {"file_id": "f1", "file_size": len(pdf_bytes)}}, "caption": f"/subir_documento {biz.nit} RUT Rut 2026"},
+            db=db,
+            file_downloader=downloader,
+        )
+        AdminTelegramBot.handle_admin_document(
+            sender_chat_id=ADMIN_CHAT,
+            message={**{"document": {"file_id": "f2", "file_size": len(pdf_bytes)}}, "caption": f"/subir_documento {biz.nit} CEDULA Cedula escaneada"},
+            db=db,
+            file_downloader=downloader,
+        )
+
+        # 4. Listar documentos
+        res_list = AdminTelegramBot.execute_documentos(ADMIN_CHAT, f"/documentos {biz.nit}", db)
+        assert res_list["success"] is True
+        assert res_list["count"] == 2
+        assert "1. *RUT*" in res_list["message"]
+        assert "2. *Cédula del representante*" in res_list["message"]
+        assert "Rut 2026" in res_list["message"]
+        assert "Cedula escaneada" in res_list["message"]
+
+        # 5. Despacho vía handle_admin_message
+        msg_routed = AdminTelegramBot.handle_admin_message(ADMIN_CHAT, f"/documentos {biz.nit}", db)
+        assert "Documentos activos de" in msg_routed
+
+        # 6. Errores de /retirar_documento
+        # Sintaxis inválida
+        res_bad_syntax = AdminTelegramBot.execute_retirar_documento(ADMIN_CHAT, f"/retirar_documento {biz.nit}", db)
+        assert res_bad_syntax["success"] is False
+        assert res_bad_syntax["reason"] == "INVALID_SYNTAX"
+
+        # Número que no existe
+        res_not_found = AdminTelegramBot.execute_retirar_documento(ADMIN_CHAT, f"/retirar_documento {biz.nit} 99", db)
+        assert res_not_found["success"] is False
+        assert res_not_found["reason"] == "DOCUMENT_NOT_FOUND"
+
+        # 7. Retirar documento #1 exitosamente
+        res_ret = AdminTelegramBot.execute_retirar_documento(ADMIN_CHAT, f"/retirar_documento {biz.nit} 1", db)
+        assert res_ret["success"] is True
+        assert "Documento #1 (*RUT*) retirado exitosamente" in res_ret["message"]
+
+        # Intentar retirar nuevamente el #1 -> error
+        res_ret_again = AdminTelegramBot.execute_retirar_documento(ADMIN_CHAT, f"/retirar_documento {biz.nit} 1", db)
+        assert res_ret_again["success"] is False
+        assert res_ret_again["reason"] == "ALREADY_RETIRED"
+
+        # 8. Listar de nuevo: solo queda #2, pero mantiene su número estable 2
+        res_list_after = AdminTelegramBot.execute_documentos(ADMIN_CHAT, f"/documentos {biz.nit}", db)
+        assert res_list_after["success"] is True
+        assert res_list_after["count"] == 1
+        assert "2. *Cédula del representante*" in res_list_after["message"]
+        assert "1. *RUT*" not in res_list_after["message"]
+
+        # 9. Retirar vía handle_admin_message
+        ret_routed = AdminTelegramBot.handle_admin_message(ADMIN_CHAT, f"/retirar_documento {biz.nit} 2", db)
+        assert "retirado exitosamente" in ret_routed
+
+        res_final = AdminTelegramBot.execute_documentos(ADMIN_CHAT, f"/documentos {biz.nit}", db)
+        assert res_final["count"] == 0
     finally:
         db.close()

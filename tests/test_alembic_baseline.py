@@ -32,7 +32,7 @@ BASELINE_TABLES = {
     "payment_records",
     "dian_tax_calendar",
 }
-EXPECTED_TABLES = BASELINE_TABLES | {"sales", "otp_codes", "worker_heartbeats"}  # esquema en head: base + revisiones posteriores
+EXPECTED_TABLES = BASELINE_TABLES | {"sales", "otp_codes", "worker_heartbeats", "business_documents"}  # esquema en head: base + revisiones posteriores
 
 
 @pytest.fixture
@@ -101,6 +101,7 @@ def test_history_is_a_single_chain_rooted_at_the_baseline(alembic_cfg):
     assert script.get_revision("0006").down_revision == "0005"
     assert script.get_revision("0007").down_revision == "0006"
     assert script.get_revision("0008").down_revision == "0007"
+    assert script.get_revision("0009").down_revision == "0008"
 
 
 def test_baseline_revision_creates_only_the_nine_original_tables(alembic_cfg, engine):
@@ -545,7 +546,7 @@ def test_sales_voided_revision_and_downgrades(alembic_cfg, engine):
     assert _diff(engine, Base.metadata) == []
 
     # Downgrade a 0007 quita las columnas y la FK
-    command.downgrade(alembic_cfg, "-1")
+    command.downgrade(alembic_cfg, "0007")
 
     assert _version_rows(engine) == ["0007"]
     columns_after = {c["name"]: c for c in inspect(engine).get_columns("sales")}
@@ -558,3 +559,48 @@ def test_sales_voided_revision_and_downgrades(alembic_cfg, engine):
 
     with engine.connect() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM sales")).scalar_one() == 1
+
+
+def test_business_documents_revision_and_downgrades(alembic_cfg, engine):
+    command.upgrade(alembic_cfg, "0008")
+    _insert_business(engine, "biz-doc-mig")
+
+    command.upgrade(alembic_cfg, "head")
+
+    assert "business_documents" in _tables(engine)
+    columns = {c["name"]: c for c in inspect(engine).get_columns("business_documents")}
+    expected_cols = {
+        "id", "business_id", "doc_type", "description", "original_filename",
+        "content_type", "size_bytes", "storage_key", "sha256",
+        "uploaded_by_user_id", "created_at", "deleted_at", "deleted_by_user_id",
+    }
+    assert set(columns) == expected_cols
+    assert not columns["id"]["nullable"]
+    assert not columns["business_id"]["nullable"]
+    assert not columns["doc_type"]["nullable"]
+    assert columns["description"]["nullable"]
+    assert columns["deleted_at"]["nullable"]
+    assert columns["deleted_by_user_id"]["nullable"]
+
+    # Claves foráneas
+    fks = inspect(engine).get_foreign_keys("business_documents")
+    fk_by_col = {tuple(fk["constrained_columns"]): fk for fk in fks}
+    assert ("business_id",) in fk_by_col
+    assert fk_by_col[("business_id",)]["referred_table"] == "businesses"
+    assert ("uploaded_by_user_id",) in fk_by_col
+    assert fk_by_col[("uploaded_by_user_id",)]["referred_table"] == "users"
+
+    # Índice en business_id
+    indexes = {i["name"]: i for i in inspect(engine).get_indexes("business_documents")}
+    assert "ix_business_documents_business_id" in indexes
+    assert indexes["ix_business_documents_business_id"]["column_names"] == ["business_id"]
+
+    # Comparación con Base.metadata no debe tener diferencias
+    assert _diff(engine, Base.metadata) == []
+
+    # Downgrade a 0008 quita la tabla
+    command.downgrade(alembic_cfg, "-1")
+
+    assert _version_rows(engine) == ["0008"]
+    assert "business_documents" not in _tables(engine)
+

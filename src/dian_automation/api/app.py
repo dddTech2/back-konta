@@ -20,6 +20,7 @@ from dian_automation.api.routes_income import router as income_router
 from dian_automation.api.routes_config import router as config_router
 from dian_automation.api.routes_internal_worker import router as internal_worker_router
 from dian_automation.api.routes_calendar import router as calendar_router
+from dian_automation.api.routes_documents import router as documents_router
 
 app = FastAPI(
     title="Konta API",
@@ -63,6 +64,8 @@ app.include_router(income_router)
 app.include_router(config_router)
 app.include_router(internal_worker_router)
 app.include_router(calendar_router)
+app.include_router(documents_router)
+
 
 
 def _resolve_frontend_dir() -> str:

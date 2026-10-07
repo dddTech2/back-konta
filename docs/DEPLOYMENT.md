@@ -321,3 +321,26 @@ Si el servidor ya ejecuta nginx en los puertos 80 y 443 para otros sitios, no se
      ```
    - El certificado no se emite → DNS sin propagar o el bloque HTTP del dominio no está activo.
 
+## 9. Documentos de clientes y respaldo manual (Story 7.4a)
+
+Los documentos cargados por la administradora para los clientes (RUT, Cámara de Comercio, etc.) se almacenan físicamente en el volumen compartido `kontable_data` bajo la ruta `/data/documents/` (variable `DOCUMENTS_DIR`).
+
+> **Nota sobre respaldos:** El servicio de copia de seguridad automática (`backup` en `docker-compose.yml`) cubre exclusivamente la base de datos PostgreSQL. Los documentos almacenados en `kontable_data` **no** forman parte del dump diario de PostgreSQL.
+
+Para respaldar los documentos a mano en el servidor VPS:
+
+```bash
+# Crear un archivo comprimido de la carpeta de documentos:
+docker compose run --rm --no-deps api tar -czf /backups/documents_backup_$(date +%Y%m%d_%H%M%S).tar.gz -C /data documents
+
+# O copiar la carpeta de documentos directamente al servidor anfitrión:
+docker compose cp api:/data/documents ./backups/documents_manual/
+```
+
+Para restaurar una copia de documentos:
+
+```bash
+docker compose cp ./backups/documents_manual/ api:/data/documents/
+```
+
+

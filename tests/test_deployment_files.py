@@ -162,3 +162,13 @@ def test_api_service_ports_published():
     assert has_public_port or has_loopback_port, (
         "El servicio api debe publicar el puerto en formato '8020:8000' o '127.0.0.1:8020:8000'"
     )
+
+
+def test_documents_dir_configured_in_api_and_bot():
+    """(l) Los servicios api y bot configuran DOCUMENTS_DIR=/data/documents (Story 7.4a)."""
+    compose_text = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+    api_block = _extract_service_block(compose_text, "api")
+    bot_block = _extract_service_block(compose_text, "bot")
+    assert "DOCUMENTS_DIR: /data/documents" in api_block, "Servicio 'api' debe configurar DOCUMENTS_DIR: /data/documents"
+    assert "DOCUMENTS_DIR: /data/documents" in bot_block, "Servicio 'bot' debe configurar DOCUMENTS_DIR: /data/documents"
+

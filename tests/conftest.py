@@ -9,7 +9,10 @@ import sqlalchemy
 import sqlalchemy.engine
 from sqlalchemy.pool import NullPool
 
-from dian_automation.core import auth_service
+import dataclasses
+
+from dian_automation.config import config
+from dian_automation.core import auth_service, document_service
 
 # --- Modo PostgreSQL opcional -------------------------------------------------------------------
 # Con TEST_DATABASE_URL=postgresql+psycopg://usuario:clave@host:puerto/base la suite completa corre
@@ -56,9 +59,14 @@ TEST_JWT_SECRET = "secreto-jwt-solo-para-pruebas-0123456789"
 
 @pytest.fixture(autouse=True)
 def jwt_test_config(monkeypatch):
-    """Fija la configuración JWT de AuthService sin depender del .env ni del entorno."""
+    """Fija la configuración JWT de AuthService y DocumentService sin depender del .env ni del entorno."""
     fake = SimpleNamespace(jwt_secret=TEST_JWT_SECRET, jwt_algorithm="HS256", jwt_ttl_minutes=60)
     monkeypatch.setattr(auth_service, "config", fake)
+    # AppConfig es inmutable: DocumentService recibe una copia modificable con el secreto de prueba,
+    # que cada prueba puede ajustar con monkeypatch.setattr(document_service.config, ...).
+    doc_config = SimpleNamespace(**{f.name: getattr(config, f.name) for f in dataclasses.fields(config)})
+    doc_config.jwt_secret = TEST_JWT_SECRET
+    monkeypatch.setattr(document_service, "config", doc_config)
     return fake
 
 

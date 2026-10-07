@@ -5,8 +5,8 @@
 Este catálogo consolida todas las variables de entorno consumidas en el código fuente, cruzadas con los archivos `.env.example` y `.env`.
 
 ## Resumen
-- **Variables detectadas en código:** 17
-- **Variables definidas en .env.example:** 17
+- **Variables detectadas en código:** 19
+- **Variables definidas en .env.example:** 19
 
 ---
 
@@ -21,6 +21,8 @@ Este catálogo consolida todas las variables de entorno consumidas en el código
 | `DIAN_PERSON_CODE` | Modo Persona Natural: Cédula de Ciudadanía | `1000000001`, `1000000001` (ejemplo) | `src/dian_automation/config.py:33` | ✅ Documentada |
 | `DIAN_REPRESENTATIVE_CODE` | Modo Empresa: Cédula del Representante Legal y NIT de la Empresa (sin DV) | —, `10000002` (ejemplo) | `src/dian_automation/config.py:34` | ✅ Documentada |
 | `DIAN_URL` | Habilitación: | `https://catalogo-vpfe-hab.dian.gov.co/User/PersonLogin`, `https://catalogo-vpfe-hab.dian.gov.co/User/PersonLogin` (ejemplo) | `src/dian_automation/config.py:31` | ✅ Documentada |
+| `DOCUMENTS_DIR` | Carpeta de almacenamiento para documentos de clientes (RUT, Cámara de Comercio, etc.) | `./data/documents` (en Docker es `/data/documents` sobre el volumen `kontable_data`) | `src/dian_automation/config.py`, `src/dian_automation/core/document_service.py` | ✅ Documentada |
+| `DOCUMENT_MAX_MB` | Tamaño máximo permitido para documentos subidos por el bot (en megabytes) | `10` | `src/dian_automation/config.py`, `src/dian_automation/core/document_service.py` | ✅ Documentada |
 | `DOWNLOAD_DIR` | Carpeta de destino de los archivos ZIP descargados | `./downloads`, `./downloads` (ejemplo) | `src/dian_automation/config.py:45` | ✅ Documentada |
 | `EMAIL_TIMEOUT_SECONDS` | Tiempo máximo de espera para la llegada del correo con el token (segundos) | `60`, `60` (ejemplo) | `src/dian_automation/config.py:43` | ✅ Documentada |
 | `EXPORT_DOWNLOAD_TIMEOUT_SECONDS` | Tiempo máximo de espera para que la DIAN procese y ponga en 'Listo' el ZIP (segundos) | `300`, `300` (ejemplo) | `src/dian_automation/config.py:44` | ✅ Documentada |
@@ -42,6 +44,7 @@ Este catálogo consolida todas las variables de entorno consumidas en el código
 | `TELEGRAM_BOT_TOKEN` | Token HTTP API del bot de Telegram emitido por @BotFather | — | `src/dian_automation/cli/telegram_bot.py:49` | ✅ Documentada |
 | `ADMIN_TELEGRAM_CHAT_ID` | Chat ID de la administradora comercial (Katerinn). Habilita el comando `/hacerme_admin` para ese chat y sincroniza el usuario admin. Sin allowlist configurada, `/hacerme_admin` queda deshabilitado por seguridad | — | `src/dian_automation/cli/telegram_bot.py:55` | ✅ Documentada |
 | `ADMIN_BOOTSTRAP_CHAT_IDS` | Lista de Chat IDs autorizados a auto-asignarse el rol ADMIN mediante `/hacerme_admin`, separados por comas | — | `src/dian_automation/cli/telegram_bot.py:62` | ✅ Documentada |
+
 
 ---
 
