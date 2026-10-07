@@ -62,7 +62,13 @@ class TelegramDeepLinkingService:
         # Se muestra el NIT tal como fue registrado, sin el dígito de verificación
         # (ese DV es calculado internamente por Konta, nunca lo suministra el cliente).
         nit_str = business.nit if business else "N/A"
-        dashboard_link = f"{config.kontable_web_url}?nit={business.nit}" if business else None
+        # Import diferido: auth_service -> client_bot -> ... evita un import circular al arrancar el bot.
+        from dian_automation.core import auth_service
+
+        try:
+            dashboard_link = auth_service.create_dashboard_link(user) if user else None
+        except Exception:
+            dashboard_link = None
 
         message = (
             f"👋 ¡Hola, *{user.full_name}*! Bienvenido a *{BRAND_NAME}*.\n"
@@ -76,7 +82,7 @@ class TelegramDeepLinkingService:
             "💡 _Escribe /resumen para consultar tu balance fiscal actual._"
         )
         if dashboard_link:
-            message += f"\n📱 _O visualiza tu dashboard completo aquí:_\n{dashboard_link}"
+            message += f"\n📱 _O entra directo a tu panel (sirve 24 horas):_ [Abrir mi panel]({dashboard_link})"
         return message
 
     @classmethod

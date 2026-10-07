@@ -417,20 +417,26 @@ def test_client_subscription_blocked_rejection(db_session_factory):
 
 
 def test_client_dashboard_link(db_session_factory):
-    """El comando /dashboard entrega el enlace al frontend web con el NIT real del cliente."""
+    """El comando /dashboard entrega el enlace firmado sin NIT para acceso directo (Story 7.2)."""
     from dian_automation.config import config
 
     db = db_session_factory()
     try:
         resp = ClientTelegramBot.handle_dashboard(sender_chat_id=777888999, db=db)
         assert resp["success"] is True
-        assert resp["link"] == f"{config.kontable_web_url}?nit=901008579"
-        assert resp["link"] in resp["message"]
+        assert "#/entrar/" in resp["link"]
+        assert "?nit=" not in resp["link"]
+        # Enlace Markdown: los "_" del JWT no se interpretan como cursiva dentro de (url).
+        assert f"[Abrir mi panel]({resp['link']})" in resp["message"]
+        assert "toca el enlace para entrar directo" in resp["message"].lower()
+        assert "24 horas" in resp["message"].lower()
+        assert "no lo reenvíes" in resp["message"].lower()
 
         router_resp = ClientTelegramBot.handle_client_message(
             sender_chat_id=777888999, text="/dashboard", db=db
         )
-        assert "901008579" in router_resp
+        assert "#/entrar/" in router_resp
+        assert "?nit=" not in router_resp
     finally:
         db.close()
 

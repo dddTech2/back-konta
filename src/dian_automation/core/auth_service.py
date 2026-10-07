@@ -31,6 +31,7 @@ OTP_MAX_ATTEMPTS = 5
 
 INVALID_CODE_DETAIL = "Código inválido o expirado."
 INVALID_SESSION_DETAIL = "Sesión inválida o expirada."
+INVALID_LINK_DETAIL = "El enlace venció o no es válido."
 
 
 class AuthServiceError(Exception):
@@ -210,6 +211,86 @@ def create_access_token(user: User) -> str:
     return jwt.encode(payload, _secret(), algorithm=config.jwt_algorithm)
 
 
+def create_dashboard_link(user: User) -> str:
+    """Genera un enlace firmado para ingresar directamente al panel web sin OTP (Story 7.2).
+
+    Devuelve f"{config.kontable_web_url}#/entrar/{token}", donde token es un JWT firmado con
+    JWT_SECRET y claims: sub (user.id), purpose="dashboard_link", cid (telegram_chat_id como string),
+    iat, exp (ahora + dashboard_link_ttl_hours). Reutilizable durante su vigencia sin estado en BD.
+    """
+    _secret()
+    now = _utcnow()
+    ttl_hours = int(getattr(config, "dashboard_link_ttl_hours", 24) or 24)
+    chat_id = getattr(user, "telegram_chat_id", None)
+    payload = {
+        "sub": str(user.id),
+        "purpose": "dashboard_link",
+        "cid": str(chat_id) if chat_id is not None else "",
+        "iat": _epoch(now),
+        "exp": _epoch(now + timedelta(hours=ttl_hours)),
+    }
+    token = jwt.encode(payload, _secret(), algorithm=config.jwt_algorithm)
+    base = getattr(config, "kontable_web_url", "http://127.0.0.1:8000/app/") or "http://127.0.0.1:8000/app/"
+    if not base.endswith("/"):
+        base += "/"
+    return f"{base}#/entrar/{token}"
+
+
+def exchange_dashboard_link(db: Session, token: str) -> str:
+    """Canjea un JWT de enlace por un JWT de sesión (Story 7.2).
+
+    Valida firma, expiración, purpose == 'dashboard_link', existencia y actividad del usuario,
+    rol CLIENT, vinculación de Telegram y coincidencia exacta de telegram_chat_id con cid.
+    Cualquier fallo responde 401 con INVALID_LINK_DETAIL.
+    """
+    _secret()
+    invalid = AuthServiceError(401, INVALID_LINK_DETAIL)
+
+    if not token or not isinstance(token, str):
+        raise invalid
+
+    try:
+        claims = jwt.decode(
+            token,
+            _secret(),
+            algorithms=[config.jwt_algorithm],
+            options={
+                "verify_exp": False,
+                "verify_iat": False,
+                "require": ["sub", "exp", "purpose", "cid"],
+            },
+        )
+        expires_at = datetime.fromtimestamp(int(claims["exp"]), tz=timezone.utc).replace(tzinfo=None)
+    except (jwt.PyJWTError, ValueError, TypeError, OverflowError, OSError, KeyError):
+        raise invalid
+
+    if "purpose" not in claims or claims["purpose"] != "dashboard_link":
+        raise invalid
+
+    if expires_at <= _utcnow():
+        raise invalid
+
+    subject = claims.get("sub")
+    if not subject or not isinstance(subject, str):
+        raise invalid
+
+    user = db.get(User, subject)
+    if user is None or not user.is_active:
+        raise invalid
+
+    if user.role != "CLIENT":
+        raise invalid
+
+    if not user.is_telegram_linked or user.telegram_chat_id is None:
+        raise invalid
+
+    cid = claims.get("cid")
+    if cid is None or str(user.telegram_chat_id) != str(cid):
+        raise invalid
+
+    return create_access_token(user)
+
+
 def get_user_from_token(db: Session, token: str) -> User:
     """Valida el JWT (firma, algoritmo y expiración con el reloj del servicio) y devuelve el usuario
     activo; cualquier problema es 401."""
@@ -223,6 +304,9 @@ def get_user_from_token(db: Session, token: str) -> User:
         )
         expires_at = datetime.fromtimestamp(int(claims["exp"]), tz=timezone.utc).replace(tzinfo=None)
     except (jwt.PyJWTError, ValueError, TypeError, OverflowError, OSError):
+        raise invalid
+
+    if "purpose" in claims:
         raise invalid
 
     if expires_at <= _utcnow():

@@ -60,7 +60,13 @@ TEST_JWT_SECRET = "secreto-jwt-solo-para-pruebas-0123456789"
 @pytest.fixture(autouse=True)
 def jwt_test_config(monkeypatch):
     """Fija la configuración JWT de AuthService y DocumentService sin depender del .env ni del entorno."""
-    fake = SimpleNamespace(jwt_secret=TEST_JWT_SECRET, jwt_algorithm="HS256", jwt_ttl_minutes=60)
+    fake = SimpleNamespace(
+        jwt_secret=TEST_JWT_SECRET,
+        jwt_algorithm="HS256",
+        jwt_ttl_minutes=60,
+        dashboard_link_ttl_hours=24,
+        kontable_web_url=config.kontable_web_url,
+    )
     monkeypatch.setattr(auth_service, "config", fake)
     # AppConfig es inmutable: DocumentService recibe una copia modificable con el secreto de prueba,
     # que cada prueba puede ajustar con monkeypatch.setattr(document_service.config, ...).

@@ -386,16 +386,21 @@ class ClientTelegramBot:
 
     @classmethod
     def handle_dashboard(cls, sender_chat_id: int, db: Session) -> Dict[str, Any]:
-        """Procesa el comando /dashboard: entrega el enlace al prototipo web/móvil con datos reales."""
+        """Procesa el comando /dashboard: entrega el enlace directo firmado para entrar al panel web (Story 7.2)."""
         user, business, err_code, err_msg = cls.get_authenticated_client(sender_chat_id, db)
         if err_code:
             return {"success": False, "reason": err_code, "message": err_msg}
 
-        link = f"{config.kontable_web_url}?nit={business.nit}"
+        # Import diferido: auth_service importa este módulo (envío del OTP) y sería circular.
+        from dian_automation.core import auth_service
+
+        link = auth_service.create_dashboard_link(user)
         message = (
             f"📱 *Tu Dashboard {BRAND_NAME} — {business.commercial_name}*\n\n"
-            f"{link}\n\n"
-            "_Inicia sesión con tu celular o el NIT de tu negocio: te enviaremos un código por este chat._"
+            # Como enlace Markdown: los "_" del JWT romperían la URL si quedara como texto suelto.
+            f"👉 [Abrir mi panel]({link})\n\n"
+            "Toca el enlace para entrar directo; sirve 24 horas. "
+            "No lo reenvíes, quien lo tenga puede ver la información de tu negocio."
         )
         return {"success": True, "link": link, "message": message}
 

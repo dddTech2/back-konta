@@ -93,9 +93,9 @@ def test_process_start_payload_success(db_session_factory):
         assert "901888999-4" not in result["welcome_message"]
 
         # El mensaje de bienvenida incluye el enlace directo al dashboard web/móvil
-        # con el NIT real, para la demo conectada front + Telegram.
-        from dian_automation.config import config
-        assert f"{config.kontable_web_url}?nit=901888999" in result["welcome_message"]
+        # firmado (Story 7.2) y sin el NIT en la URL.
+        assert "#/entrar/" in result["welcome_message"]
+        assert "?nit=" not in result["welcome_message"]
 
         # Verificar actualización del usuario en DB
         user = db.query(User).filter(User.id == "usr-client-dl-1").first()

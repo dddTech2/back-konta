@@ -72,6 +72,7 @@ class AppConfig:
     jwt_secret: str = os.getenv("JWT_SECRET", "")
     jwt_algorithm: str = "HS256"
     jwt_ttl_minutes: int = int(os.getenv("JWT_TTL_MINUTES") or "60")
+    dashboard_link_ttl_hours: int = int(os.getenv("DASHBOARD_LINK_TTL_HOURS") or "24")
 
     # Almacenamiento de documentos de clientes (Story 7.4a)
     documents_dir: str = os.getenv("DOCUMENTS_DIR", "./data/documents")

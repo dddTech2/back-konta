@@ -148,6 +148,11 @@ class OTPVerifySchema(BaseModel):
     code: str
 
 
+class LinkLoginSchema(BaseModel):
+    """Canje de un enlace firmado para acceso directo al dashboard (Story 7.2)."""
+    token: str
+
+
 class OTPRequestResponse(BaseModel):
     detail: str = "Código enviado por Telegram"
 

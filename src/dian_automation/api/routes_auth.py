@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from dian_automation.api.dependencies import get_current_user
 from dian_automation.api.schemas import (
+    LinkLoginSchema,
     MeResponse,
     OTPRequestResponse,
     OTPRequestSchema,
@@ -31,6 +32,12 @@ def request_otp(payload: OTPRequestSchema, db: Session = Depends(get_db)):
 def verify_otp(payload: OTPVerifySchema, db: Session = Depends(get_db)):
     """Canjea el código por un JWT Bearer."""
     return TokenResponse(access_token=auth_service.verify_otp(db, payload.identifier, payload.code))
+
+
+@router.post("/link-login", response_model=TokenResponse)
+def link_login(payload: LinkLoginSchema, db: Session = Depends(get_db)):
+    """Canjea un enlace firmado por un JWT Bearer de sesión (Story 7.2)."""
+    return TokenResponse(access_token=auth_service.exchange_dashboard_link(db, payload.token))
 
 
 @router.get("/me", response_model=MeResponse)
