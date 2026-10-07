@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from dian_automation.branding import BRAND_TAGLINE
 from dian_automation.config import config
 from dian_automation.core.auth_service import AuthServiceError
+from dian_automation.core.admin_service import AdminServiceError
 from dian_automation.subscriptions.lockout_service import SubscriptionBlockedError
 from dian_automation.api.routes_auth import router as auth_router
 from dian_automation.api.routes_dashboard import router as dashboard_router
@@ -53,6 +54,14 @@ async def auth_service_exception_handler(request: Request, exc: AuthServiceError
     """Traduce los errores de autenticación al envelope {"detail": ...}; el 401 lleva WWW-Authenticate."""
     headers = {"WWW-Authenticate": "Bearer"} if exc.status_code == status.HTTP_401_UNAUTHORIZED else None
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=headers)
+
+
+@app.exception_handler(AdminServiceError)
+async def admin_service_exception_handler(request: Request, exc: AdminServiceError):
+    """Traduce AdminServiceError a {"detail": message, "code": code} (Story 8.3)."""
+    status_code = 500 if exc.code == "INTERNAL_ERROR" else exc.status_code
+    msg = "Ocurrió un error interno. Intenta de nuevo." if exc.code == "INTERNAL_ERROR" else exc.message
+    return JSONResponse(status_code=status_code, content={"detail": msg, "code": exc.code})
 
 
 # Registrar routers

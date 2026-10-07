@@ -2,7 +2,7 @@
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import List, Optional
+from typing import Any, List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -267,4 +267,194 @@ class DocumentLinkResponse(BaseModel):
     """Respuesta de POST /api/documents/{business_id}/{document_id}/link."""
     url: str
     expires_in: int = 300
+
+
+# ==============================================================================
+# Story 8.3: Esquemas de Administración de Clientes, Pagos y Configuración
+# ==============================================================================
+
+
+class AdminClientListItem(BaseModel):
+    """Ítem de cliente en la lista paginada del panel de administración (AC #1)."""
+    business_id: str
+    user_id: str
+    legal_name: str
+    commercial_name: str
+    nit: str
+    dv: str
+    income_source: str
+    taxpayer_type: str
+    contact_name: str
+    phone: Optional[str] = None
+    is_telegram_linked: bool
+    plan: Optional[str] = None
+    subscription_status: Optional[str] = None
+    cutoff_date: Optional[str] = None
+    grace_period_end: Optional[str] = None
+    is_active: bool
+
+
+class AdminClientsListResponse(BaseModel):
+    """Respuesta paginada del listado de clientes (AC #1)."""
+    items: List[AdminClientListItem]
+    total: int
+    page: int
+    page_size: int
+
+
+class AdminClientCreateRequest(BaseModel):
+    """Alta de cliente desde el panel web de administración (AC #3)."""
+    person_type: str  # "PERSONA" o "EMPRESA"
+    contact_name: str
+    phone: str
+    document_number: Optional[str] = None
+    company_name: Optional[str] = None
+    nit: Optional[str] = None
+    legal_rep_doc: Optional[str] = None
+    plan: str
+    income_source: Optional[str] = None
+
+
+class AdminClientCreateResponse(BaseModel):
+    """Resultado del alta de cliente (AC #3)."""
+    business_id: str
+    user_id: str
+    activation_link: str
+
+
+class AdminPaymentCreateRequest(BaseModel):
+    """Registro de pago comercial (AC #4)."""
+    amount: Any
+    reference: str
+
+
+class AdminPaymentItem(BaseModel):
+    """Detalle de un pago registrado (AC #4)."""
+    id: str
+    amount: str
+    payment_date: str
+    reference_code: Optional[str] = None
+    verified_by_admin_id: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class AdminPaymentResponse(BaseModel):
+    """Respuesta al confirmar pago (AC #4)."""
+    payment: AdminPaymentItem
+    new_cutoff_date: str
+    status: str
+    client_notified: bool
+    payment_id: Optional[str] = None
+    amount: Optional[str] = None
+    reference: Optional[str] = None
+
+
+class AdminIncomeSourceRequest(BaseModel):
+    """Actualización del origen de ingresos (AC #5)."""
+    income_source: str
+
+
+class AdminTaxProfileRequest(BaseModel):
+    """Actualización del perfil tributario (AC #5)."""
+    iva_periodicity: Optional[str] = None
+    is_withholding_agent: bool = False
+
+
+class AdminActivationLinkResponse(BaseModel):
+    """Nuevo enlace de activación (AC #6)."""
+    activation_link: str
+
+
+class AdminClientBusiness(BaseModel):
+    """Datos del negocio en la ficha del cliente."""
+    id: str
+    legal_name: str
+    commercial_name: str
+    nit: str
+    dv: str
+    taxpayer_type: str
+    legal_rep_doc: Optional[str] = None
+    economic_activity: Optional[str] = None
+    income_source: str
+    is_active: bool
+    created_at: Optional[str] = None
+
+
+class AdminClientContact(BaseModel):
+    """Datos del contacto en la ficha del cliente."""
+    id: str
+    full_name: str
+    phone: Optional[str] = None
+    email: str
+    is_telegram_linked: bool
+    telegram_chat_id: Optional[int] = None
+    telegram_username: Optional[str] = None
+
+
+class AdminTaxProfile(BaseModel):
+    """Perfil tributario en la ficha del cliente."""
+    iva_periodicity: Optional[str] = None
+    is_withholding_agent: bool = False
+
+
+class AdminSubscriptionDetail(BaseModel):
+    """Suscripción vigente en la ficha del cliente."""
+    id: str
+    plan: str
+    status: str
+    discount_rate: Optional[str] = None
+    base_price: Optional[str] = None
+    final_price: Optional[str] = None
+    start_date: Optional[str] = None
+    cutoff_date: Optional[str] = None
+    grace_period_end: Optional[str] = None
+
+
+class AdminPaymentSummary(BaseModel):
+    """Pago resumido en la ficha del cliente."""
+    id: str
+    payment_date: Optional[str] = None
+    amount: str
+    reference_code: Optional[str] = None
+    payment_method: Optional[str] = "TRANSFERENCIA"
+    verified_by_admin_id: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class AdminExtractionSummary(BaseModel):
+    """Extracción DIAN en la ficha del cliente."""
+    id: str
+    period: str
+    status: str
+    attempts: int
+    next_run_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    error_code: Optional[str] = None
+
+
+class ClientDetailResponse(BaseModel):
+    """Ficha completa del cliente (AC #2, #5, #7)."""
+    business: AdminClientBusiness
+    contact: AdminClientContact
+    tax_profile: AdminTaxProfile
+    subscription: Optional[AdminSubscriptionDetail] = None
+    recent_payments: List[AdminPaymentSummary] = Field(default_factory=list)
+    recent_extractions: List[AdminExtractionSummary] = Field(default_factory=list)
+    active_documents_count: int = 0
+    has_pending_activation_link: bool = False
+
+    # Campos top-level de conveniencia
+    business_id: Optional[str] = None
+    legal_name: Optional[str] = None
+    commercial_name: Optional[str] = None
+    nit: Optional[str] = None
+    dv: Optional[str] = None
+    income_source: Optional[str] = None
+    taxpayer_type: Optional[str] = None
+    contact_name: Optional[str] = None
+    phone: Optional[str] = None
+    is_telegram_linked: Optional[bool] = None
+    telegram_chat_id: Optional[int] = None
+    iva_periodicity: Optional[str] = None
+    is_withholding_agent: Optional[bool] = None
 

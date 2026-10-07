@@ -7,10 +7,12 @@ No conoce chat_id, Markdown ni Telegram (desacoplado de la capa de presentación
 import calendar
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from dian_automation.branding import BRAND_NAME
@@ -20,6 +22,7 @@ from dian_automation.db.models import (
     IVA_PERIODICITY_BIMESTRAL,
     IVA_PERIODICITY_CUATRIMESTRAL,
     Business,
+    BusinessDocument,
     DIANExtractionJob,
     PaymentRecord,
     Subscription,
@@ -172,6 +175,7 @@ def create_client(
     admin: Optional[User],
     data: NewClientData,
     bot_username: str = "KontaBot",
+    allow_existing_nit: bool = True,
 ) -> CreatedClient:
     """Crea o reactiva un cliente (persona o empresa), su negocio y suscripción, generando enlace mágico."""
     plan_clean = (data.plan or "").upper().strip()
@@ -222,6 +226,8 @@ def create_client(
     dv = calculate_dian_dv(nit_clean)
 
     existing_biz = db.query(Business).filter(Business.nit == nit_clean).first()
+    if not allow_existing_nit and existing_biz:
+        raise AdminServiceError("NIT_ALREADY_EXISTS", f"Ya existe un negocio registrado con el NIT {nit_clean}.", 409)
     existing_user = None
     if existing_biz and existing_biz.client and existing_biz.client.role == "CLIENT":
         existing_user = existing_biz.client
@@ -663,3 +669,315 @@ def new_activation_link(
         db.rollback()
         logger.error(f"Error generando nuevo enlace de activación para user {user_id}: {e}", exc_info=True)
         raise AdminServiceError("INTERNAL_ERROR", f"Error interno al generar enlace de activación: {str(e)}", 500)
+
+
+def _normalize_search_term(s: str) -> str:
+    """Normaliza texto removiendo acentos/tildes y convirtiendo a minúsculas."""
+    decomposed = unicodedata.normalize("NFKD", s)
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).lower()
+
+
+def _unaccent_col(col):
+    """Construye expresión SQL para reemplazar vocales acentuadas por sus formas simples.
+
+    Compatible de forma nativa tanto con SQLite como con PostgreSQL sin requerir extensiones externas.
+    Permite búsquedas insensibles a tildes con func.lower y func.replace.
+    """
+    expr = func.lower(col)
+    # lower() de SQLite solo convierte ASCII: las mayúsculas con tilde se reemplazan aparte. La ñ se
+    # reduce a n porque el término de búsqueda pasa por NFKD, que también le quita la virgulilla.
+    for accented, plain in [
+        ("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u"), ("ü", "u"), ("ñ", "n"),
+        ("Á", "a"), ("É", "e"), ("Í", "i"), ("Ó", "o"), ("Ú", "u"), ("Ü", "u"), ("Ñ", "n"),
+    ]:
+        expr = func.replace(expr, accented, plain)
+    return expr
+
+
+def list_clients_paged(
+    db: Session,
+    admin: Optional[User] = None,
+    q: Optional[str] = None,
+    income_source: Optional[str] = None,
+    status: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 25,
+) -> Dict[str, Any]:
+    """Lista clientes de forma paginada con filtros por texto, origen de ingresos y estado de suscripción (AC #1).
+
+    Ordenado alfabéticamente por nombre comercial.
+    """
+    page = max(1, int(page))
+    page_size = max(1, min(100, int(page_size)))
+    offset = (page - 1) * page_size
+
+    # Correlacionamos la suscripción más reciente por usuario
+    latest_sub_id = (
+        db.query(Subscription.id)
+        .filter(Subscription.client_id == Business.client_id)
+        .order_by(Subscription.created_at.desc(), Subscription.id.desc())
+        .limit(1)
+        .correlate(Business)
+        .scalar_subquery()
+    )
+
+    query = (
+        db.query(Business)
+        .join(User, Business.client_id == User.id)
+        .outerjoin(Subscription, Subscription.id == latest_sub_id)
+        .filter(User.role == "CLIENT")
+    )
+
+    if q and q.strip():
+        q_clean = q.strip()
+        q_norm = _normalize_search_term(q_clean)
+        # Búsqueda insensible a mayúsculas y acentos compatible con SQLite y PostgreSQL
+        search_clauses = [
+            _unaccent_col(User.full_name).contains(q_norm),
+            _unaccent_col(Business.legal_name).contains(q_norm),
+            _unaccent_col(Business.commercial_name).contains(q_norm),
+            Business.nit.contains(q_clean),
+            User.phone.contains(q_clean),
+            User.full_name.ilike(f"%{q_clean}%"),
+            Business.legal_name.ilike(f"%{q_clean}%"),
+            Business.commercial_name.ilike(f"%{q_clean}%"),
+        ]
+        query = query.filter(or_(*search_clauses))
+
+    if income_source and income_source.strip():
+        inc_clean = income_source.upper().strip()
+        if inc_clean in INCOME_SOURCE_BY_TIPO:
+            inc_clean = INCOME_SOURCE_BY_TIPO[inc_clean]
+        query = query.filter(Business.income_source == inc_clean)
+
+    if status and status.strip():
+        st_clean = status.upper().strip()
+        query = query.filter(Subscription.status == st_clean)
+
+    total = query.count()
+
+    results = (
+        query
+        .add_columns(User, Subscription)
+        .order_by(func.lower(Business.commercial_name).asc(), Business.id.asc())
+        .offset(offset)
+        .limit(page_size)
+        .all()
+    )
+
+    items = []
+    for biz, user, sub in results:
+        items.append({
+            "business_id": biz.id,
+            "user_id": user.id,
+            "legal_name": biz.legal_name,
+            "commercial_name": biz.commercial_name,
+            "nit": biz.nit,
+            "dv": biz.dv,
+            "income_source": biz.income_source,
+            "taxpayer_type": biz.taxpayer_type,
+            "contact_name": user.full_name,
+            "phone": user.phone,
+            "is_telegram_linked": bool(user.is_telegram_linked),
+            "plan": sub.plan if sub else None,
+            "subscription_status": sub.status if sub else None,
+            "cutoff_date": sub.cutoff_date.isoformat() if sub and sub.cutoff_date else None,
+            "grace_period_end": sub.grace_period_end.isoformat() if sub and sub.grace_period_end else None,
+            "is_active": bool(biz.is_active),
+        })
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+def get_client_detail(
+    db: Session,
+    business_id: str,
+    admin: Optional[User] = None,
+) -> Dict[str, Any]:
+    """Obtiene la ficha técnica y comercial completa de un negocio (Story 8.3 - AC #2)."""
+    biz = db.query(Business).filter(
+        (Business.id == business_id) | (Business.nit == business_id)
+    ).first()
+    if not biz:
+        raise AdminServiceError("BUSINESS_NOT_FOUND", f"No se encontró ningún negocio con identificador '{business_id}'.", 404)
+
+    user = biz.client or db.query(User).filter(User.id == biz.client_id).first()
+    if not user:
+        raise AdminServiceError("CLIENT_NOT_FOUND", "No se encontró el usuario cliente asociado al negocio.", 404)
+
+    # Suscripción más reciente del usuario
+    sub = (
+        db.query(Subscription)
+        .filter(Subscription.client_id == user.id)
+        .order_by(Subscription.created_at.desc(), Subscription.id.desc())
+        .first()
+    )
+
+    subscription_info = None
+    if sub:
+        subscription_info = {
+            "id": sub.id,
+            "plan": sub.plan,
+            "status": sub.status,
+            "discount_rate": f"{sub.discount_rate:.2f}" if sub.discount_rate is not None else None,
+            "base_price": f"{sub.base_price:.2f}" if sub.base_price is not None else None,
+            "final_price": f"{sub.final_price:.2f}" if sub.final_price is not None else None,
+            "start_date": sub.start_date.isoformat() if sub.start_date else None,
+            "cutoff_date": sub.cutoff_date.isoformat() if sub.cutoff_date else None,
+            "grace_period_end": sub.grace_period_end.isoformat() if sub.grace_period_end else None,
+        }
+
+    # Últimos 20 pagos del cliente
+    payments_records = (
+        db.query(PaymentRecord)
+        .join(Subscription, PaymentRecord.subscription_id == Subscription.id)
+        .filter(Subscription.client_id == user.id)
+        .order_by(PaymentRecord.payment_date.desc(), PaymentRecord.created_at.desc())
+        .limit(20)
+        .all()
+    )
+    recent_payments = [
+        {
+            "id": p.id,
+            "payment_date": p.payment_date.isoformat() if p.payment_date else None,
+            "amount": f"{p.amount:.2f}",
+            "reference_code": p.reference_code,
+            "payment_method": p.payment_method,
+            "verified_by_admin_id": p.verified_by_admin_id,
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+        }
+        for p in payments_records
+    ]
+
+    # Últimas 10 extracciones DIAN
+    extractions = (
+        db.query(DIANExtractionJob)
+        .filter(DIANExtractionJob.business_id == biz.id)
+        .order_by(DIANExtractionJob.created_at.desc(), DIANExtractionJob.id.desc())
+        .limit(10)
+        .all()
+    )
+    recent_extractions = [
+        {
+            "id": job.id,
+            "period": job.target_period,
+            "status": job.status,
+            "attempts": job.attempt_count,
+            "next_run_at": job.next_run_at.isoformat() if job.next_run_at else None,
+            "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+            "error_code": job.error_code,
+        }
+        for job in extractions
+    ]
+
+    # Cantidad de documentos activos
+    active_docs_count = (
+        db.query(BusinessDocument)
+        .filter(
+            BusinessDocument.business_id == biz.id,
+            BusinessDocument.deleted_at.is_(None),
+        )
+        .count()
+    )
+
+    # Enlace de activación pendiente
+    now = datetime.utcnow()
+    has_pending_link = (
+        db.query(TelegramLinkToken)
+        .filter(
+            TelegramLinkToken.user_id == user.id,
+            TelegramLinkToken.is_used.is_(False),
+            TelegramLinkToken.expires_at > now,
+        )
+        .first()
+        is not None
+    )
+
+    return {
+        "business": {
+            "id": biz.id,
+            "legal_name": biz.legal_name,
+            "commercial_name": biz.commercial_name,
+            "nit": biz.nit,
+            "dv": biz.dv,
+            "taxpayer_type": biz.taxpayer_type,
+            "legal_rep_doc": biz.legal_rep_doc,
+            "economic_activity": biz.economic_activity,
+            "income_source": biz.income_source,
+            "is_active": bool(biz.is_active),
+            "created_at": biz.created_at.isoformat() if biz.created_at else None,
+        },
+        "contact": {
+            "id": user.id,
+            "full_name": user.full_name,
+            "phone": user.phone,
+            "email": user.email,
+            "is_telegram_linked": bool(user.is_telegram_linked),
+            "telegram_chat_id": user.telegram_chat_id,
+            "telegram_username": user.telegram_username,
+        },
+        "tax_profile": {
+            "iva_periodicity": biz.iva_periodicity,
+            "is_withholding_agent": bool(biz.is_withholding_agent),
+        },
+        "subscription": subscription_info,
+        "recent_payments": recent_payments,
+        "recent_extractions": recent_extractions,
+        "active_documents_count": active_docs_count,
+        "has_pending_activation_link": has_pending_link,
+        # Conveniencia top-level
+        "business_id": biz.id,
+        "legal_name": biz.legal_name,
+        "commercial_name": biz.commercial_name,
+        "nit": biz.nit,
+        "dv": biz.dv,
+        "income_source": biz.income_source,
+        "taxpayer_type": biz.taxpayer_type,
+        "contact_name": user.full_name,
+        "phone": user.phone,
+        "is_telegram_linked": bool(user.is_telegram_linked),
+        "telegram_chat_id": user.telegram_chat_id,
+        "iva_periodicity": biz.iva_periodicity,
+        "is_withholding_agent": bool(biz.is_withholding_agent),
+    }
+
+
+def release_client_telegram(
+    db: Session,
+    admin: Optional[User],
+    business_id: str,
+) -> User:
+    """Desvincula la cuenta de Telegram del cliente dueño del negocio especificado (Story 8.3 - AC #7)."""
+    biz = db.query(Business).filter(
+        (Business.id == business_id) | (Business.nit == business_id)
+    ).first()
+    if not biz:
+        raise AdminServiceError("BUSINESS_NOT_FOUND", f"No se encontró ningún negocio con identificador '{business_id}'.", 404)
+
+    user = biz.client or db.query(User).filter(User.id == biz.client_id).first()
+    if not user:
+        raise AdminServiceError("CLIENT_NOT_FOUND", "No se encontró el usuario cliente asociado al negocio.", 404)
+
+    if admin and user.id == admin.id:
+        raise AdminServiceError("CANNOT_FREE_SELF", "No puedes desvincular tu propia cuenta de administrador.", 400)
+
+    if admin and getattr(admin, "telegram_chat_id", None) and user.telegram_chat_id == admin.telegram_chat_id:
+        raise AdminServiceError("CANNOT_FREE_SELF", "No puedes desvincular tu propia cuenta de administrador.", 400)
+
+    try:
+        user.telegram_chat_id = None
+        user.telegram_username = None
+        user.is_telegram_linked = False
+        db.commit()
+        db.refresh(user)
+        return user
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error liberando Telegram para user_id={user.id}: {e}", exc_info=True)
+        raise AdminServiceError("INTERNAL_ERROR", f"Error interno al desvincular la cuenta: {str(e)}", 500)
+
