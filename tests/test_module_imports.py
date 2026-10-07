@@ -17,6 +17,8 @@ MODULES = [
     "dian_automation.core.auth_service",
     "dian_automation.cli.telegram_bot",
     "dian_automation.api.app",
+    "dian_automation.core.admin_service",
+    "dian_automation.telegram.notify",
 ]
 
 
