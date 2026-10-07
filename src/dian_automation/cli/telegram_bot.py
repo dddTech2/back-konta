@@ -4,7 +4,7 @@ Conecta con la API oficial de Telegram mediante Long Polling (sin requerir túne
 Despacha de forma unificada:
 - Vinculación atómica por Deep Linking (/start <token>)
 - Comandos comerciales de Administradora (Katerinn): /crear_cliente, /confirmar_pago, /clientes
-- Consultas tributarias de Clientes: /resumen, /facturas, /vencimientos, /ayuda
+- Consultas y operaciones de Clientes: /resumen, /facturas, /vencimientos, /venta, /mis_ventas, /anular_venta, /ayuda
 - Diagnóstico y administración: /mi_id, /hacerme_admin
 - Notificaciones salientes en tiempo real hacia los chats de los clientes al confirmar pagos.
 

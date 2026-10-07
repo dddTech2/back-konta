@@ -4,7 +4,7 @@ Permite a los clientes consultar en tiempo real desde Telegram:
 - /resumen: Facturación mensual, variación porcentual, IVA generado/descontable y balance a pagar o a favor.
 - /facturas: Últimas 4 facturas electrónicas emitidas.
 - /vencimientos: Calendario de obligaciones tributarias DIAN según el último dígito del NIT.
-- /registrar_venta: Registra una venta (total y descripción opcional) vía core/sales_service.py.
+- /venta: Registra una venta (total y descripción opcional) vía core/sales_service.py (/registrar_venta se mantiene como alias).
 - /mis_ventas: Lista las últimas ventas registradas del negocio con numeración para anulación.
 - /anular_venta: Anula una venta mal registrada según su posición en la lista reciente.
 - /ayuda: Menú interactivo de comandos disponibles.
@@ -432,19 +432,19 @@ class ClientTelegramBot:
 
     REGISTRAR_VENTA_HELP = (
         "📝 *Registrar venta*\n\n"
-        "Formato: `/registrar_venta <total> | <descripción opcional>`\n"
-        "Ejemplo: `/registrar_venta 150000 | 3 tortas de chocolate`\n\n"
+        "Formato: `/venta <total> | <descripción opcional>`\n"
+        "Ejemplo: `/venta 150000 | 3 tortas de chocolate`\n\n"
         "El total va sin `$`, sin comas ni puntos de miles y con máximo 2 decimales (punto decimal)."
     )
 
     @staticmethod
     def parse_registrar_venta_command(text: str) -> Tuple[str, Optional[str]]:
-        """Separa `/registrar_venta <total> [| <descripción>]` en (total crudo, descripción cruda).
+        """Separa `/venta` o `/registrar_venta <total> [| <descripción>]` en (total crudo, descripción cruda).
 
         El primer `|` separa total y descripción; todo lo posterior es descripción. Solo sintaxis:
         la validación de ambos valores vive en core/sales_service.py.
         """
-        body = re.sub(r"^\s*/registrar_venta(?:@\w+)?", "", text.strip(), flags=re.IGNORECASE)
+        body = re.sub(r"^\s*/(?:venta|registrar_venta)(?:@\w+)?(?=\s|$)", "", text.strip(), flags=re.IGNORECASE)
         raw_total, separator, description = body.partition("|")
         return raw_total.strip(), (description if separator else None)
 
@@ -455,7 +455,7 @@ class ClientTelegramBot:
 
     @classmethod
     def handle_registrar_venta(cls, sender_chat_id: int, db: Session, text: str) -> Dict[str, Any]:
-        """Procesa /registrar_venta: guardia de cliente, luego servicio compartido de ventas."""
+        """Procesa /venta (o /registrar_venta): guardia de cliente, luego servicio compartido de ventas."""
         user, business, err_code, err_msg = cls.get_authenticated_client(sender_chat_id, db)
         if err_code:
             return {"success": False, "reason": err_code, "message": err_msg}
@@ -630,7 +630,7 @@ class ClientTelegramBot:
                 "Puedes consultar tu información en cualquier momento con estos comandos:\n\n"
                 "📊 */resumen* — Ingresos, egresos y utilidad del mes.\n"
                 "📱 */dashboard* — Enlace a tu panel web/móvil con gráficos e historial completo.\n"
-                "📝 */registrar_venta* — Registra una venta: `/registrar_venta 150000 | descripción opcional`.\n"
+                "📝 */venta* — Registra una venta: `/venta 150000 | descripción opcional`.\n"
                 "🧾 */mis_ventas* — Tus últimas 10 ventas, cada una con su número para anular.\n"
                 "🗑️ */anular_venta* — Anula una venta mal registrada: `/anular_venta 2`.\n"
                 "ℹ️ */ayuda* — Muestra este menú de opciones.\n\n"
@@ -680,7 +680,7 @@ class ClientTelegramBot:
             res = cls.handle_dashboard(sender_chat_id, db)
             return res["message"]
 
-        elif re.match(r"^/registrar_venta(?:@\w+)?(?:\s|$)", text_clean):
+        elif re.match(r"^\s*/(?:venta|registrar_venta)(?:@\w+)?(?=\s|$)", text_clean):
             res = cls.handle_registrar_venta(sender_chat_id, db, text)
             return res["message"]
 
@@ -701,7 +701,7 @@ class ClientTelegramBot:
                 "Comandos disponibles:\n"
                 "• /resumen — Ingresos, egresos y utilidad del mes\n"
                 "• /dashboard — Enlace a tu panel web/móvil\n"
-                "• /registrar_venta — Registra una venta (total y descripción opcional)\n"
+                "• /venta — Registra una venta (total y descripción opcional)\n"
                 "• /mis_ventas — Tus últimas 10 ventas\n"
                 "• /anular_venta — Anula una venta mal registrada\n"
                 "• /ayuda — Menú de ayuda"

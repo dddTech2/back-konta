@@ -464,6 +464,7 @@ def test_client_router_and_help(db_session_factory):
         assert "• /dashboard — Enlace a tu panel web/móvil" in unknown_resp
         assert "• /ayuda — Menú de ayuda" in unknown_resp
         assert "/registrar_venta" not in unknown_resp
+        assert "/venta" not in unknown_resp
         assert "/mis_ventas" not in unknown_resp
         assert "/anular_venta" not in unknown_resp
 
@@ -474,7 +475,8 @@ def test_client_router_and_help(db_session_factory):
         assert "🤖 No reconozco ese comando." in unknown_manual
         assert "• /resumen — Ingresos, egresos y utilidad del mes" in unknown_manual
         assert "• /dashboard — Enlace a tu panel web/móvil" in unknown_manual
-        assert "• /registrar_venta — Registra una venta (total y descripción opcional)" in unknown_manual
+        assert "• /venta — Registra una venta (total y descripción opcional)" in unknown_manual
+        assert "/registrar_venta" not in unknown_manual
         assert "• /mis_ventas — Tus últimas 10 ventas" in unknown_manual
         assert "• /anular_venta — Anula una venta mal registrada" in unknown_manual
         assert "• /ayuda — Menú de ayuda" in unknown_manual
@@ -545,7 +547,8 @@ def test_registrar_venta_shows_decimals_only_when_present(db_session_factory):
 def test_registrar_venta_missing_or_non_numeric_shows_help(db_session_factory, text):
     resp = _send(db_session_factory, text)
 
-    assert "/registrar_venta <total>" in resp
+    assert "/venta <total>" in resp
+    assert "/registrar_venta" not in resp
     assert "Ejemplo" in resp
     assert _sales(db_session_factory) == []
 
@@ -624,7 +627,8 @@ def test_registrar_venta_delegates_validation_to_sales_service(db_session_factor
     assert len(calls) == 1
     assert calls[0]["total"] == "12abc" and calls[0]["description"] == " algo"
     assert calls[0]["recorded_via"] == "TELEGRAM"
-    assert "/registrar_venta <total>" in resp
+    assert "/venta <total>" in resp
+    assert "/registrar_venta" not in resp
     assert _sales(db_session_factory) == []
 
 
@@ -637,12 +641,27 @@ def test_parse_registrar_venta_command_only_splits_text():
     assert parse("/registrar_venta 100 | a | b") == ("100", " a | b")
     assert parse("/registrar_venta@KontableBot 100") == ("100", None)
 
+    # También soporta /venta
+    assert parse("/venta 150000 | 3 tortas") == ("150000", " 3 tortas")
+    assert parse("/venta 150000") == ("150000", None)
+    assert parse("/venta") == ("", None)
+    assert parse("/venta 100 | a | b") == ("100", " a | b")
+    assert parse("/venta@KontaBot 100") == ("100", None)
 
-def test_help_and_unknown_command_list_registrar_venta(db_session_factory):
-    assert "/registrar_venta" in _send(db_session_factory, "/ayuda", chat_id=MANUAL_CHAT)
-    assert "/registrar_venta" in _send(db_session_factory, "/comando_invalido", chat_id=MANUAL_CHAT)
-    # Negocio DIAN no lista /registrar_venta en /ayuda
-    assert "/registrar_venta" not in _send(db_session_factory, "/ayuda", chat_id=ANDREA_CHAT)
+
+def test_help_and_unknown_command_list_venta_and_not_registrar_venta(db_session_factory):
+    ayuda_manual = _send(db_session_factory, "/ayuda", chat_id=MANUAL_CHAT)
+    assert "/venta" in ayuda_manual
+    assert "/registrar_venta" not in ayuda_manual
+
+    invalido_manual = _send(db_session_factory, "/comando_invalido", chat_id=MANUAL_CHAT)
+    assert "/venta" in invalido_manual
+    assert "/registrar_venta" not in invalido_manual
+
+    # Negocio DIAN no lista /venta ni /registrar_venta en /ayuda
+    ayuda_dian = _send(db_session_factory, "/ayuda", chat_id=ANDREA_CHAT)
+    assert "/venta" not in ayuda_dian
+    assert "/registrar_venta" not in ayuda_dian
 
 
 def test_registrar_venta_accepts_bot_name_suffix_in_router(db_session_factory):
@@ -787,7 +806,8 @@ def test_client_help_by_business_type(db_session_factory):
         assert "/resumen" in help_manual
         assert "/facturas" not in help_manual
         assert "/dashboard" in help_manual
-        assert "/registrar_venta" in help_manual
+        assert "/venta" in help_manual
+        assert "/registrar_venta" not in help_manual
         assert "/ayuda" in help_manual
         assert "/vencimientos" not in help_manual
         assert "iva" not in help_manual.lower()
@@ -800,6 +820,7 @@ def test_client_help_by_business_type(db_session_factory):
         assert "/vencimientos" in help_dian
         assert "/dashboard" in help_dian
         assert "/ayuda" in help_dian
+        assert "/venta" not in help_dian
         assert "/registrar_venta" not in help_dian
         assert "datos provienen directamente del repositorio oficial de la DIAN" in help_dian
     finally:
@@ -1665,4 +1686,191 @@ def test_markdown_escaping_in_mis_ventas_and_anular_venta(db_session_factory):
         assert r"torta\_especial \*3\* \`promo\` \[box]" in void_resp["message"]
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Story 7.1: Comando /venta en lugar de /registrar_venta
+# ---------------------------------------------------------------------------
+
+
+def test_story_7_1_venta_with_description(db_session_factory):
+    """AC #1: /venta <total> | <descripción> registra la venta correctamente."""
+    resp = _send(db_session_factory, "/venta 150000 | 3 tortas de chocolate")
+
+    sales = _sales(db_session_factory)
+    assert len(sales) == 1
+    assert sales[0].total_amount == Decimal("150000.00")
+    assert sales[0].description == "3 tortas de chocolate"
+    assert sales[0].business_id == "biz-pedro-manual"
+    assert sales[0].recorded_by_user_id == "usr-pedro-manual"
+    assert sales[0].recorded_via == "TELEGRAM"
+    assert "✅ Venta registrada: $150,000 COP — 3 tortas de chocolate" in resp
+
+
+def test_story_7_1_venta_without_description(db_session_factory):
+    """AC #1: /venta <total> registra la venta sin descripción."""
+    resp = _send(db_session_factory, "/venta 150000")
+
+    sales = _sales(db_session_factory)
+    assert len(sales) == 1
+    assert sales[0].total_amount == Decimal("150000.00")
+    assert sales[0].description is None
+    assert "✅ Venta registrada: $150,000 COP" in resp
+    assert "—" not in resp
+
+
+def test_story_7_1_venta_shows_decimals_when_present(db_session_factory):
+    """AC #1: /venta con decimales muestra centavos."""
+    resp = _send(db_session_factory, "/venta 100.50")
+
+    sales = _sales(db_session_factory)
+    assert len(sales) == 1
+    assert sales[0].total_amount == Decimal("100.50")
+    assert "$100.50 COP" in resp
+
+
+def test_story_7_1_venta_rejections_dian_and_blocked(db_session_factory):
+    """AC #1: /venta rechaza negocios DIAN y clientes bloqueados."""
+    # Negocio DIAN
+    resp_dian = _send(db_session_factory, "/venta 50000", chat_id=ANDREA_CHAT)
+    assert "ℹ️ Tu negocio factura electrónicamente: las ventas salen de la DIAN y no se registran a mano." in resp_dian
+
+    # Suscripción BLOQUEADA
+    resp_bloq = _send(db_session_factory, "/venta 50000", chat_id=CARLOS_CHAT)
+    assert "Servicio Suspendido" in resp_bloq
+
+    # Chat no vinculado
+    resp_unlinked = _send(db_session_factory, "/venta 50000", chat_id=999999999)
+    assert "Cuenta no vinculada" in resp_unlinked
+
+    assert _sales(db_session_factory) == []
+
+
+def test_story_7_1_venta_no_arguments_shows_format_help(db_session_factory):
+    """AC #2: /venta sin argumentos devuelve ayuda que muestra /venta en formato y ejemplo."""
+    resp = _send(db_session_factory, "/venta")
+
+    assert "Formato: `/venta <total> | <descripción opcional>`" in resp
+    assert "Ejemplo: `/venta 150000 | 3 tortas de chocolate`" in resp
+    assert "/registrar_venta" not in resp
+    assert _sales(db_session_factory) == []
+
+
+def test_story_7_1_venta_invalid_formats_show_help_with_venta(db_session_factory):
+    """AC #2: formatos inválidos en /venta muestran ayuda con /venta y sin /registrar_venta."""
+    for text in ["/venta abc", "/venta $150000", "/venta 150,5", "/venta 150.000", "/venta 100.125"]:
+        resp = _send(db_session_factory, text)
+        assert "/venta <total>" in resp
+        assert "/registrar_venta" not in resp
+        assert _sales(db_session_factory) == []
+
+
+def test_story_7_1_venta_non_positive_total_shows_help_with_venta(db_session_factory):
+    """AC #2: total <= 0 en /venta muestra error y ayuda con /venta."""
+    for text in ["/venta 0", "/venta -50"]:
+        resp = _send(db_session_factory, text)
+        assert "mayor a cero" in resp
+        assert "/venta <total>" in resp
+        assert "/registrar_venta" not in resp
+        assert _sales(db_session_factory) == []
+
+
+def test_story_7_1_registrar_venta_alias_still_works(db_session_factory):
+    """AC #3: /registrar_venta sigue funcionando como alias exacto."""
+    resp = _send(db_session_factory, "/registrar_venta 1000 | café con leche")
+
+    sales = _sales(db_session_factory)
+    assert len(sales) == 1
+    assert sales[0].total_amount == Decimal("1000.00")
+    assert sales[0].description == "café con leche"
+    assert "✅ Venta registrada: $1,000 COP — café con leche" in resp
+
+
+def test_story_7_1_registrar_venta_alias_does_not_appear_in_menus_help_or_errors(db_session_factory):
+    """AC #3 & #6: /registrar_venta no aparece en ningún menú, ayuda ni mensaje de error."""
+    # En /ayuda MANUAL_SALES
+    ayuda_manual = _send(db_session_factory, "/ayuda", chat_id=MANUAL_CHAT)
+    assert "/venta" in ayuda_manual
+    assert "/registrar_venta" not in ayuda_manual
+
+    # En comando no reconocido MANUAL_SALES
+    cmd_invalido = _send(db_session_factory, "/comando_desconocido", chat_id=MANUAL_CHAT)
+    assert "/venta" in cmd_invalido
+    assert "/registrar_venta" not in cmd_invalido
+
+    # En /ayuda DIAN
+    ayuda_dian = _send(db_session_factory, "/ayuda", chat_id=ANDREA_CHAT)
+    assert "/registrar_venta" not in ayuda_dian
+    assert "/venta" not in ayuda_dian
+
+    # En ayuda de /registrar_venta sin argumentos
+    help_alias = _send(db_session_factory, "/registrar_venta")
+    assert "/venta <total>" in help_alias
+    assert "/registrar_venta" not in help_alias
+
+    # En error de /registrar_venta con total inválido
+    err_alias = _send(db_session_factory, "/registrar_venta -100")
+    assert "/venta <total>" in err_alias
+    assert "/registrar_venta" not in err_alias
+
+
+def test_story_7_1_venta_with_bot_mention_suffix(db_session_factory):
+    """AC #4: /venta@NombreDelBot funciona correctamente para grupos y menciones."""
+    resp = _send(db_session_factory, "/venta@KontaBot 5000 | galletas surtidas")
+
+    sales = _sales(db_session_factory)
+    assert len(sales) == 1
+    assert sales[0].total_amount == Decimal("5000.00")
+    assert sales[0].description == "galletas surtidas"
+    assert "✅ Venta registrada: $5,000 COP — galletas surtidas" in resp
+
+    # También sin argumentos
+    resp_help = _send(db_session_factory, "/venta@KontaBot")
+    assert "/venta <total>" in resp_help
+    assert "/registrar_venta" not in resp_help
+
+
+def test_story_7_1_ventas_ventanilla_not_interpreted_as_venta(db_session_factory):
+    """AC #5: /ventas, /ventanilla o /mis_ventas NO se interpretan como /venta."""
+    # /ventas cae en comando no reconocido
+    resp_ventas = _send(db_session_factory, "/ventas")
+    assert "🤖 No reconozco ese comando." in resp_ventas
+
+    # /ventas 100 cae en comando no reconocido
+    resp_ventas_arg = _send(db_session_factory, "/ventas 100")
+    assert "🤖 No reconozco ese comando." in resp_ventas_arg
+
+    # /ventanilla cae en comando no reconocido
+    resp_ventanilla = _send(db_session_factory, "/ventanilla")
+    assert "🤖 No reconozco ese comando." in resp_ventanilla
+
+    # /ventanilla 100 cae en comando no reconocido
+    resp_ventanilla_arg = _send(db_session_factory, "/ventanilla 100")
+    assert "🤖 No reconozco ese comando." in resp_ventanilla_arg
+
+    # Ninguna venta fue creada
+    assert _sales(db_session_factory) == []
+
+
+def test_story_7_1_mis_ventas_and_anular_venta_continue_working(db_session_factory):
+    """AC #5: /mis_ventas y /anular_venta siguen funcionando tras registrar con /venta."""
+    # Registrar ventas con /venta
+    _send(db_session_factory, "/venta 10000 | empanada")
+    _send(db_session_factory, "/venta 20000 | jugo de mora")
+
+    # /mis_ventas lista ambas
+    resp_list = _send(db_session_factory, "/mis_ventas")
+    assert "🧾 *Tus últimas ventas*" in resp_list
+    assert "empanada" in resp_list
+    assert "jugo de mora" in resp_list
+
+    # /anular_venta 2 anula la segunda venta
+    resp_void = _send(db_session_factory, "/anular_venta 2")
+    assert "🗑️ Venta anulada:" in resp_void
+    assert "jugo de mora" in resp_void
+
+    # /mis_ventas ahora solo tiene la primera venta
+    resp_list_after = _send(db_session_factory, "/mis_ventas")
+    assert "empanada" in resp_list_after
+    assert "jugo de mora" not in resp_list_after
 
