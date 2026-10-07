@@ -27,6 +27,18 @@ def get_current_user(
     return auth_service.get_user_from_token(db, credentials.credentials)
 
 
+def get_current_admin(
+    user: User = Depends(get_current_user),
+) -> User:
+    """Valida que el usuario autenticado posea rol ADMIN y se encuentre activo; si no, 403 Forbidden."""
+    if user.role != "ADMIN" or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acceso solo para la administración.",
+        )
+    return user
+
+
 def get_business_with_access(
     business_id: str,
     user: User = Depends(get_current_user),

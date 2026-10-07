@@ -77,10 +77,11 @@ def _phone_key(digits: str) -> str:
 
 
 def resolve_client_by_identifier(db: Session, identifier: str) -> Optional[User]:
-    """Usuario CLIENT activo cuyo teléfono o NIT (normalizados a dígitos) coincide.
+    """Usuario CLIENT o ADMIN activo cuyo teléfono o NIT (normalizados a dígitos) coincide.
 
-    El teléfono se compara sin prefijo 57 y el NIT con o sin dígito de verificación. Devuelve None
-    si no hay coincidencia o si hay más de un usuario distinto.
+    El teléfono se compara sin prefijo 57 (aplica a CLIENT y ADMIN) y el NIT con o sin dígito
+    de verificación (solo aplica a CLIENT). Devuelve None si no hay coincidencia o si hay más
+    de un usuario distinto.
     """
     if not identifier or len(identifier) > MAX_IDENTIFIER_LENGTH:
         return None
@@ -88,11 +89,11 @@ def resolve_client_by_identifier(db: Session, identifier: str) -> Optional[User]
     if not digits:
         return None
 
-    clients: List[User] = (
-        db.query(User).filter(User.role == "CLIENT", User.is_active.is_(True)).all()
+    phone_users: List[User] = (
+        db.query(User).filter(User.role.in_(["CLIENT", "ADMIN"]), User.is_active.is_(True)).all()
     )
     phone_key = _phone_key(digits)
-    matches = {u.id: u for u in clients if u.phone and _phone_key(_digits(u.phone)) == phone_key}
+    matches = {u.id: u for u in phone_users if u.phone and _phone_key(_digits(u.phone)) == phone_key}
 
     owners = (
         db.query(User, Business)
@@ -211,20 +212,14 @@ def create_access_token(user: User) -> str:
     return jwt.encode(payload, _secret(), algorithm=config.jwt_algorithm)
 
 
-def create_dashboard_link(user: User) -> str:
-    """Genera un enlace firmado para ingresar directamente al panel web sin OTP (Story 7.2).
-
-    Devuelve f"{config.kontable_web_url}#/entrar/{token}", donde token es un JWT firmado con
-    JWT_SECRET y claims: sub (user.id), purpose="dashboard_link", cid (telegram_chat_id como string),
-    iat, exp (ahora + dashboard_link_ttl_hours). Reutilizable durante su vigencia sin estado en BD.
-    """
+def _create_magic_link(user: User, purpose: str) -> str:
     _secret()
     now = _utcnow()
     ttl_hours = int(getattr(config, "dashboard_link_ttl_hours", 24) or 24)
     chat_id = getattr(user, "telegram_chat_id", None)
     payload = {
         "sub": str(user.id),
-        "purpose": "dashboard_link",
+        "purpose": purpose,
         "cid": str(chat_id) if chat_id is not None else "",
         "iat": _epoch(now),
         "exp": _epoch(now + timedelta(hours=ttl_hours)),
@@ -236,12 +231,32 @@ def create_dashboard_link(user: User) -> str:
     return f"{base}#/entrar/{token}"
 
 
-def exchange_dashboard_link(db: Session, token: str) -> str:
-    """Canjea un JWT de enlace por un JWT de sesión (Story 7.2).
+def create_dashboard_link(user: User) -> str:
+    """Genera un enlace firmado para ingresar directamente al panel web sin OTP (Story 7.2).
 
-    Valida firma, expiración, purpose == 'dashboard_link', existencia y actividad del usuario,
-    rol CLIENT, vinculación de Telegram y coincidencia exacta de telegram_chat_id con cid.
-    Cualquier fallo responde 401 con INVALID_LINK_DETAIL.
+    Devuelve f"{config.kontable_web_url}#/entrar/{token}", donde token es un JWT firmado con
+    JWT_SECRET y claims: sub (user.id), purpose="dashboard_link", cid (telegram_chat_id como string),
+    iat, exp (ahora + dashboard_link_ttl_hours). Reutilizable durante su vigencia sin estado en BD.
+    """
+    return _create_magic_link(user, purpose="dashboard_link")
+
+
+def create_admin_link(user: User) -> str:
+    """Genera un enlace firmado para ingresar directamente al panel de administración (Story 8.2).
+
+    Devuelve f"{config.kontable_web_url}#/entrar/{token}", donde token es un JWT firmado con
+    JWT_SECRET y claims: sub (user.id), purpose="admin_link", cid (telegram_chat_id como string),
+    iat, exp (ahora + dashboard_link_ttl_hours). Reutilizable durante su vigencia sin estado en BD.
+    """
+    return _create_magic_link(user, purpose="admin_link")
+
+
+def exchange_dashboard_link(db: Session, token: str) -> str:
+    """Canjea un JWT de enlace por un JWT de sesión (Story 7.2 y 8.2).
+
+    Valida firma, expiración, purpose ('dashboard_link' para CLIENT, 'admin_link' para ADMIN),
+    existencia y actividad del usuario, vinculación de Telegram y coincidencia exacta de
+    telegram_chat_id con cid. Cualquier fallo responde 401 con INVALID_LINK_DETAIL.
     """
     _secret()
     invalid = AuthServiceError(401, INVALID_LINK_DETAIL)
@@ -264,7 +279,8 @@ def exchange_dashboard_link(db: Session, token: str) -> str:
     except (jwt.PyJWTError, ValueError, TypeError, OverflowError, OSError, KeyError):
         raise invalid
 
-    if "purpose" not in claims or claims["purpose"] != "dashboard_link":
+    purpose = claims.get("purpose")
+    if purpose not in ("dashboard_link", "admin_link"):
         raise invalid
 
     if expires_at <= _utcnow():
@@ -278,7 +294,9 @@ def exchange_dashboard_link(db: Session, token: str) -> str:
     if user is None or not user.is_active:
         raise invalid
 
-    if user.role != "CLIENT":
+    if purpose == "dashboard_link" and user.role != "CLIENT":
+        raise invalid
+    if purpose == "admin_link" and user.role != "ADMIN":
         raise invalid
 
     if not user.is_telegram_linked or user.telegram_chat_id is None:
@@ -321,6 +339,18 @@ def get_user_from_token(db: Session, token: str) -> User:
 
 def get_me(user: User, db: Session) -> Dict[str, Any]:
     """Estado de sesión para la SPA: negocio activo más antiguo y visibilidad; sin datos fiscales."""
+    if user.role == "ADMIN":
+        return {
+            "role": "ADMIN",
+            "business_id": None,
+            "income_source": None,
+            "is_provisioned": False,
+            "is_blocked": False,
+            "subscription_status": None,
+            "has_warning_banner": False,
+            "redirect_url": None,
+        }
+
     business = (
         db.query(Business)
         .filter(Business.client_id == user.id, Business.is_active.is_(True))
@@ -335,6 +365,7 @@ def get_me(user: User, db: Session) -> Dict[str, Any]:
     )
     access = SubscriptionLockoutService.verify_user_web_access(user.id, db)
     return {
+        "role": user.role or "CLIENT",
         "business_id": business.id if business else None,
         "income_source": business.income_source if business else None,
         "is_provisioned": business is not None,

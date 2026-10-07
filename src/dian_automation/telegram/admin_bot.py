@@ -1345,6 +1345,44 @@ class AdminTelegramBot:
         }
 
     @classmethod
+    def handle_panel(cls, sender_chat_id: int, db: Session) -> Dict[str, Any]:
+        """Procesa el comando /panel: entrega el enlace directo firmado para entrar al panel web (Story 8.2)."""
+        if not cls.is_authorized_admin(sender_chat_id, db):
+            return {
+                "success": False,
+                "reason": "UNAUTHORIZED",
+                "message": "⛔ *Acceso denegado:* Este comando está restringido a la administración comercial autorizada.",
+            }
+
+        admin = (
+            db.query(User)
+            .filter(
+                User.telegram_chat_id == sender_chat_id,
+                User.role == "ADMIN",
+                User.is_active.is_(True),
+            )
+            .first()
+        )
+        if not admin:
+            return {
+                "success": False,
+                "reason": "UNAUTHORIZED",
+                "message": "⛔ *Acceso denegado:* Este comando está restringido a la administración comercial autorizada.",
+            }
+
+        # Import diferido: auth_service importa client_bot y sería circular.
+        from dian_automation.core import auth_service
+
+        link = auth_service.create_admin_link(admin)
+        message = (
+            f"💼 *Panel de Administración {BRAND_NAME}*\n\n"
+            f"👉 [Abrir panel de administración]({link})\n\n"
+            "Toca el enlace para entrar directo; sirve 24 horas. "
+            "No lo reenvíes, quien lo tenga puede acceder a la administración."
+        )
+        return {"success": True, "link": link, "message": message}
+
+    @classmethod
     def handle_admin_message(
         cls,
         sender_chat_id: int,
@@ -1395,6 +1433,10 @@ class AdminTelegramBot:
         elif text_clean.startswith("/subir_documento"):
             return cls.SUBIR_DOCUMENTO_USAGE
 
+        elif text_clean.startswith("/panel"):
+            res = cls.handle_panel(sender_chat_id, db)
+            return res["message"]
+
         elif text_clean.startswith("/ayuda") or text_clean.startswith("/help"):
             return (
                 "💼 *COMANDOS DE ADMINISTRACIÓN COMERCIAL (Katerinn)*\n\n"
@@ -1441,7 +1483,9 @@ class AdminTelegramBot:
                 "_Ejemplo:_ `/documentos 901008579`\n\n"
                 "🔟 *Retirar Documento:* Da de baja un documento del cliente por su número:\n"
                 "`/retirar_documento <NIT> <número>`\n"
-                "_Ejemplo:_ `/retirar_documento 901008579 1`"
+                "_Ejemplo:_ `/retirar_documento 901008579 1`\n\n"
+                "1️⃣1️⃣ *Panel de Administración:* Enlace directo para acceder al panel web de administración:\n"
+                "`/panel`"
             )
 
         return (

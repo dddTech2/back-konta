@@ -164,6 +164,7 @@ class TokenResponse(BaseModel):
 
 class MeResponse(BaseModel):
     """Estado de sesión para la SPA: negocio activo y visibilidad de funciones (sin datos fiscales)."""
+    role: str
     business_id: Optional[str] = None
     income_source: Optional[str] = None  # DIAN, MANUAL_SALES; null sin negocio (Story 6.1)
     is_provisioned: bool

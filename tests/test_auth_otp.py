@@ -154,8 +154,9 @@ def test_request_otp_ambiguous_identifier_is_404(client, db, ana, sent):
     assert sent == []
 
 
-def test_request_otp_ignores_non_client_roles(client, db, sent):
-    _add_client(db, "admin", phone="3105550000", chat_id=9, role="ADMIN", business=False, sub_status=None)
+def test_request_otp_ignores_roles_other_than_client_and_admin(client, db, sent):
+    # Desde la Story 8.2 (FR-028) un ADMIN sí puede pedir código por su celular; TECH_OPS sigue fuera.
+    _add_client(db, "soporte", phone="3105550000", chat_id=9, role="TECH_OPS", business=False, sub_status=None)
 
     assert _request(client, "3105550000").status_code == 404
     assert sent == []
@@ -499,6 +500,7 @@ def test_me_for_provisioned_user(client, db, ana, bearer):
 
     assert resp.status_code == 200
     assert resp.json() == {
+        "role": "CLIENT",
         "business_id": "biz-ana",
         "income_source": "DIAN",
         "is_provisioned": True,
@@ -577,7 +579,7 @@ def test_me_with_several_businesses_returns_the_oldest_active_one_without_fiscal
     resp = client.get("/api/auth/me", headers=bearer("ana"))
 
     assert resp.json()["business_id"] == "biz-ana-old"
-    assert set(resp.json()) == {"business_id", "income_source", "is_provisioned", "is_blocked",
+    assert set(resp.json()) == {"role", "business_id", "income_source", "is_provisioned", "is_blocked",
                                 "subscription_status", "has_warning_banner", "redirect_url"}
 
 
