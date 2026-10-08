@@ -1,0 +1,87 @@
+# Pruebas y despliegue automático del backend de Konta.
+#
+# En cada push a main: corre la suite de pytest y, si pasa, entra por SSH al VPS y ejecuta
+# scripts/deploy.sh back (actualiza el repo, reconstruye los contenedores, migra y verifica /health).
+# También se puede lanzar a mano desde la pestaña Actions (workflow_dispatch), con la opción de
+# desplegar ambos repos.
+#
+# Secretos del repositorio (Settings > Secrets and variables > Actions), ver docs/DEPLOYMENT.md:
+#   VPS_HOST         IP o nombre del VPS
+#   VPS_USER         usuario que despliega (dueño de /opt/dianProyect y miembro del grupo docker)
+#   VPS_SSH_KEY      llave privada SSH autorizada para ese usuario
+#   VPS_KNOWN_HOSTS  salida de `ssh-keyscan -t ed25519 <host>` (fija la identidad del servidor)
+name: Deploy backend
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Qué desplegar"
+        type: choice
+        options: [back, all]
+        default: back
+
+concurrency:
+  group: konta-deploy-back
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - name: Instalar dependencias
+        run: uv sync --frozen
+      - name: Pruebas
+        run: uv run python -m pytest -q
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Verificar secretos
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          missing=""
+          for name in VPS_HOST VPS_USER VPS_SSH_KEY VPS_KNOWN_HOSTS; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Faltan secretos del repositorio:$missing (ver docs/DEPLOYMENT.md, Despliegue automático)"
+            exit 1
+          fi
+      - name: Preparar SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Desplegar en el VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          TARGET: ${{ github.event.inputs.target || 'back' }}
+        run: |
+          # Primero se actualiza el propio back-konta para ejecutar la versión más reciente de deploy.sh.
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            "set -e; cd /opt/dianProyect/back-konta && git fetch --quiet origin main && git reset --quiet --hard origin/main && bash scripts/deploy.sh $TARGET"
+      - name: Limpiar llave
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

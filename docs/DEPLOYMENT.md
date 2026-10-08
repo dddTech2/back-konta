@@ -321,7 +321,7 @@ Si el servidor ya ejecuta nginx en los puertos 80 y 443 para otros sitios, no se
      ```
    - El certificado no se emite → DNS sin propagar o el bloque HTTP del dominio no está activo.
 
-## 9. Documentos de clientes y respaldo manual (Story 7.4a)
+## 11. Documentos de clientes y respaldo manual (Story 7.4a)
 
 Los documentos cargados por la administradora para los clientes (RUT, Cámara de Comercio, etc.) se almacenan físicamente en el volumen compartido `kontable_data` bajo la ruta `/data/documents/` (variable `DOCUMENTS_DIR`).
 
@@ -343,4 +343,57 @@ Para restaurar una copia de documentos:
 docker compose cp ./backups/documents_manual/ api:/data/documents/
 ```
 
+## 12. Despliegue automático (GitHub Actions)
 
+Cada push a `main` de `back-konta` y a `master` de `front-konta` corre las pruebas y, si pasan, entra por
+SSH al VPS y ejecuta `scripts/deploy.sh` (workflows `.github/workflows/deploy.yml` de cada repo). El script:
+
+1. Lleva el repo a `origin/<rama>` (descarta cambios hechos a mano en archivos versionados; no toca `.env` ni `dist/`).
+2. Frontend: `npm ci`, verificación de tipos y build en `dist.new/`; si compila, actualiza el contenido de
+   `dist/` sin reemplazar la carpeta (la API la monta como volumen).
+3. Backend: `docker compose up -d --build --remove-orphans` (el servicio `migrate` aplica las migraciones
+   antes de que arranquen `api`, `bot` y `scheduler`).
+4. Verifica `http://127.0.0.1:8020/health`; si no responde, muestra los logs de `migrate` y `api` y falla.
+
+Un candado (`flock`) evita dos despliegues al mismo tiempo.
+
+### Preparación única del servidor
+
+Los repos de `/opt/dianProyect` deben pertenecer al usuario que despliega (hoy son de `root` y `ghostmgr`
+necesita contraseña para `sudo`). Una sola vez, en el VPS:
+
+```bash
+sudo chown -R ghostmgr:ghostmgr /opt/dianProyect
+chmod 600 /opt/dianProyect/back-konta/.env
+```
+
+`ghostmgr` ya está en el grupo `docker` y el servidor tiene `git`, `node` y `npm`.
+
+### Secretos de GitHub (en ambos repos)
+
+| Secreto | Valor |
+|---|---|
+| `VPS_HOST` | IP o nombre del VPS |
+| `VPS_USER` | `ghostmgr` |
+| `VPS_SSH_KEY` | llave privada autorizada en `~ghostmgr/.ssh/authorized_keys` |
+| `VPS_KNOWN_HOSTS` | salida de `ssh-keyscan -t ed25519 <host>` |
+
+Con la CLI de GitHub, desde el equipo que tiene la llave:
+
+```bash
+gh secret set VPS_SSH_KEY --repo dddTech2/back-konta < ~/.ssh/nyo_deploy
+gh secret set VPS_SSH_KEY --repo dddTech2/front-konta < ~/.ssh/nyo_deploy
+```
+
+Recomendado: usar una llave exclusiva para despliegues (sin frase de paso, solo para este usuario) en vez
+de una llave personal, para poder revocarla sin afectar otros accesos.
+
+### Despliegue manual y emergencias
+
+- Desde GitHub: pestaña **Actions** > *Deploy backend* > **Run workflow** (`back` o `all`).
+- En el VPS: `/opt/dianProyect/back-konta/scripts/deploy.sh [all|back|front]`.
+- Volver a una versión anterior: revertir el commit en GitHub (`git revert`) y hacer push; el despliegue
+  automático deja el servidor en esa versión. No edites archivos en el servidor: el siguiente despliegue
+  los descarta.
+- Las migraciones no se revierten solas: si una versión nueva trae una migración, revertir el código no
+  deshace el esquema (usar `docker compose run --rm migrate alembic downgrade <revisión>` con cuidado).
