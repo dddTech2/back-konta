@@ -66,8 +66,9 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0   # dentro de la red de compose Redis es "redis", no localhost
       DOCUMENTS_DIR: /data/documents
     ports:
-      # Cuando el worker use https://<dominio>, cambia a "127.0.0.1:8020:8000" para no exponer la API sin cifrar.
-      - "8020:8000"
+      # Solo en 127.0.0.1: el tráfico externo (SPA y worker) entra por nginx con HTTPS. Sin dominio ni nginx,
+      # usa "8020:8000" para exponerla (sin cifrar, y uvicorn confiaría en X-Forwarded-* de cualquiera).
+      - "127.0.0.1:8020:8000"
     volumes:
       - kontable_data:/data
       - ${FRONTEND_DIR:-../front-konta/dist}:/frontend/dist:ro   # carpeta dist de la SPA compilada (ruta relativa a este archivo)

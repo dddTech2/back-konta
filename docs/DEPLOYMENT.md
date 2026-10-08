@@ -29,7 +29,7 @@ Copia `.env.example` a `.env` y define, como mínimo:
 
 | Variable | Para qué |
 |---|---|
-| `KONTABLE_API_URL` | URL pública de la API en el VPS, ej. `http://<ip-o-dominio>:8020`. |
+| `KONTABLE_API_URL` | URL pública de la API en el VPS, ej. `https://konta.example.com` (el puerto 8020 solo escucha en 127.0.0.1, detrás de nginx). |
 | `INTERNAL_WORKER_TOKEN` | El mismo secreto que en el `.env` del VPS. Sin él el worker no arranca. |
 | `STALWART_IMAP_HOST`, `STALWART_IMAP_PORT`, `STALWART_USER`, `STALWART_PASSWORD` | Buzón donde llega el enlace mágico de la DIAN. |
 | `REDIS_URL` | Opcional: `redis://:<clave>@<ip-vps>:6390/0`. Despierta al worker al instante; sin él consulta cada 10 s. |

@@ -20,7 +20,7 @@ Alternativa:
     python -m dian_automation.cli.worker_remote
 
 Variables de entorno relevantes (ver .env):
-    KONTABLE_API_URL       Base de la API en el VPS, ej. http://<ip-vps>:8020
+    KONTABLE_API_URL       Base de la API en el VPS, ej. https://konta.visioncontable.com
     INTERNAL_WORKER_TOKEN  Mismo secreto configurado en el .env del VPS
     WORKER_NAME            Nombre en el latido (por defecto remote)
     PENDING_UPLOADS_DIR    Carpeta de ZIP por subir (por defecto pending_uploads/ en el directorio de trabajo)
