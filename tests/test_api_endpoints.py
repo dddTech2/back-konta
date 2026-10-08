@@ -1,5 +1,6 @@
 """Pruebas unitarias y de integración para los Endpoints FastAPI de Konta."""
 
+import os
 import time
 import pytest
 from datetime import date, datetime, timedelta
@@ -365,6 +366,11 @@ def test_lockout_returns_403_forbidden_on_all_endpoints(client, db_session, seed
 
 def test_frontend_static_files_served(client):
     """El frontend web/móvil (ProyectoDianFront) queda montado en /app para el enlace de Telegram."""
+    from dian_automation.api import app as app_module
+
+    if not os.path.isfile(os.path.join(app_module._frontend_dir, "kontable-prototipo_1.html")):
+        # En CI no hay SPA compilada junto al backend: /app no se monta.
+        pytest.skip(f"SPA no disponible en {app_module._frontend_dir}")
     r = client.get("/app/kontable-prototipo_1.html")
     assert r.status_code == 200
     assert "Kontable" in r.text

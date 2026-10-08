@@ -178,6 +178,9 @@ def test_worker_run_once_with_auto_ingest(db_session_factory):
     real_zip = os.path.join(
         os.path.dirname(__file__), "..", "downloads", "183ff689-751a-4971-82a6-e178e427c1c3.zip"
     )
+    if not os.path.isfile(real_zip):
+        # downloads/ está en .gitignore (datos reales de la DIAN): en CI no existe el ZIP.
+        pytest.skip(f"ZIP real de la DIAN no disponible en {real_zip}")
 
     worker = ExtractionWorker(db_session_factory=db_session_factory)
 
