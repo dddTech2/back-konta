@@ -2,7 +2,7 @@
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -457,4 +457,119 @@ class ClientDetailResponse(BaseModel):
     telegram_chat_id: Optional[int] = None
     iva_periodicity: Optional[str] = None
     is_withholding_agent: Optional[bool] = None
+
+
+# ==============================================================================
+# Story 8.4: Esquemas de Operación de Administración (Resumen, Jobs, Worker, Docs)
+# ==============================================================================
+
+
+class AdminSummaryCutoffItem(BaseModel):
+    """Negocio con corte próximo en los siguientes 7 días (AC #1)."""
+    business_id: str
+    commercial_name: str
+    nit: str
+    cutoff_date: str
+
+
+class AdminSummaryGraceItem(BaseModel):
+    """Negocio en periodo de gracia (AC #1)."""
+    business_id: str
+    commercial_name: str
+    nit: str
+    cutoff_date: Optional[str] = None
+    grace_period_end: Optional[str] = None
+
+
+class AdminSummaryPaymentsMonth(BaseModel):
+    """Recaudo del mes en curso (AC #1)."""
+    count: int
+    total: float
+
+
+class AdminWorkerItem(BaseModel):
+    """Estado y latido de un worker individual (AC #3)."""
+    name: str
+    last_seen_at: Optional[str] = None
+    minutes_since: Optional[int] = None
+    is_silent: bool
+
+
+class AdminWorkerStatusResponse(BaseModel):
+    """Vigilancia y estado de silencio de workers (AC #3)."""
+    silence_threshold_minutes: int
+    workers: List[AdminWorkerItem]
+
+
+class AdminSummaryResponse(BaseModel):
+    """Resumen consolidado de administración web (AC #1)."""
+    clients_by_status: Dict[str, int]
+    clients_by_income_source: Dict[str, int]
+    upcoming_cutoffs: List[AdminSummaryCutoffItem]
+    in_grace: List[AdminSummaryGraceItem]
+    payments_this_month: AdminSummaryPaymentsMonth
+    failed_jobs_24h: int
+    unlinked_telegram: int
+    worker: AdminWorkerStatusResponse
+
+
+class AdminJobItem(BaseModel):
+    """Trabajo de extracción DIAN en el listado de administración (AC #2)."""
+    job_id: str
+    business_id: str
+    commercial_name: str
+    nit: str
+    target_period: str
+    status: str
+    attempt_count: int
+    max_attempts: int
+    next_run_at: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+class AdminJobsListResponse(BaseModel):
+    """Respuesta paginada del listado de extracciones (AC #2)."""
+    items: List[AdminJobItem]
+    total: int
+    page: int
+    page_size: int
+
+
+class AdminExtractionCreateRequest(BaseModel):
+    """Solicitud para encolar extracción DIAN (AC #4)."""
+    period: Optional[str] = None
+    months: Optional[int] = None
+
+
+class AdminExtractionCreateResponse(BaseModel):
+    """Respuesta al encolar extracción DIAN (AC #4)."""
+    job_id: str
+    business_id: str
+    target_period: str
+    status: str
+    attempt_count: int = 0
+    max_attempts: int = 3
+    next_run_at: Optional[str] = None
+    created_at: Optional[str] = None
+    id: Optional[str] = None
+    period: Optional[str] = None
+
+
+class AdminDocumentItem(BaseModel):
+    """Elemento de documento de cliente para el panel de administración (AC #5)."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    number: int
+    doc_type: str
+    description: Optional[str] = None
+    original_filename: str
+    content_type: str
+    size_bytes: int
+    created_at: datetime
+    document_id: Optional[str] = None
+
 

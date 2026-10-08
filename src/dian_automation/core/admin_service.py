@@ -12,10 +12,12 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional
-from sqlalchemy import func, or_
+from zoneinfo import ZoneInfo
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from dian_automation.branding import BRAND_NAME
+from dian_automation.config import config
 from dian_automation.db.models import (
     INCOME_SOURCE_DIAN,
     INCOME_SOURCE_MANUAL_SALES,
@@ -28,8 +30,11 @@ from dian_automation.db.models import (
     Subscription,
     TelegramLinkToken,
     User,
+    WorkerHeartbeat,
 )
+from dian_automation.queue.exceptions import is_slow_error
 from dian_automation.subscriptions.service import add_months_to_date
+from dian_automation.telegram.admin_alerts import _cause_text
 from dian_automation.telegram.deep_linking import TelegramDeepLinkingService
 
 logger = logging.getLogger("admin_service")
@@ -980,4 +985,269 @@ def release_client_telegram(
         db.rollback()
         logger.error(f"Error liberando Telegram para user_id={user.id}: {e}", exc_info=True)
         raise AdminServiceError("INTERNAL_ERROR", f"Error interno al desvincular la cuenta: {str(e)}", 500)
+
+
+# ==============================================================================
+# Story 8.4: Resumen Comercial, Estado del Worker y Trabajos DIAN
+# ==============================================================================
+
+KNOWN_JOB_ERROR_MESSAGES: Dict[str, str] = {
+    "AUTH_FAILED": "Fallo de autenticación en portal DIAN",
+    "AuthFailedError": "Fallo de autenticación en portal DIAN",
+    "MAIL_TIMEOUT": "Tiempo de espera agotado buscando token en correo",
+    "MailTokenTimeoutError": "Tiempo de espera agotado buscando token en correo",
+    "TURNSTILE_BLOCKED": "Bloqueo o verificación fallida en Cloudflare Turnstile",
+    "TurnstileBlockedError": "Bloqueo o verificación fallida en Cloudflare Turnstile",
+    "DIAN_DOWN": "El portal DIAN VPFE no responde o se encuentra en mantenimiento",
+    "DIANPortalDownError": "El portal DIAN VPFE no responde o se encuentra en mantenimiento",
+    "EXTRACTION_ERROR": "Error durante la extracción en la DIAN",
+    "DIANExtractionError": "Error durante la extracción en la DIAN",
+}
+
+
+def format_extraction_error_message(error_code: Optional[str]) -> Optional[str]:
+    """Genera mensaje legible en español para códigos de error de extracción (Story 8.4 - AC #2)."""
+    if not error_code:
+        return None
+    code_clean = str(error_code).strip()
+    if is_slow_error(code_clean):
+        return _cause_text(code_clean)
+    if code_clean in KNOWN_JOB_ERROR_MESSAGES:
+        return KNOWN_JOB_ERROR_MESSAGES[code_clean]
+    return f"Error en la descarga ({code_clean})"
+
+
+def get_worker_status(db: Session) -> Dict[str, Any]:
+    """Estado y latidos del worker remoto frente al umbral de silencio (Story 8.4 - AC #3)."""
+    silence_threshold = getattr(config, "worker_silence_minutes", 30)
+    rows = db.query(WorkerHeartbeat).order_by(WorkerHeartbeat.name.asc()).all()
+    now_utc = datetime.utcnow()
+    workers = []
+    for r in rows:
+        if r.last_seen_at is not None:
+            delta = now_utc - r.last_seen_at
+            minutes_since = max(0, int(delta.total_seconds() // 60))
+            is_silent = delta > timedelta(minutes=silence_threshold)
+            last_seen_iso = r.last_seen_at.isoformat()
+        else:
+            minutes_since = None
+            is_silent = True
+            last_seen_iso = None
+        workers.append({
+            "name": r.name,
+            "last_seen_at": last_seen_iso,
+            "minutes_since": minutes_since,
+            "is_silent": is_silent,
+        })
+    return {
+        "silence_threshold_minutes": silence_threshold,
+        "workers": workers,
+    }
+
+
+def list_jobs_paged(
+    db: Session,
+    admin: Optional[User] = None,
+    status: Optional[str] = None,
+    business_id: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 25,
+) -> Dict[str, Any]:
+    """Listado paginado de trabajos de extracción DIAN más recientes primero (Story 8.4 - AC #2)."""
+    page = max(1, int(page))
+    page_size = max(1, min(100, int(page_size)))
+    offset = (page - 1) * page_size
+
+    query = db.query(DIANExtractionJob, Business).join(Business, DIANExtractionJob.business_id == Business.id)
+
+    if status and status.strip():
+        query = query.filter(DIANExtractionJob.status == status.upper().strip())
+
+    if business_id and business_id.strip():
+        biz_clean = business_id.strip()
+        query = query.filter(or_(DIANExtractionJob.business_id == biz_clean, Business.nit == biz_clean))
+
+    total = query.count()
+
+    results = (
+        query
+        .order_by(DIANExtractionJob.created_at.desc(), DIANExtractionJob.id.desc())
+        .offset(offset)
+        .limit(page_size)
+        .all()
+    )
+
+    items = []
+    for job, biz in results:
+        items.append({
+            "job_id": job.id,
+            "business_id": biz.id,
+            "commercial_name": biz.commercial_name,
+            "nit": biz.nit,
+            "target_period": job.target_period,
+            "status": job.status,
+            "attempt_count": job.attempt_count,
+            "max_attempts": job.max_attempts,
+            "next_run_at": job.next_run_at.isoformat() if job.next_run_at else None,
+            "started_at": job.started_at.isoformat() if job.started_at else None,
+            "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+            "error_code": job.error_code,
+            "error_message": format_extraction_error_message(job.error_code),
+        })
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+def get_admin_summary(
+    db: Session,
+    admin: Optional[User] = None,
+    now_bogota: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Resumen consolidado de cartera, operaciones y estado del worker (Story 8.4 - AC #1)."""
+    if now_bogota is None:
+        now_bogota = datetime.now(ZoneInfo("America/Bogota"))
+    today_bogota = now_bogota.date()
+    cutoff_horizon = today_bogota + timedelta(days=7)
+
+    latest_sub_id = (
+        db.query(Subscription.id)
+        .filter(Subscription.client_id == Business.client_id)
+        .order_by(Subscription.created_at.desc(), Subscription.id.desc())
+        .limit(1)
+        .correlate(Business)
+        .scalar_subquery()
+    )
+
+    businesses = (
+        db.query(Business, Subscription)
+        .join(User, Business.client_id == User.id)
+        .outerjoin(Subscription, Subscription.id == latest_sub_id)
+        .filter(User.role == "CLIENT")
+        .all()
+    )
+
+    clients_by_status = {
+        "ACTIVO": 0,
+        "EN_MORA": 0,
+        "BLOQUEADO": 0,
+        "CANCELADO": 0,
+        "SIN_SUSCRIPCION": 0,
+    }
+    clients_by_income_source = {
+        "DIAN": 0,
+        "MANUAL_SALES": 0,
+    }
+    upcoming_cutoffs = []
+    in_grace = []
+
+    for biz, sub in businesses:
+        # Origen de ingresos
+        if biz.income_source == INCOME_SOURCE_MANUAL_SALES:
+            clients_by_income_source["MANUAL_SALES"] += 1
+        else:
+            clients_by_income_source["DIAN"] += 1
+
+        # Estado de suscripción
+        if not sub:
+            clients_by_status["SIN_SUSCRIPCION"] += 1
+        elif sub.status in clients_by_status:
+            clients_by_status[sub.status] += 1
+        else:
+            clients_by_status[sub.status] = clients_by_status.get(sub.status, 0) + 1
+
+        # Próximos cortes (próximos 7 días, hora Bogotá)
+        if sub and sub.status == "ACTIVO" and sub.cutoff_date and today_bogota <= sub.cutoff_date <= cutoff_horizon:
+            upcoming_cutoffs.append({
+                "business_id": biz.id,
+                "commercial_name": biz.commercial_name,
+                "nit": biz.nit,
+                "cutoff_date": sub.cutoff_date.isoformat(),
+            })
+
+        # Periodo de gracia (en mora o ventana activa de gracia)
+        is_in_grace = False
+        if sub:
+            if sub.status == "EN_MORA":
+                is_in_grace = True
+            elif (
+                sub.status == "ACTIVO"
+                and sub.cutoff_date
+                and sub.grace_period_end
+                and sub.cutoff_date <= today_bogota <= sub.grace_period_end
+            ):
+                is_in_grace = True
+
+        if is_in_grace and sub:
+            in_grace.append({
+                "business_id": biz.id,
+                "commercial_name": biz.commercial_name,
+                "nit": biz.nit,
+                "cutoff_date": sub.cutoff_date.isoformat() if sub.cutoff_date else None,
+                "grace_period_end": sub.grace_period_end.isoformat() if sub.grace_period_end else None,
+            })
+
+    upcoming_cutoffs.sort(key=lambda x: x["cutoff_date"])
+    in_grace.sort(key=lambda x: x["grace_period_end"] or "")
+
+    # Pagos de este mes (hora Bogotá)
+    cur_year = today_bogota.year
+    cur_month = today_bogota.month
+    start_of_month = date(cur_year, cur_month, 1)
+    last_day_num = calendar.monthrange(cur_year, cur_month)[1]
+    end_of_month = date(cur_year, cur_month, last_day_num)
+
+    payments = (
+        db.query(PaymentRecord)
+        .filter(PaymentRecord.payment_date >= start_of_month, PaymentRecord.payment_date <= end_of_month)
+        .all()
+    )
+    payments_count = len(payments)
+    payments_total = float(sum(p.amount for p in payments))
+
+    # Trabajos fallidos en últimas 24h
+    since_24h = datetime.utcnow() - timedelta(hours=24)
+    failed_jobs_24h = (
+        db.query(DIANExtractionJob)
+        .filter(
+            DIANExtractionJob.status == "FAILED",
+            or_(
+                DIANExtractionJob.finished_at >= since_24h,
+                and_(DIANExtractionJob.finished_at.is_(None), DIANExtractionJob.created_at >= since_24h),
+            ),
+        )
+        .count()
+    )
+
+    # Clientes sin Telegram vinculado
+    unlinked_telegram = (
+        db.query(User)
+        .filter(
+            User.role == "CLIENT",
+            or_(User.is_telegram_linked.is_(False), User.telegram_chat_id.is_(None)),
+        )
+        .count()
+    )
+
+    # Estado del worker
+    worker_data = get_worker_status(db)
+
+    return {
+        "clients_by_status": clients_by_status,
+        "clients_by_income_source": clients_by_income_source,
+        "upcoming_cutoffs": upcoming_cutoffs,
+        "in_grace": in_grace,
+        "payments_this_month": {
+            "count": payments_count,
+            "total": payments_total,
+        },
+        "failed_jobs_24h": failed_jobs_24h,
+        "unlinked_telegram": unlinked_telegram,
+        "worker": worker_data,
+    }
+
 

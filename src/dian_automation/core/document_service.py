@@ -386,6 +386,10 @@ def verify_download_token(db: Session, token: str) -> Tuple[BusinessDocument, Us
             status_code=404,
         )
 
+    # El token de descarga sirve para un ADMIN activo sin exigir ser dueño ni suscripción (Story 8.4 - AC #5)
+    if user.role == "ADMIN":
+        return document, user
+
     # Validar que el usuario sea el dueño del negocio del documento
     business = (
         db.query(Business)

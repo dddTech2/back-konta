@@ -1,8 +1,20 @@
-"""Endpoints de administración web para Konta (Story 8.2 y Story 8.3)."""
+"""Endpoints de administración web para Konta (Story 8.2, Story 8.3 y Story 8.4)."""
 
-from typing import Any, Dict, Optional
+import logging
+import re
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
 from sqlalchemy.orm import Session
 
 from dian_automation.api.dependencies import get_current_admin
@@ -12,14 +24,23 @@ from dian_automation.api.schemas import (
     AdminClientCreateRequest,
     AdminClientCreateResponse,
     AdminClientsListResponse,
+    AdminDocumentItem,
+    AdminExtractionCreateRequest,
+    AdminExtractionCreateResponse,
     AdminIncomeSourceRequest,
+    AdminJobItem,
+    AdminJobsListResponse,
     AdminPaymentCreateRequest,
     AdminPaymentItem,
     AdminPaymentResponse,
+    AdminSummaryResponse,
     AdminTaxProfileRequest,
+    AdminWorkerStatusResponse,
     ClientDetailResponse,
+    DocumentLinkResponse,
 )
-from dian_automation.core import admin_service
+from dian_automation.config import config
+from dian_automation.core import admin_service, document_service
 from dian_automation.core.admin_service import (
     INCOME_SOURCE_BY_TIPO,
     INCOME_SOURCE_DIAN,
@@ -30,8 +51,10 @@ from dian_automation.core.admin_service import (
     normalize_nit,
 )
 from dian_automation.db.database import get_db
-from dian_automation.db.models import Business, User
+from dian_automation.db.models import Business, BusinessDocument, User
 from dian_automation.telegram.notify import send_telegram_message
+
+logger = logging.getLogger("routes_admin")
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
 
@@ -334,3 +357,337 @@ def release_telegram(
         business_id=business_id,
     )
     return admin_service.get_client_detail(db=db, business_id=business_id, admin=admin)
+
+
+# ==============================================================================
+# Story 8.4: Resumen, Operación DIAN, Worker y Documentos
+# ==============================================================================
+
+
+@router.get("/summary", response_model=AdminSummaryResponse)
+def get_admin_summary(
+    admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Resumen consolidado de cartera, operaciones y estado del worker (Story 8.4 - AC #1)."""
+    return admin_service.get_admin_summary(db=db, admin=admin)
+
+
+@router.get("/jobs", response_model=AdminJobsListResponse)
+def list_jobs(
+    status: Optional[str] = Query(None, description="Filtrar por estado del trabajo de extracción"),
+    business_id: Optional[str] = Query(None, description="Filtrar por ID o NIT del negocio"),
+    page: int = Query(1, ge=1, description="Número de página"),
+    page_size: int = Query(25, ge=1, le=100, description="Tamaño de página"),
+    admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Listado paginado de trabajos de extracción DIAN más recientes primero (Story 8.4 - AC #2)."""
+    return admin_service.list_jobs_paged(
+        db=db,
+        admin=admin,
+        status=status,
+        business_id=business_id,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get("/worker", response_model=AdminWorkerStatusResponse)
+def get_worker_status(
+    admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Estado y vigilancia del worker de descargas frente al umbral de silencio (Story 8.4 - AC #3)."""
+    return admin_service.get_worker_status(db=db)
+
+
+@router.post(
+    "/clients/{business_id}/extractions",
+    response_model=AdminExtractionCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_extraction(
+    business_id: str,
+    body: AdminExtractionCreateRequest,
+    admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Encola un trabajo de extracción DIAN para el negocio especificado (Story 8.4 - AC #4)."""
+    biz = db.query(Business).filter(
+        (Business.id == business_id) | (Business.nit == business_id)
+    ).first()
+    if not biz:
+        raise AdminServiceError("BUSINESS_NOT_FOUND", f"No se encontró ningún negocio con identificador '{business_id}'.", 404)
+
+    period_spec = None
+    if body.months is not None:
+        if not (1 <= body.months <= 12):
+            raise AdminServiceError("INVALID_MONTHS_RANGE", "El número de meses debe estar entre 1 y 12.", status_code=422)
+        period_spec = admin_service.resolve_months_range(body.months)
+    elif body.period is not None:
+        p_clean = body.period.strip()
+        if not re.match(r"^\d{4}-\d{2}$", p_clean):
+            raise AdminServiceError("INVALID_PERIOD_FORMAT", f"Periodo '{body.period}' inválido. Usa formato YYYY-MM.", status_code=422)
+        period_spec = p_clean
+
+    job = admin_service.enqueue_extraction(
+        db=db,
+        admin=admin,
+        nit=biz.nit,
+        period_spec=period_spec,
+    )
+
+    return AdminExtractionCreateResponse(
+        job_id=job.id,
+        business_id=biz.id,
+        target_period=job.target_period,
+        status=job.status,
+        attempt_count=job.attempt_count,
+        max_attempts=job.max_attempts,
+        next_run_at=job.next_run_at.isoformat() if job.next_run_at else None,
+        created_at=job.created_at.isoformat() if job.created_at else None,
+        id=job.id,
+        period=job.target_period,
+    )
+
+
+@router.get("/clients/{business_id}/documents", response_model=List[AdminDocumentItem])
+def list_client_documents(
+    business_id: str,
+    admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Lista activa de documentos de un negocio con numeración estable (Story 8.4 - AC #5)."""
+    biz = db.query(Business).filter(
+        (Business.id == business_id) | (Business.nit == business_id)
+    ).first()
+    if not biz:
+        raise AdminServiceError("BUSINESS_NOT_FOUND", f"No se encontró ningún negocio con identificador '{business_id}'.", 404)
+
+    numbered = document_service.list_active_numbered(db, biz)
+    items = []
+    for num, doc in numbered:
+        items.append(
+            AdminDocumentItem(
+                id=doc.id,
+                number=num,
+                doc_type=doc.doc_type,
+                description=doc.description,
+                original_filename=doc.original_filename,
+                content_type=doc.content_type,
+                size_bytes=doc.size_bytes,
+                created_at=doc.created_at,
+                document_id=doc.id,
+            )
+        )
+    return items
+
+
+@router.post(
+    "/clients/{business_id}/documents",
+    response_model=AdminDocumentItem,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_client_document(
+    business_id: str,
+    file: UploadFile = File(...),
+    doc_type: str = Form(...),
+    description: Optional[str] = Form(None),
+    admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Carga un documento para el cliente con validaciones y aviso por Telegram (Story 8.4 - AC #5 y #6)."""
+    biz = db.query(Business).filter(
+        (Business.id == business_id) | (Business.nit == business_id)
+    ).first()
+    if not biz:
+        raise AdminServiceError("BUSINESS_NOT_FOUND", f"No se encontró ningún negocio con identificador '{business_id}'.", 404)
+
+    clean_tipo = (doc_type or "").upper().strip()
+    DOC_TYPE_ALIASES = {
+        "RUT": "RUT",
+        "CAMARA": "CAMARA_COMERCIO",
+        "CAMARA_COMERCIO": "CAMARA_COMERCIO",
+        "CEDULA": "CEDULA_REPRESENTANTE",
+        "CEDULA_REPRESENTANTE": "CEDULA_REPRESENTANTE",
+        "BANCARIA": "CERTIFICACION_BANCARIA",
+        "CERTIFICACION_BANCARIA": "CERTIFICACION_BANCARIA",
+        "OTRO": "OTRO",
+    }
+    if clean_tipo not in DOC_TYPE_ALIASES:
+        valid_types = ", ".join(sorted(document_service.VALID_DOC_TYPES))
+        raise AdminServiceError(
+            "INVALID_DOC_TYPE",
+            f"Tipo de documento '{doc_type}' no reconocido. Tipos válidos: {valid_types}.",
+            status_code=422,
+        )
+    mapped_doc_type = DOC_TYPE_ALIASES[clean_tipo]
+
+    clean_desc = description.strip() if description else None
+    if mapped_doc_type == document_service.DOC_TYPE_OTRO and not clean_desc:
+        raise AdminServiceError(
+            "DESCRIPTION_REQUIRED_FOR_OTHER",
+            "Los documentos de tipo 'OTRO' requieren una descripción.",
+            status_code=422,
+        )
+    if clean_desc and len(clean_desc) > 120:
+        raise AdminServiceError(
+            "DESCRIPTION_TOO_LONG",
+            "La descripción no puede superar 120 caracteres.",
+            status_code=422,
+        )
+
+    # Lectura en bloques hasta DOCUMENT_MAX_MB + 1 para no cargar archivos gigantes a memoria (AC #6)
+    max_mb = getattr(getattr(document_service, "config", None), "document_max_mb", getattr(config, "document_max_mb", 10))
+    max_bytes = max_mb * 1024 * 1024
+    chunks = []
+    total_bytes = 0
+    chunk_size = 65536
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        total_bytes += len(chunk)
+        if total_bytes > max_bytes:
+            raise AdminServiceError(
+                "FILE_TOO_LARGE",
+                f"El archivo supera el tamaño máximo permitido de {max_mb} MB.",
+                status_code=413,
+            )
+        chunks.append(chunk)
+
+    content = b"".join(chunks)
+    if len(content) == 0:
+        raise AdminServiceError("EMPTY_FILE", "El archivo está vacío.", status_code=422)
+
+    # Validar firma mágica
+    try:
+        content_type, ext = document_service.detect_content_type(content)
+    except document_service.DocumentError as de:
+        raise AdminServiceError(
+            "INVALID_CONTENT_TYPE",
+            de.message,
+            status_code=415,
+        )
+
+    filename = file.filename or f"{mapped_doc_type}.{ext}"
+    try:
+        saved_doc = document_service.save_document(
+            db=db,
+            business=biz,
+            doc_type=mapped_doc_type,
+            description=clean_desc,
+            filename=filename,
+            content=content,
+            uploaded_by=admin,
+        )
+    except document_service.DocumentError as de:
+        mapped_status = 413 if de.code == "FILE_TOO_LARGE" else 422
+        raise AdminServiceError(de.code, de.message, status_code=mapped_status)
+
+    # Notificar al cliente si tiene Telegram vinculado (mismo texto que el bot admin)
+    owner = biz.client or db.query(User).filter(User.id == biz.client_id).first()
+    if owner and owner.is_telegram_linked and owner.telegram_chat_id:
+        doc_label = document_service.DOC_TYPE_LABELS.get(saved_doc.doc_type, saved_doc.doc_type)
+        client_msg = f"📄 Katerinn cargó tu {doc_label} en tu panel. Escribe /dashboard para verlo."
+        try:
+            send_telegram_message(owner.telegram_chat_id, client_msg)
+        except Exception as e:
+            logger.warning(f"Error enviando aviso de documento cargado a chat_id={owner.telegram_chat_id}: {e}")
+
+    num = document_service.get_document_number(db, biz, saved_doc.id) or 1
+    return AdminDocumentItem(
+        id=saved_doc.id,
+        number=num,
+        doc_type=saved_doc.doc_type,
+        description=saved_doc.description,
+        original_filename=saved_doc.original_filename,
+        content_type=saved_doc.content_type,
+        size_bytes=saved_doc.size_bytes,
+        created_at=saved_doc.created_at,
+        document_id=saved_doc.id,
+    )
+
+
+@router.delete(
+    "/clients/{business_id}/documents/{document_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def retire_client_document(
+    business_id: str,
+    document_id: str,
+    admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Retira un documento de cliente con borrado lógico (Story 8.4 - AC #5)."""
+    biz = db.query(Business).filter(
+        (Business.id == business_id) | (Business.nit == business_id)
+    ).first()
+    if not biz:
+        raise AdminServiceError("BUSINESS_NOT_FOUND", f"No se encontró ningún negocio con identificador '{business_id}'.", 404)
+
+    # Buscar por UUID o por número estable
+    doc = db.query(BusinessDocument).filter(
+        BusinessDocument.id == document_id,
+        BusinessDocument.business_id == biz.id,
+    ).first()
+
+    if not doc and document_id.isdigit():
+        num = int(document_id)
+        doc = document_service.find_document_by_number(db, biz, num)
+
+    if not doc or doc.business_id != biz.id:
+        raise AdminServiceError("DOCUMENT_NOT_FOUND", f"No se encontró el documento '{document_id}'.", 404)
+
+    if doc.deleted_at is not None:
+        raise AdminServiceError("ALREADY_RETIRED", "El documento ya fue retirado previamente.", status_code=409)
+
+    doc.deleted_at = datetime.utcnow()
+    doc.deleted_by_user_id = admin.id
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/clients/{business_id}/documents/{document_id}/link",
+    response_model=DocumentLinkResponse,
+)
+def generate_client_document_link(
+    business_id: str,
+    document_id: str,
+    admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Genera enlace temporal firmado para que el administrador descargue el documento (Story 8.4 - AC #5)."""
+    biz = db.query(Business).filter(
+        (Business.id == business_id) | (Business.nit == business_id)
+    ).first()
+    if not biz:
+        raise AdminServiceError("BUSINESS_NOT_FOUND", f"No se encontró ningún negocio con identificador '{business_id}'.", 404)
+
+    doc = db.query(BusinessDocument).filter(
+        BusinessDocument.id == document_id,
+        BusinessDocument.business_id == biz.id,
+        BusinessDocument.deleted_at.is_(None),
+    ).first()
+
+    if not doc and document_id.isdigit():
+        num = int(document_id)
+        candidate = document_service.find_document_by_number(db, biz, num)
+        if candidate and candidate.deleted_at is None:
+            doc = candidate
+
+    if not doc:
+        raise AdminServiceError("DOCUMENT_NOT_FOUND", "Documento no encontrado o no disponible.", 404)
+
+    try:
+        token = document_service.create_download_token(admin, doc)
+    except document_service.DocumentError as de:
+        raise AdminServiceError(de.code, de.message, de.status_code)
+
+    return DocumentLinkResponse(
+        url=f"/api/documents/file/{token}",
+        expires_in=300,
+    )
+
