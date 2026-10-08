@@ -389,8 +389,8 @@ def test_client_vencimientos_filtered_by_nit_last_digit(db_session_factory):
 
         msg = resp["message"]
         assert "Último dígito: *9*" in msg
-        assert "IVA_BIMESTRAL" in msg
-        assert "RETEFUENTE" in msg
+        assert "Declaración de IVA" in msg
+        assert "Retención en la fuente" in msg
         assert f"Agosto {date.today().year}" in msg
         # No debe contener el dígito 4
         assert "Dígito: `4`" not in msg
@@ -981,8 +981,9 @@ def test_client_vencimientos_filtered_by_business_profile(db_session_factory):
         )
         assert resp["success"] is True
         msg = resp["message"]
-        assert "IVA_BIMESTRAL" in msg
-        assert "RETEFUENTE" not in msg
+        # Story 4.1c: /vencimientos muestra el nombre legible del impuesto, no el código.
+        assert "Declaración de IVA" in msg
+        assert "Retención en la fuente" not in msg
     finally:
         db.close()
 

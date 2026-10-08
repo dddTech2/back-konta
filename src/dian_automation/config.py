@@ -60,6 +60,10 @@ class AppConfig:
     # Días de antelación desde los que una obligación del calendario tributario se marca 'proximo' (Story 4.1b)
     calendar_upcoming_days: int = int(os.getenv("CALENDAR_UPCOMING_DAYS") or "15")
 
+    # Alertas proactivas de vencimientos tributarios por Telegram (Story 4.1c). Por defecto 'true'.
+    tax_alerts_enabled: bool = os.getenv("TAX_ALERTS_ENABLED", "true").strip().lower() == "true"
+    tax_alerts_hour: int = int(os.getenv("TAX_ALERTS_HOUR") or "8")
+
     # Frontend web/móvil (para servir el prototipo y enlazarlo desde Telegram)
     frontend_dir: str = os.getenv("FRONTEND_DIR", "")
     kontable_web_url: str = os.getenv("KONTABLE_WEB_URL", "http://127.0.0.1:8000/app/")

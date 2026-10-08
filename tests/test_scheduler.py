@@ -478,6 +478,12 @@ def test_invalid_weekday_or_hour_is_rejected(factory, weekday, hour):
         ExtractionScheduler(factory, weekday=weekday, hour=hour)
 
 
+@pytest.mark.parametrize("tax_alerts_hour", [-1, 24, 25])
+def test_invalid_tax_alerts_hour_is_rejected(factory, tax_alerts_hour):
+    with pytest.raises(ValueError, match="TAX_ALERTS_HOUR"):
+        ExtractionScheduler(factory, tax_alerts_hour=tax_alerts_hour)
+
+
 def test_the_runner_exits_with_an_error_on_an_invalid_schedule(monkeypatch, caplog):
     from dian_automation.cli import scheduler as run_scheduler
     from types import SimpleNamespace
@@ -510,7 +516,13 @@ def test_the_runner_passes_the_configured_flag_and_schedule_to_the_loop(monkeypa
 
 def _load_config(monkeypatch, **env):
     """Carga config.py aparte (sin tocar el `config` compartido ni el .env local) con el entorno dado."""
-    for name in ("SCHEDULER_ENABLED", "SCHEDULER_WEEKDAY", "SCHEDULER_HOUR"):
+    for name in (
+        "SCHEDULER_ENABLED",
+        "SCHEDULER_WEEKDAY",
+        "SCHEDULER_HOUR",
+        "TAX_ALERTS_ENABLED",
+        "TAX_ALERTS_HOUR",
+    ):
         monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
@@ -527,6 +539,23 @@ def test_config_defaults_to_disabled_on_sundays_at_3(monkeypatch):
     assert cfg.scheduler_enabled is False
     assert cfg.scheduler_weekday == 6
     assert cfg.scheduler_hour == 3
+
+
+def test_config_defaults_tax_alerts_enabled_to_true_at_8(monkeypatch):
+    cfg = _load_config(monkeypatch)
+
+    assert cfg.tax_alerts_enabled is True
+    assert cfg.tax_alerts_hour == 8
+
+
+@pytest.mark.parametrize("value,expected", [("true", True), ("TRUE", True), ("false", False), ("FALSE", False), ("0", False)])
+def test_tax_alerts_enabled_flag_parsing(monkeypatch, value, expected):
+    assert _load_config(monkeypatch, TAX_ALERTS_ENABLED=value).tax_alerts_enabled is expected
+
+
+def test_config_reads_tax_alerts_hour_from_environment(monkeypatch):
+    cfg = _load_config(monkeypatch, TAX_ALERTS_HOUR="10")
+    assert cfg.tax_alerts_hour == 10
 
 
 @pytest.mark.parametrize("value,expected", [("true", True), ("TRUE", True), (" true ", True), ("false", False), ("1", False), ("yes", False), ("", False)])
@@ -555,4 +584,71 @@ def test_deployment_files_declare_the_scheduler_service():
     assert "\r" not in entrypoint  # un script de shell con CRLF no arranca en el contenedor
     assert "SCHEDULER_ENABLED=false" in env_example
     assert "SCHEDULER_WEEKDAY=6" in env_example and "SCHEDULER_HOUR=3" in env_example
+    assert "TAX_ALERTS_ENABLED=true" in env_example and "TAX_ALERTS_HOUR=8" in env_example
     assert (PROJECT_ROOT / "src" / "dian_automation" / "cli" / "scheduler.py").exists()
+
+
+# ---------------------------------------------------------------------------
+# Story 4.1c: Alertas de vencimientos en ExtractionScheduler.run_loop
+# ---------------------------------------------------------------------------
+
+def test_run_loop_calls_tax_alerts_only_at_tax_alerts_hour(factory):
+    calls = []
+    scheduler = ExtractionScheduler(
+        factory,
+        tax_alerts=lambda now: calls.append(now),
+        tax_alerts_hour=8,
+    )
+    # A las 08:00 de Bogotá -> debe llamar tax_alerts
+    scheduler.run_loop(
+        enabled=False,
+        sleep=lambda s: None,
+        now_func=lambda: at(2026, 9, 20, hour=8),
+        max_iterations=1,
+    )
+    assert len(calls) == 1
+
+    # A las 07:00 de Bogotá -> no debe llamar tax_alerts
+    scheduler.run_loop(
+        enabled=False,
+        sleep=lambda s: None,
+        now_func=lambda: at(2026, 9, 20, hour=7),
+        max_iterations=1,
+    )
+    assert len(calls) == 1
+
+
+def test_run_loop_calls_tax_alerts_independent_of_scheduler_enabled(factory):
+    calls = []
+    scheduler = ExtractionScheduler(
+        factory,
+        tax_alerts=lambda now: calls.append(now),
+        tax_alerts_hour=8,
+    )
+    # enabled=False: llama a tax_alerts igual
+    scheduler.run_loop(
+        enabled=False,
+        sleep=lambda s: None,
+        now_func=lambda: at(2026, 9, 20, hour=8),
+        max_iterations=2,
+    )
+    assert len(calls) == 2
+
+
+def test_run_loop_survives_tax_alerts_exception(factory, caplog):
+    def failing_alerts(now):
+        raise RuntimeError("Fallo transitorio en alertas")
+
+    scheduler = ExtractionScheduler(
+        factory,
+        tax_alerts=failing_alerts,
+        tax_alerts_hour=8,
+    )
+    with caplog.at_level(logging.ERROR, logger="scheduler"):
+        scheduler.run_loop(
+            enabled=False,
+            sleep=lambda s: None,
+            now_func=lambda: at(2026, 9, 20, hour=8),
+            max_iterations=2,
+        )
+    assert "Error en el envío de alertas tributarias" in caplog.text

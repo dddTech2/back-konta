@@ -62,16 +62,23 @@ class ExtractionScheduler:
         weekday: int = 6,
         hour: int = 3,
         worker_watch: Optional[Callable[[Optional[datetime]], Any]] = None,
+        tax_alerts: Optional[Callable[[Optional[datetime]], Any]] = None,
+        tax_alerts_hour: int = 8,
     ):
         if not 0 <= weekday <= 6:
             raise ValueError(f"SCHEDULER_WEEKDAY debe estar entre 0 (lunes) y 6 (domingo); recibido {weekday}")
         if not 0 <= hour <= 23:
             raise ValueError(f"SCHEDULER_HOUR debe estar entre 0 y 23; recibido {hour}")
+        if not 0 <= tax_alerts_hour <= 23:
+            raise ValueError(f"TAX_ALERTS_HOUR debe estar entre 0 y 23; recibido {tax_alerts_hour}")
         self.db_session_factory = db_session_factory
         self.weekday = weekday
         self.hour = hour
         # Vigilancia del silencio del worker (Story 1.8): corre en cada ciclo, esté o no habilitada la programación
         self.worker_watch = worker_watch
+        # Alertas proactivas de vencimientos tributarios (Story 4.1c)
+        self.tax_alerts = tax_alerts
+        self.tax_alerts_hour = tax_alerts_hour
 
     def describe(self) -> str:
         return f"{WEEKDAY_NAMES[self.weekday]} a las {self.hour:02d}:00 (America/Bogota)"
@@ -139,6 +146,8 @@ class ExtractionScheduler:
             logger.info("Programador deshabilitado (SCHEDULER_ENABLED distinto de 'true'): no se encolará nada.")
         if self.worker_watch is not None:
             logger.info("Vigilancia del worker activa (avisa si deja de responder con trabajos listos).")
+        if self.tax_alerts is not None:
+            logger.info(f"Alertas de vencimientos tributarios activas a las {self.tax_alerts_hour:02d}:00 (America/Bogota).")
 
         iterations = 0
         while max_iterations is None or iterations < max_iterations:
@@ -148,6 +157,13 @@ class ExtractionScheduler:
                     self.worker_watch(now_func() if now_func else None)
                 except Exception:
                     logger.exception("Error en la vigilancia del worker; se reintenta en el siguiente ciclo.")
+            if self.tax_alerts is not None:
+                current_time = now_func() if now_func else None
+                if _to_bogota(current_time).hour == self.tax_alerts_hour:
+                    try:
+                        self.tax_alerts(current_time)
+                    except Exception:
+                        logger.exception("Error en el envío de alertas tributarias; se reintenta en el siguiente ciclo.")
             if enabled:
                 try:
                     result = self.tick(now_func() if now_func else None)

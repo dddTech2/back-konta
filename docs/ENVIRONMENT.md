@@ -5,8 +5,8 @@
 Este catálogo consolida todas las variables de entorno consumidas en el código fuente, cruzadas con los archivos `.env.example` y `.env`.
 
 ## Resumen
-- **Variables detectadas en código:** 19
-- **Variables definidas en .env.example:** 19
+- **Variables detectadas en código:** 21
+- **Variables definidas en .env.example:** 21
 
 ---
 
@@ -36,6 +36,8 @@ Este catálogo consolida todas las variables de entorno consumidas en el código
 | `SCHEDULER_ENABLED` | Activa el programador semanal: solo el valor `true` encola; cualquier otro lo deja apagado y solo lo registra en el log | `false` | `src/dian_automation/config.py`, `src/dian_automation/cli/scheduler.py` | ✅ Documentada |
 | `SCHEDULER_WEEKDAY` | Día de la corrida semanal del programador (0 = lunes … 6 = domingo, numeración de Python) | `6` (domingo) | `src/dian_automation/config.py` | ✅ Documentada |
 | `SCHEDULER_HOUR` | Hora (0 a 23, `America/Bogota`) de la corrida; el programador actúa durante esa hora completa | `3` (03:00) | `src/dian_automation/config.py` | ✅ Documentada |
+| `TAX_ALERTS_ENABLED` | Activa el envío de alertas de vencimientos tributarios por Telegram; por defecto `true` | `true` | `src/dian_automation/config.py`, `src/dian_automation/cli/scheduler.py` | ✅ Documentada |
+| `TAX_ALERTS_HOUR` | Hora (0 a 23, `America/Bogota`) de la corrida diaria de alertas tributarias | `8` (08:00) | `src/dian_automation/config.py`, `src/dian_automation/cli/scheduler.py` | ✅ Documentada |
 | `STALE_PROCESSING_SECONDS` | Segundos que un trabajo puede seguir en PROCESSING sin respuesta antes de darlo por atascado y reintentarlo a las 6 h; vacío = `EXPORT_DOWNLOAD_TIMEOUT_SECONDS` + 600 | vacío (900 con los valores por defecto) | `src/dian_automation/config.py` | ✅ Documentada |
 | `STALWART_IMAP_HOST` | Servidor de Correo Stalwart (Recepción automática del token mágico) | `mail.example.com`, `mail.example.com` (ejemplo) | `src/dian_automation/config.py:37` | ✅ Documentada |
 | `STALWART_IMAP_PORT` |  | `993`, `993` (ejemplo) | `src/dian_automation/config.py:38` | ✅ Documentada |

@@ -88,6 +88,7 @@ class Business(Base):
     summaries = relationship("MonthlyTaxSummary", back_populates="business", cascade="all, delete-orphan")
     extraction_jobs = relationship("DIANExtractionJob", back_populates="business", cascade="all, delete-orphan")
     documents = relationship("BusinessDocument", back_populates="business", cascade="all, delete-orphan")
+    tax_deadline_alerts = relationship("TaxDeadlineAlert", back_populates="business", cascade="all, delete-orphan")
 
 
 class Invoice(Base):
@@ -364,4 +365,62 @@ class BusinessDocument(Base):
     business = relationship("Business", back_populates="documents")
     uploaded_by = relationship("User", foreign_keys=[uploaded_by_user_id])
     deleted_by = relationship("User", foreign_keys=[deleted_by_user_id])
+
+
+# Momentos de alerta de vencimientos tributarios (Story 4.1c)
+MOMENT_PROXIMO = "PROXIMO"
+MOMENT_VENCE_HOY = "VENCE_HOY"
+ALERT_MOMENTS = (MOMENT_PROXIMO, MOMENT_VENCE_HOY)
+
+# Estados de alerta de vencimientos tributarios
+ALERT_STATUS_SENT = "SENT"
+ALERT_STATUS_SKIPPED = "SKIPPED"
+ALERT_STATUSES = (ALERT_STATUS_SENT, ALERT_STATUS_SKIPPED)
+
+# Razones de omisión de alerta tributaria
+ALERT_SKIP_REASON_BLOQUEADO = "BLOQUEADO"
+ALERT_SKIP_REASON_SIN_TELEGRAM = "SIN_TELEGRAM"
+ALERT_SKIP_REASON_ENVIO_FALLIDO = "ENVIO_FALLIDO"
+ALERT_SKIP_REASONS = (
+    ALERT_SKIP_REASON_BLOQUEADO,
+    ALERT_SKIP_REASON_SIN_TELEGRAM,
+    ALERT_SKIP_REASON_ENVIO_FALLIDO,
+)
+
+
+class TaxDeadlineAlert(Base):
+    """Registro de alertas de vencimientos tributarios enviadas u omitidas (Story 4.1c).
+
+    Almacena los avisos enviados (o el motivo por el que se omitieron) para evitar duplicados
+    y permitir reintentos idempotentes. La combinación de obligación y momento es única.
+    """
+
+    __tablename__ = "tax_deadline_alerts"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    business_id = Column(String(36), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False, index=True)
+    tax_type = Column(String(50), nullable=False)
+    period_label = Column(String(100), nullable=False)
+    installment = Column(Integer, nullable=False, default=0)
+    deadline_date = Column(Date, nullable=False)
+    moment = Column(String(20), nullable=False)  # PROXIMO, VENCE_HOY
+    status = Column(String(20), nullable=False)  # SENT, SKIPPED
+    skip_reason = Column(String(30), nullable=True)  # BLOQUEADO, SIN_TELEGRAM, ENVIO_FALLIDO
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    sent_at = Column(DateTime, nullable=True)
+
+    business = relationship("Business", back_populates="tax_deadline_alerts")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "business_id",
+            "tax_type",
+            "period_label",
+            "installment",
+            "deadline_date",
+            "moment",
+            name="uq_tax_deadline_alerts_obligation_moment",
+        ),
+    )
+
 

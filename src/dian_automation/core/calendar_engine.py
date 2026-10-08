@@ -64,6 +64,23 @@ def format_limit_date(d: date) -> str:
     return f"{d.day} {_MONTH_ABBR[d.month - 1]} {d.year}"
 
 
+def tax_type_label(tax_type: str) -> str:
+    """Nombre legible del impuesto para mensajes y vistas (Story 4.1c).
+
+    - IVA_BIMESTRAL, IVA_CUATRIMESTRAL -> 'Declaración de IVA'
+    - RETEFUENTE -> 'Retención en la fuente'
+    - RENTA_PERSONAS_NATURALES, RENTA_PERSONAS_JURIDICAS -> 'Declaración de renta'
+    - Cualquier otro -> el código original
+    """
+    if tax_type in ("IVA_BIMESTRAL", "IVA_CUATRIMESTRAL"):
+        return "Declaración de IVA"
+    if tax_type == "RETEFUENTE":
+        return "Retención en la fuente"
+    if tax_type in ("RENTA_PERSONAS_NATURALES", "RENTA_PERSONAS_JURIDICAS"):
+        return "Declaración de renta"
+    return tax_type
+
+
 def iva_obligation_for_month(
     obligations: Sequence[Obligation], period_ym: str
 ) -> Optional[Obligation]:

@@ -35,6 +35,7 @@ from dian_automation.db.models import (
 from dian_automation.core.calendar_engine import (
     CalendarNotLoadedError,
     TaxCalendarEngine,
+    tax_type_label,
     today_bogota,
 )
 from dian_automation.subscriptions.lockout_service import SubscriptionLockoutService
@@ -369,7 +370,7 @@ class ClientTelegramBot:
                 status_tag = f"📅 En {days_diff} días"
                 icon = "🟢"
 
-            lines.append(f"{icon} *{ob.tax_type}* ({ob.etiqueta})")
+            lines.append(f"{icon} *{tax_type_label(ob.tax_type)}* ({ob.etiqueta})")
             lines.append(f"   Fecha Límite: *{ob.fecha_limite.strftime('%d/%m/%Y')}* — _{status_tag}_")
             if ob.description:
                 lines.append(f"   _{ob.description}_")

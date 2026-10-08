@@ -20,6 +20,7 @@ MODULES = [
     "dian_automation.core.admin_service",
     "dian_automation.telegram.notify",
     "dian_automation.api.routes_admin",
+    "dian_automation.core.tax_alerts",
 ]
 
 

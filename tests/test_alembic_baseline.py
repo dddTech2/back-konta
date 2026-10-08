@@ -32,7 +32,7 @@ BASELINE_TABLES = {
     "payment_records",
     "dian_tax_calendar",
 }
-EXPECTED_TABLES = BASELINE_TABLES | {"sales", "otp_codes", "worker_heartbeats", "business_documents"}  # esquema en head: base + revisiones posteriores
+EXPECTED_TABLES = BASELINE_TABLES | {"sales", "otp_codes", "worker_heartbeats", "business_documents", "tax_deadline_alerts"}  # esquema en head: base + revisiones posteriores
 
 
 @pytest.fixture
@@ -102,6 +102,7 @@ def test_history_is_a_single_chain_rooted_at_the_baseline(alembic_cfg):
     assert script.get_revision("0007").down_revision == "0006"
     assert script.get_revision("0008").down_revision == "0007"
     assert script.get_revision("0009").down_revision == "0008"
+    assert script.get_revision("0010").down_revision == "0009"
 
 
 def test_baseline_revision_creates_only_the_nine_original_tables(alembic_cfg, engine):
@@ -598,9 +599,63 @@ def test_business_documents_revision_and_downgrades(alembic_cfg, engine):
     # Comparación con Base.metadata no debe tener diferencias
     assert _diff(engine, Base.metadata) == []
 
-    # Downgrade a 0008 quita la tabla
-    command.downgrade(alembic_cfg, "-1")
+    # Downgrade a 0008 quita la tabla (explícito: head ya no es 0009)
+    command.downgrade(alembic_cfg, "0008")
 
     assert _version_rows(engine) == ["0008"]
     assert "business_documents" not in _tables(engine)
+
+
+def test_tax_deadline_alerts_revision_and_downgrades(alembic_cfg, engine):
+    command.upgrade(alembic_cfg, "0009")
+    _insert_business(engine, "biz-tax-alert-mig")
+
+    command.upgrade(alembic_cfg, "head")
+
+    assert "tax_deadline_alerts" in _tables(engine)
+    columns = {c["name"]: c for c in inspect(engine).get_columns("tax_deadline_alerts")}
+    expected_cols = {
+        "id", "business_id", "tax_type", "period_label", "installment",
+        "deadline_date", "moment", "status", "skip_reason", "created_at", "sent_at",
+    }
+    assert set(columns) == expected_cols
+    assert not columns["id"]["nullable"]
+    assert not columns["business_id"]["nullable"]
+    assert not columns["tax_type"]["nullable"]
+    assert not columns["period_label"]["nullable"]
+    assert not columns["installment"]["nullable"]
+    assert not columns["deadline_date"]["nullable"]
+    assert not columns["moment"]["nullable"]
+    assert not columns["status"]["nullable"]
+    assert columns["skip_reason"]["nullable"]
+    assert not columns["created_at"]["nullable"]
+    assert columns["sent_at"]["nullable"]
+
+    # Claves foráneas
+    fks = inspect(engine).get_foreign_keys("tax_deadline_alerts")
+    fk_by_col = {tuple(fk["constrained_columns"]): fk for fk in fks}
+    assert ("business_id",) in fk_by_col
+    assert fk_by_col[("business_id",)]["referred_table"] == "businesses"
+
+    # Índice en business_id
+    indexes = {i["name"]: i for i in inspect(engine).get_indexes("tax_deadline_alerts")}
+    assert "ix_tax_deadline_alerts_business_id" in indexes
+    assert indexes["ix_tax_deadline_alerts_business_id"]["column_names"] == ["business_id"]
+
+    # Restricción única sobre (business_id, tax_type, period_label, installment, deadline_date, moment)
+    uniques = inspect(engine).get_unique_constraints("tax_deadline_alerts")
+    unique_col_sets = [set(u["column_names"]) for u in uniques]
+    assert {
+        "business_id", "tax_type", "period_label", "installment", "deadline_date", "moment"
+    } in unique_col_sets
+
+    # Comparación con Base.metadata no debe tener diferencias
+    assert _diff(engine, Base.metadata) == []
+
+    # Downgrade a 0009 quita la tabla
+    command.downgrade(alembic_cfg, "-1")
+
+    assert _version_rows(engine) == ["0009"]
+    assert "tax_deadline_alerts" not in _tables(engine)
+
 
