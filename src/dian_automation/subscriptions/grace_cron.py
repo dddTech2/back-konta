@@ -1,4 +1,4 @@
-"""Cron y tareas programadas para la gestión del periodo de gracia de 72 horas.
+"""Cron y tareas programadas para la gestión del periodo de gracia (días configurables en `billing_settings`, Story 9.1).
 
 Identifica suscripciones que alcanzaron su fecha de corte sin pago,
 las transiciona a estado 'EN_MORA', despacha recordatorios amigables y progresivos
@@ -28,30 +28,38 @@ class SubscriptionGraceCron:
         day_of_grace: int,
         days_remaining: int,
     ) -> str:
-        """Genera el mensaje correspondiente al día de gracia (1, 2 o 3)."""
+        """Genera el mensaje correspondiente al día de gracia."""
         price_cop = float(subscription.final_price)
         cutoff_fmt = subscription.cutoff_date.strftime("%d/%m/%Y")
         grace_end_fmt = subscription.grace_period_end.strftime("%d/%m/%Y")
+        total_days = (
+            (subscription.grace_period_end - subscription.cutoff_date).days
+            if (subscription.grace_period_end and subscription.cutoff_date)
+            else 3
+        )
+        if total_days <= 0:
+            total_days = 3
 
-        if day_of_grace <= 1:
+        if day_of_grace <= 1 and total_days > 1:
             return (
-                f"⚠️ *Recordatorio de Pago {BRAND_NAME} (Día 1 de 3 de Gracia)*\n\n"
+                f"⚠️ *Recordatorio de Pago {BRAND_NAME} (Día 1 de {total_days} de Gracia)*\n\n"
                 f"Hola *{user.full_name}*, tu plan *{subscription.plan}* para *{business_name}* "
                 f"ha llegado a su fecha de corte hoy ({cutoff_fmt}).\n\n"
-                "🎁 Cuentas con un *periodo de gracia de 72 horas (3 días)* para realizar tu renovación sin interrupción del servicio.\n"
+                f"🎁 Cuentas con un *periodo de gracia de {total_days} días* para realizar tu renovación sin interrupción del servicio.\n"
                 f"💰 *Total a pagar:* ${price_cop:,.0f} COP\n"
                 f"⏳ *Plazo máximo antes de suspensión:* {grace_end_fmt}\n\n"
                 "💳 Por favor envía tu soporte de transferencia a la administración comercial para mantener tus consultas DIAN al día."
             )
-        elif day_of_grace == 2:
+        elif day_of_grace < total_days:
+            days_str = f"*{days_remaining} días*" if days_remaining != 1 else "*1 día*"
             return (
-                f"⏳ *Aviso de Pago {BRAND_NAME} (Día 2 de 3 de Gracia)*\n\n"
-                f"Hola *{user.full_name}*, te recordamos que restan *2 días* de gracia para tu plan *{subscription.plan}* (*{business_name}*).\n\n"
+                f"⏳ *Aviso de Pago {BRAND_NAME} (Día {day_of_grace} de {total_days} de Gracia)*\n\n"
+                f"Hola *{user.full_name}*, te recordamos que restan {days_str} de gracia para tu plan *{subscription.plan}* (*{business_name}*).\n\n"
                 f"💰 *Valor pendiente:* ${price_cop:,.0f} COP\n"
                 f"📅 *Tu servicio continuará activo hasta el:* {grace_end_fmt}\n\n"
                 "Evita la suspensión automática de tus alertas tributarias y reportes fiscales realizando tu pago hoy."
             )
-        else:  # Día 3 o último día
+        else:  # Último día de gracia
             return (
                 "🚨 *¡ÚLTIMO DÍA DE GRACIA! Suspensión Inminente de Servicio*\n\n"
                 f"Hola *{user.full_name}*, hoy es el *último día* de tu periodo de gracia para *{business_name}*.\n\n"
@@ -139,8 +147,13 @@ class SubscriptionGraceCron:
                 )
 
             # 2. Calcular día de gracia y días restantes
+            total_grace_days = (
+                (sub.grace_period_end - sub.cutoff_date).days
+                if (sub.grace_period_end and sub.cutoff_date)
+                else 3
+            )
             days_diff = (today - sub.cutoff_date).days
-            day_of_grace = max(1, min(3, days_diff + 1))
+            day_of_grace = max(1, min(total_grace_days, days_diff + 1))
             days_remaining = max(0, (sub.grace_period_end - today).days)
 
             # 3. Control de Idempotencia: No notificar más de una vez por día

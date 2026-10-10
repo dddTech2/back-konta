@@ -1,6 +1,6 @@
 """Servicio de Bloqueo Dual de Acceso en Web y Telegram al Vencer la Gracia.
 
-Garantiza la suspensión simultánea de servicios al expirar las 72 horas de gracia:
+Garantiza la suspensión simultánea de servicios al expirar el periodo de gracia:
 - En Web/API: Rechazo con código 403 Forbidden y redirección a /servicio-suspendido.
 - En Telegram: Interceptación estricta de consultas con aviso de pago pendiente sin exponer datos fiscales.
 """
@@ -190,10 +190,15 @@ class SubscriptionLockoutService:
                 user.businesses[0].commercial_name if user.businesses else "tu empresa"
             )
 
+            total_grace_days = (
+                (sub.grace_period_end - sub.cutoff_date).days
+                if (sub.grace_period_end and sub.cutoff_date)
+                else 3
+            )
             # Notificación de suspensión formal por Telegram
             msg = (
                 "🚫 *Servicio Suspendido por Pago Pendiente*\n\n"
-                f"Hola *{user.full_name}*, el periodo de gracia de 72 horas para tu plan *{sub.plan}* "
+                f"Hola *{user.full_name}*, el periodo de gracia de {total_grace_days} días para tu plan *{sub.plan}* "
                 f"(*{biz_name}*) ha finalizado sin registrar la renovación.\n\n"
                 "Tu suscripción se encuentra suspendida temporalmente por pago pendiente. "
                 "Comunícate con Katerinn para reactivar tus reportes."

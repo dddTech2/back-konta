@@ -1,50 +1,20 @@
 """Motor de Suscripciones y Tarifas de Konta.
 
-Implementa la matriz de precios periódicos con descuentos comerciales automáticos:
-- TRIMESTRAL: 3 meses, -5% descuento.
-- SEMESTRAL: 6 meses, -8% descuento.
-- ANUAL: 12 meses, -10% descuento.
-- MENSUAL: 1 mes, 0% descuento.
-
-Gestiona las fechas de corte y la ventana de gracia de 72 horas (3 días).
+Implementa la gestión de contratos de suscripción, cotizaciones y periodos de gracia.
+Delega las tarifas, descuentos y vigencias en PricingService (Story 9.1).
 """
 
 import calendar
 import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
 
-from dian_automation.db.models import User, Subscription
+from dian_automation.db.models import User, Business, Subscription, PRICE_ORIGIN_ESPECIAL, PRICE_ORIGIN_TARIFA
 
 logger = logging.getLogger("subscriptions")
-
-DEFAULT_BASE_MONTHLY_PRICE = Decimal("50000.00")
-
-PLAN_DEFINITIONS: Dict[str, Dict[str, Any]] = {
-    "MENSUAL": {
-        "months": 1,
-        "discount_rate": Decimal("0.00"),
-        "description": "Plan Mensual (Sin descuento)",
-    },
-    "TRIMESTRAL": {
-        "months": 3,
-        "discount_rate": Decimal("5.00"),
-        "description": "Plan Trimestral (Ahorro del 5%)",
-    },
-    "SEMESTRAL": {
-        "months": 6,
-        "discount_rate": Decimal("8.00"),
-        "description": "Plan Semestral (Ahorro del 8%)",
-    },
-    "ANUAL": {
-        "months": 12,
-        "discount_rate": Decimal("10.00"),
-        "description": "Plan Anual (Ahorro del 10%)",
-    },
-}
 
 
 def add_months_to_date(source_date: date, months: int) -> date:
@@ -70,12 +40,18 @@ class PlanQuote:
     start_date: date
     cutoff_date: date
     grace_period_end: date
+    monthly_price: Optional[Decimal] = None
+
+    def __post_init__(self):
+        if self.monthly_price is None:
+            self.monthly_price = self.base_monthly_price
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "plan": self.plan,
             "months": self.months,
             "base_monthly_price": float(self.base_monthly_price),
+            "monthly_price": float(self.monthly_price if self.monthly_price is not None else self.base_monthly_price),
             "gross_total": float(self.gross_total),
             "discount_rate": float(self.discount_rate),
             "discount_amount": float(self.discount_amount),
@@ -90,49 +66,66 @@ class SubscriptionService:
     """Servicio de dominio para cálculo de tarifas, alta y renovación de suscripciones."""
 
     @classmethod
-    def get_supported_plans(cls) -> List[str]:
-        return list(PLAN_DEFINITIONS.keys())
+    def get_supported_plans(cls, db: Optional[Session] = None) -> List[str]:
+        from dian_automation.subscriptions.pricing import PricingService
+        from dian_automation.db.database import SessionLocal
+
+        session_to_close = None
+        session = db
+        if session is None:
+            session = SessionLocal()
+            session_to_close = session
+        try:
+            return [p.code for p in PricingService.list_plans(session, active_only=True)]
+        finally:
+            if session_to_close:
+                session_to_close.close()
 
     @classmethod
     def calculate_quote(
         cls,
         plan: str,
         start_date: Optional[date] = None,
-        base_monthly_price: Decimal = DEFAULT_BASE_MONTHLY_PRICE,
+        base_monthly_price: Optional[Decimal] = None,
+        db: Optional[Session] = None,
     ) -> PlanQuote:
-        """Calcula el presupuesto de un plan aplicando el descuento porcentual y las fechas límite."""
-        plan_key = plan.upper().strip()
-        if plan_key not in PLAN_DEFINITIONS:
-            valid_options = ", ".join(PLAN_DEFINITIONS.keys())
-            raise ValueError(f"Plan '{plan}' no válido. Opciones permitidas: {valid_options}")
+        """Calcula el presupuesto de un plan delegando en PricingService."""
+        from dian_automation.subscriptions.pricing import PricingService
+        from dian_automation.db.database import SessionLocal
 
-        plan_cfg = PLAN_DEFINITIONS[plan_key]
-        months = plan_cfg["months"]
-        discount_rate = plan_cfg["discount_rate"]
+        session_to_close = None
+        session = db
+        if session is None:
+            session = SessionLocal()
+            session_to_close = session
 
-        s_date = start_date or date.today()
-        cutoff_date = add_months_to_date(s_date, months)
-        # Periodo de gracia de 72 horas (3 días calendario completos)
-        grace_period_end = cutoff_date + timedelta(days=3)
+        try:
+            plan_obj = PricingService.get_plan(session, plan, active_only=True)
+            grace_days = PricingService.get_grace_days(session)
 
-        gross_total = (base_monthly_price * months).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        discount_amount = (gross_total * (discount_rate / Decimal("100.00"))).quantize(
-            Decimal("0.01"), rounding=ROUND_HALF_UP
-        )
-        final_price = (gross_total - discount_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-        return PlanQuote(
-            plan=plan_key,
-            months=months,
-            base_monthly_price=base_monthly_price,
-            gross_total=gross_total,
-            discount_rate=discount_rate,
-            discount_amount=discount_amount,
-            final_price=final_price,
-            start_date=s_date,
-            cutoff_date=cutoff_date,
-            grace_period_end=grace_period_end,
-        )
+            if base_monthly_price is not None:
+                return PricingService.quote(
+                    monthly_price=base_monthly_price,
+                    months=plan_obj.months,
+                    discount_rate=plan_obj.discount_rate,
+                    start_date=start_date,
+                    grace_days=grace_days,
+                    plan_code=plan_obj.code,
+                )
+            else:
+                # Usa tarifa vigente por defecto
+                rate = PricingService.current_rate(session, "DIAN", "PERSONA_NATURAL", on=start_date)
+                return PricingService.quote(
+                    monthly_price=rate.monthly_price,
+                    months=plan_obj.months,
+                    discount_rate=plan_obj.discount_rate,
+                    start_date=start_date,
+                    grace_days=grace_days,
+                    plan_code=plan_obj.code,
+                )
+        finally:
+            if session_to_close:
+                session_to_close.close()
 
     @classmethod
     def create_subscription(
@@ -140,23 +133,67 @@ class SubscriptionService:
         client_id: str,
         plan: str,
         start_date: Optional[date] = None,
-        base_monthly_price: Decimal = DEFAULT_BASE_MONTHLY_PRICE,
+        base_monthly_price: Optional[Decimal] = None,
         db: Optional[Session] = None,
     ) -> Subscription:
         """Crea y persiste un nuevo contrato de suscripción para un cliente."""
         if db is None:
             raise ValueError("Se requiere una sesión de base de datos activa.")
 
+        from dian_automation.subscriptions.pricing import PricingService
+
         # Verificar existencia del cliente
         client = db.query(User).filter(User.id == client_id).first()
         if not client:
             raise ValueError(f"No existe usuario registrado con client_id='{client_id}'.")
 
-        quote = cls.calculate_quote(plan, start_date=start_date, base_monthly_price=base_monthly_price)
+        biz = (
+            db.query(Business)
+            .filter(Business.client_id == client.id, Business.is_active.is_(True))
+            .order_by(Business.created_at.asc())
+            .first()
+        )
+        if not biz:
+            biz = (
+                db.query(Business)
+                .filter(Business.client_id == client.id)
+                .order_by(Business.created_at.asc())
+                .first()
+            )
+
+        inc_source = biz.income_source if biz else "DIAN"
+        tx_type = biz.taxpayer_type if biz else "PERSONA_NATURAL"
+
+        plan_obj = PricingService.get_plan(db, plan, active_only=True)
+        grace_days = PricingService.get_grace_days(db)
+
+        if base_monthly_price is not None:
+            price_origin = PRICE_ORIGIN_ESPECIAL
+            quote = PricingService.quote(
+                monthly_price=base_monthly_price,
+                months=plan_obj.months,
+                discount_rate=plan_obj.discount_rate,
+                start_date=start_date,
+                grace_days=grace_days,
+                plan_code=plan_obj.code,
+            )
+        else:
+            price_origin = PRICE_ORIGIN_TARIFA
+            rate = PricingService.current_rate(db, inc_source, tx_type, on=start_date)
+            quote = PricingService.quote(
+                monthly_price=rate.monthly_price,
+                months=plan_obj.months,
+                discount_rate=plan_obj.discount_rate,
+                start_date=start_date,
+                grace_days=grace_days,
+                plan_code=plan_obj.code,
+            )
 
         subscription = Subscription(
             client_id=client.id,
             plan=quote.plan,
+            monthly_price=quote.monthly_price,
+            price_origin=price_origin,
             discount_rate=quote.discount_rate,
             base_price=quote.gross_total,
             final_price=quote.final_price,
@@ -182,24 +219,71 @@ class SubscriptionService:
         cls,
         subscription_id: str,
         new_plan: Optional[str] = None,
-        base_monthly_price: Decimal = DEFAULT_BASE_MONTHLY_PRICE,
+        base_monthly_price: Optional[Decimal] = None,
         db: Optional[Session] = None,
     ) -> Subscription:
         """Renueva una suscripción existente extendiendo el periodo desde la fecha de corte o fecha actual."""
         if db is None:
             raise ValueError("Se requiere una sesión de base de datos activa.")
 
+        from dian_automation.subscriptions.pricing import PricingService
+
         sub = db.query(Subscription).filter(Subscription.id == subscription_id).first()
         if not sub:
             raise ValueError(f"Suscripción con id='{subscription_id}' no encontrada.")
 
         plan_to_use = (new_plan or sub.plan).upper().strip()
+        plan_obj = PricingService.get_plan(db, plan_to_use)
         today = date.today()
-
-        # Si el corte actual sigue vigente en el futuro, renovar desde el corte; sino desde hoy
         renewal_start = sub.cutoff_date if sub.cutoff_date >= today else today
+        grace_days = PricingService.get_grace_days(db)
 
-        quote = cls.calculate_quote(plan_to_use, start_date=renewal_start, base_monthly_price=base_monthly_price)
+        if base_monthly_price is not None:
+            quote = PricingService.quote(
+                monthly_price=base_monthly_price,
+                months=plan_obj.months,
+                discount_rate=plan_obj.discount_rate,
+                start_date=renewal_start,
+                grace_days=grace_days,
+                plan_code=plan_obj.code,
+            )
+            sub.price_origin = PRICE_ORIGIN_ESPECIAL
+            sub.monthly_price = quote.monthly_price
+        elif sub.monthly_price is not None:
+            quote = PricingService.quote(
+                monthly_price=sub.monthly_price,
+                months=plan_obj.months,
+                discount_rate=plan_obj.discount_rate,
+                start_date=renewal_start,
+                grace_days=grace_days,
+                plan_code=plan_obj.code,
+            )
+        else:
+            biz = (
+                db.query(Business)
+                .filter(Business.client_id == sub.client_id, Business.is_active.is_(True))
+                .order_by(Business.created_at.asc())
+                .first()
+            )
+            if not biz:
+                biz = (
+                    db.query(Business)
+                    .filter(Business.client_id == sub.client_id)
+                    .order_by(Business.created_at.asc())
+                    .first()
+                )
+            inc_source = biz.income_source if biz else "DIAN"
+            tx_type = biz.taxpayer_type if biz else "PERSONA_NATURAL"
+            rate = PricingService.current_rate(db, inc_source, tx_type, on=renewal_start)
+            quote = PricingService.quote(
+                monthly_price=rate.monthly_price,
+                months=plan_obj.months,
+                discount_rate=plan_obj.discount_rate,
+                start_date=renewal_start,
+                grace_days=grace_days,
+                plan_code=plan_obj.code,
+            )
+            sub.monthly_price = rate.monthly_price
 
         sub.plan = quote.plan
         sub.discount_rate = quote.discount_rate
@@ -222,6 +306,11 @@ class SubscriptionService:
     def get_grace_status(cls, subscription: Subscription, check_date: Optional[date] = None) -> Dict[str, Any]:
         """Evalúa el estado de mora y periodo de gracia de una suscripción."""
         target_date = check_date or date.today()
+        total_grace_days = (
+            (subscription.grace_period_end - subscription.cutoff_date).days
+            if (subscription.grace_period_end and subscription.cutoff_date)
+            else 3
+        )
 
         if target_date < subscription.cutoff_date:
             days_until_cutoff = (subscription.cutoff_date - target_date).days
@@ -230,7 +319,7 @@ class SubscriptionService:
                 "is_in_grace": False,
                 "is_blocked": False,
                 "days_until_cutoff": days_until_cutoff,
-                "days_left_in_grace": 3,
+                "days_left_in_grace": total_grace_days,
                 "message": f"Suscripción al día. Próximo corte en {days_until_cutoff} días.",
             }
 
@@ -241,9 +330,12 @@ class SubscriptionService:
                 "state": "IN_GRACE",
                 "is_in_grace": True,
                 "is_blocked": False,
-                "day_of_grace": days_into_grace,  # Día 1, 2 o 3 de gracia
+                "day_of_grace": days_into_grace,
                 "days_left_in_grace": days_left,
-                "message": f"Periodo de gracia activo (Día {days_into_grace} de 3). Quedan {days_left} días antes de suspensión.",
+                "message": (
+                    f"Periodo de gracia activo (Día {days_into_grace} de {total_grace_days}). "
+                    f"Quedan {days_left} días antes de suspensión."
+                ),
             }
 
         else:

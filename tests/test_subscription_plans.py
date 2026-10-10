@@ -7,10 +7,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from dian_automation.db.models import Base, User, Subscription
+from dian_automation.subscriptions.pricing import PricingError, PricingService
 from dian_automation.subscriptions.service import (
     SubscriptionService,
     PlanQuote,
-    DEFAULT_BASE_MONTHLY_PRICE,
     add_months_to_date,
 )
 
@@ -37,10 +37,10 @@ def db_session_factory():
     return TestingSessionLocal
 
 
-def test_trimestral_plan_quote_discount_and_dates():
+def test_trimestral_plan_quote_discount_and_dates(db_session_factory):
     """Plan TRIMESTRAL aplica 5% de descuento sobre 3 meses y 72h (3 días) de gracia."""
     start = date(2026, 9, 15)
-    quote = SubscriptionService.calculate_quote("TRIMESTRAL", start_date=start)
+    quote = SubscriptionService.calculate_quote("TRIMESTRAL", start_date=start, db=db_session_factory())
 
     assert quote.plan == "TRIMESTRAL"
     assert quote.months == 3
@@ -56,10 +56,10 @@ def test_trimestral_plan_quote_discount_and_dates():
     assert quote.grace_period_end == date(2026, 12, 18)  # +3 días (72h)
 
 
-def test_semestral_plan_quote_discount_and_dates():
+def test_semestral_plan_quote_discount_and_dates(db_session_factory):
     """Plan SEMESTRAL aplica 8% de descuento sobre 6 meses y 72h de gracia."""
     start = date(2026, 9, 15)
-    quote = SubscriptionService.calculate_quote("SEMESTRAL", start_date=start)
+    quote = SubscriptionService.calculate_quote("SEMESTRAL", start_date=start, db=db_session_factory())
 
     assert quote.plan == "SEMESTRAL"
     assert quote.months == 6
@@ -72,10 +72,10 @@ def test_semestral_plan_quote_discount_and_dates():
     assert quote.grace_period_end == date(2027, 3, 18)  # +3 días (72h)
 
 
-def test_anual_plan_quote_discount_and_dates():
+def test_anual_plan_quote_discount_and_dates(db_session_factory):
     """Plan ANUAL aplica 10% de descuento sobre 12 meses y 72h de gracia."""
     start = date(2026, 9, 15)
-    quote = SubscriptionService.calculate_quote("ANUAL", start_date=start)
+    quote = SubscriptionService.calculate_quote("ANUAL", start_date=start, db=db_session_factory())
 
     assert quote.plan == "ANUAL"
     assert quote.months == 12
@@ -88,10 +88,15 @@ def test_anual_plan_quote_discount_and_dates():
     assert quote.grace_period_end == date(2027, 9, 18)  # +3 días (72h)
 
 
-def test_mensual_plan_quote_no_discount():
+def test_mensual_plan_quote_no_discount(db_session_factory):
+    # MENSUAL viene inactivo en la semilla (Story 9.1); se activa para cotizarlo.
+    _db = db_session_factory()
+    PricingService.update_plan(_db, "MENSUAL", is_active=True)
+    _db.commit()
+    _db.close()
     """Plan MENSUAL aplica tarifa base sin descuento comercial."""
     start = date(2026, 9, 15)
-    quote = SubscriptionService.calculate_quote("MENSUAL", start_date=start)
+    quote = SubscriptionService.calculate_quote("MENSUAL", start_date=start, db=db_session_factory())
 
     assert quote.plan == "MENSUAL"
     assert quote.months == 1
@@ -103,11 +108,11 @@ def test_mensual_plan_quote_no_discount():
     assert quote.grace_period_end == date(2026, 10, 18)
 
 
-def test_invalid_plan_raises_value_error():
-    """Planes no contemplados en la matriz comercial lanzan ValueError."""
-    with pytest.raises(ValueError) as exc_info:
-        SubscriptionService.calculate_quote("QUINCENAL")
-    assert "no válido" in str(exc_info.value)
+def test_invalid_plan_raises_value_error(db_session_factory):
+    """Planes no configurados lanzan PricingError INVALID_PLAN (Story 9.1)."""
+    with pytest.raises(PricingError) as exc_info:
+        SubscriptionService.calculate_quote("QUINCENAL", db=db_session_factory())
+    assert exc_info.value.code == "INVALID_PLAN"
 
 
 def test_create_subscription_in_database(db_session_factory):

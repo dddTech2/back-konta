@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from dian_automation.db.models import Base, User, Business, Subscription, TelegramLinkToken, DIANExtractionJob, BusinessDocument
 from dian_automation.config import config
 from dian_automation.core import document_service
+from dian_automation.subscriptions.service import add_months_to_date
 from dian_automation.telegram.admin_bot import AdminTelegramBot
 
 
@@ -127,7 +128,7 @@ def test_crear_cliente_empresa_trimestral_success(db_session_factory):
         assert float(sub.discount_rate) == 5.00
         assert float(sub.base_price) == 150000.0
         assert float(sub.final_price) == 142500.0
-        assert sub.cutoff_date == date.today() + timedelta(days=90)
+        assert sub.cutoff_date == add_months_to_date(date.today(), 3)
         assert sub.grace_period_end == sub.cutoff_date + timedelta(days=3)
         assert sub.status == "ACTIVO"
 
@@ -191,7 +192,7 @@ def test_crear_cliente_semestral_and_anual_pricing(db_session_factory):
 
         sub_sem = db.query(Subscription).filter(Subscription.client_id == res_sem["user_id"]).first()
         assert float(sub_sem.discount_rate) == 8.00
-        assert sub_sem.cutoff_date == date.today() + timedelta(days=180)
+        assert sub_sem.cutoff_date == add_months_to_date(date.today(), 6)
 
         # Plan Anual (Persona Natural)
         res_anu = AdminTelegramBot.execute_crear_cliente(
@@ -204,7 +205,7 @@ def test_crear_cliente_semestral_and_anual_pricing(db_session_factory):
 
         sub_anu = db.query(Subscription).filter(Subscription.client_id == res_anu["user_id"]).first()
         assert float(sub_anu.discount_rate) == 10.00
-        assert sub_anu.cutoff_date == date.today() + timedelta(days=365)
+        assert sub_anu.cutoff_date == add_months_to_date(date.today(), 12)
     finally:
         db.close()
 

@@ -29,6 +29,8 @@ from dian_automation.db.models import (
     Subscription,
     PaymentRecord,
 )
+from dian_automation.db.database import SessionLocal
+from dian_automation.subscriptions.pricing import PricingService, PricingError
 from dian_automation.subscriptions.service import add_months_to_date
 from dian_automation.telegram.deep_linking import TelegramDeepLinkingService
 
@@ -40,7 +42,6 @@ class AdminTelegramBot:
 
     # Tabla paramétrica de multiplicadores DIAN para cálculo de dígito de verificación
     DIAN_DV_WEIGHTS = admin_service.DIAN_DV_WEIGHTS
-    PLANS_CONFIG: Dict[str, Dict[str, Any]] = admin_service.PLANS_CONFIG
 
     @classmethod
     def calculate_dian_dv(cls, nit: str) -> str:
@@ -152,7 +153,9 @@ class AdminTelegramBot:
         return admin_service.normalize_nit(raw)
 
     @classmethod
-    def parse_crear_cliente_command(cls, text: str) -> Tuple[bool, Optional[Dict[str, str]], Optional[str]]:
+    def parse_crear_cliente_command(
+        cls, text: str, db: Optional[Session] = None
+    ) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
         """Analiza la sintaxis del comando /crear_cliente, condicionada al Tipo (PERSONA o EMPRESA)."""
         # Eliminar el comando inicial
         match = re.match(r"^/crear_cliente\b\s*(.*)", text, re.IGNORECASE | re.DOTALL)
@@ -234,8 +237,19 @@ class AdminTelegramBot:
                 )
 
         plan_clean = plan_raw.upper()
-        if plan_clean not in cls.PLANS_CONFIG:
-            planes_validos = ", ".join(cls.PLANS_CONFIG.keys())
+        close_db = False
+        active_db = db
+        if active_db is None:
+            active_db = SessionLocal()
+            close_db = True
+        try:
+            active_plans = [p.code for p in PricingService.list_plans(active_db, active_only=True)]
+        finally:
+            if close_db:
+                active_db.close()
+
+        if plan_clean not in active_plans:
+            planes_validos = ", ".join(active_plans)
             return False, None, f"⚠️ Plan '{plan_raw}' no reconocido. Opciones válidas: {planes_validos}"
 
         income_source = None  # sin TIPO: un negocio nuevo queda DIAN y uno existente conserva el suyo
@@ -281,7 +295,7 @@ class AdminTelegramBot:
             }
 
         # 2. Parsing de la plantilla
-        is_valid, data, error_msg = cls.parse_crear_cliente_command(text)
+        is_valid, data, error_msg = cls.parse_crear_cliente_command(text, db=db)
         if not is_valid:
             return {
                 "success": False,
@@ -336,7 +350,8 @@ class AdminTelegramBot:
         dv = business.dv
         legal_rep_doc = business.legal_rep_doc
         plan_name = subscription.plan
-        plan_info = cls.PLANS_CONFIG[plan_name]
+        discount_rate = subscription.discount_rate or Decimal("0")
+        final_price = subscription.final_price or Decimal("0")
         cutoff = subscription.cutoff_date
         grace_end = subscription.grace_period_end
         deep_link_url = created.deep_link_url
@@ -363,8 +378,8 @@ class AdminTelegramBot:
             f"{cliente_line}"
             f"📱 *Teléfono:* `{user.phone}`\n"
             f"{id_lines}"
-            f"📋 *Plan:* {plan_name} (Descuento {plan_info['discount_rate']:.0f}%)\n"
-            f"💰 *Total a Cobrar:* ${plan_info['final_price']:,.0f} COP\n"
+            f"📋 *Plan:* {plan_name} (Descuento {discount_rate:.0f}%)\n"
+            f"💰 *Total a Cobrar:* ${final_price:,.0f} COP\n"
             f"📅 *Próximo Corte:* {cutoff.strftime('%d/%m/%Y')} (Gracia hasta {grace_end.strftime('%d/%m/%Y')})\n\n"
             "📲 *Reenvíale este enlace para vincular su Telegram:*\n"
             f"`{deep_link_url}`\n\n"
@@ -385,7 +400,7 @@ class AdminTelegramBot:
             "legal_rep_doc": legal_rep_doc,
             "income_source": business.income_source,
             "plan": plan_name,
-            "final_price": plan_info["final_price"],
+            "final_price": final_price,
             "deep_link_url": deep_link_url,
             "message": response_message,
         }
@@ -443,8 +458,8 @@ class AdminTelegramBot:
                 None,
                 "⚠️ *Uso incorrecto.* Formato requerido:\n"
                 "`/confirmar_pago NIT | Monto | Referencia`\n\n"
-                "_Ejemplo:_ `/confirmar_pago 901008579 | 142500 | TR-998822`\n"
-                "_Ejemplo con DV:_ `/confirmar_pago 901008579-7 | 142500 | NEQUI-4411`",
+                "_Ejemplo:_ `/confirmar_pago 901008579 | <monto> | TR-998822`\n"
+                "_Ejemplo con DV:_ `/confirmar_pago 901008579-7 | <monto> | NEQUI-4411`",
             )
 
         parts = [p.strip() for p in payload.split("|")]
@@ -454,7 +469,7 @@ class AdminTelegramBot:
                 None,
                 "⚠️ *Faltan datos en la plantilla.* Debes incluir los 3 campos separados por `|`:\n"
                 "`/confirmar_pago NIT | Monto | Referencia`\n\n"
-                "_Ejemplo:_ `/confirmar_pago 901008579 | 142500 | TR-998822`",
+                "_Ejemplo:_ `/confirmar_pago 901008579 | <monto> | TR-998822`",
             )
 
         nit_raw, amount_raw, ref_code = parts[0], parts[1], parts[2]
@@ -529,6 +544,7 @@ class AdminTelegramBot:
                 nit=nit_clean,
                 amount=amount,
                 reference=ref_code,
+                allow_mismatch=True,
                 notifier=telegram_sender,
             )
         except AdminServiceError as e:
@@ -571,6 +587,15 @@ class AdminTelegramBot:
             else "⚠️ _El cliente no tiene Telegram vinculado todavía._"
         )
 
+        mismatch_warning = ""
+        if result.difference != 0:
+            diff_sign = "+" if result.difference > 0 else "-"
+            diff_str = f"{diff_sign}${abs(result.difference):,.0f}"
+            mismatch_warning = (
+                f"\n\n⚠️ El valor del periodo es *${result.expected_amount:,.0f}*; "
+                f"recibido *${amount:,.0f}* (diferencia *{diff_str}*). Se registró igual."
+            )
+
         admin_response_msg = (
             "✅ *Pago registrado y suscripción reactivada exitosamente.*\n\n"
             f"👤 *Cliente:* {client.full_name}\n"
@@ -582,6 +607,7 @@ class AdminTelegramBot:
             f"⏳ *Nuevo Periodo de Gracia:* {sub.grace_period_end.strftime('%d/%m/%Y')}\n"
             "🟢 *Estado Actual:* ACTIVO\n\n"
             f"{notif_note}"
+            f"{mismatch_warning}"
         )
 
         logger.info(
@@ -597,6 +623,8 @@ class AdminTelegramBot:
             "new_cutoff_date": sub.cutoff_date.isoformat(),
             "status": "ACTIVO",
             "client_notified": client_notified,
+            "expected_amount": result.expected_amount,
+            "difference": result.difference,
             "message": admin_response_msg,
         }
 
@@ -1455,7 +1483,7 @@ class AdminTelegramBot:
                 "• `VENTAS_MANUALES`: registra sus ventas a mano en el módulo de ingresos, sin IVA ni calendario tributario.\n\n"
                 "2️⃣ *Confirmar Pago:* Registra transferencias, reactiva cuentas y levanta suspensiones:\n"
                 "`/confirmar_pago NIT | Monto | Referencia`\n"
-                "_Ejemplo:_ `/confirmar_pago 901008579 | 142500 | TR-998822`\n\n"
+                "_Ejemplo:_ `/confirmar_pago 901008579 | <monto> | TR-998822`\n\n"
                 "3️⃣ *Listar Clientes:* Consulta los últimos clientes registrados y su estado de vinculación:\n"
                 "`/clientes`\n\n"
                 "4️⃣ *Ejecutar Extracción DIAN:* Encola la descarga real de facturas de un negocio:\n"

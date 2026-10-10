@@ -323,9 +323,10 @@ class AdminClientCreateResponse(BaseModel):
 
 
 class AdminPaymentCreateRequest(BaseModel):
-    """Registro de pago comercial (AC #4)."""
+    """Registro de pago comercial (AC #4, Story 9.1)."""
     amount: Any
     reference: str
+    allow_mismatch: bool = True
 
 
 class AdminPaymentItem(BaseModel):
@@ -339,7 +340,7 @@ class AdminPaymentItem(BaseModel):
 
 
 class AdminPaymentResponse(BaseModel):
-    """Respuesta al confirmar pago (AC #4)."""
+    """Respuesta al confirmar pago (AC #4, Story 9.1)."""
     payment: AdminPaymentItem
     new_cutoff_date: str
     status: str
@@ -347,6 +348,8 @@ class AdminPaymentResponse(BaseModel):
     payment_id: Optional[str] = None
     amount: Optional[str] = None
     reference: Optional[str] = None
+    expected_amount: Optional[Decimal] = None
+    difference: Optional[Decimal] = None
 
 
 class AdminIncomeSourceRequest(BaseModel):

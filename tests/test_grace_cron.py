@@ -86,7 +86,7 @@ def test_cron_transitions_active_to_en_mora_on_cutoff_day(db_session_factory):
         chat_id, text = sent_messages[0]
         assert chat_id == 777888999
         assert "Día 1 de 3 de Gracia" in text
-        assert "periodo de gracia de 72 horas" in text
+        assert "periodo de gracia de 3 días" in text
         assert "$142,500 COP" in text
     finally:
         db.close()

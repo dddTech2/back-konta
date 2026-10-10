@@ -45,11 +45,11 @@ from dian_automation.core.admin_service import (
     INCOME_SOURCE_BY_TIPO,
     INCOME_SOURCE_DIAN,
     INCOME_SOURCE_MANUAL_SALES,
-    PLANS_CONFIG,
     AdminServiceError,
     NewClientData,
     normalize_nit,
 )
+from dian_automation.subscriptions.pricing import PricingService
 from dian_automation.db.database import get_db
 from dian_automation.db.models import Business, BusinessDocument, User
 from dian_automation.telegram.notify import send_telegram_message
@@ -163,9 +163,10 @@ def create_client(
                 status_code=422,
             )
 
+    active_plans = [p.code for p in PricingService.list_plans(db, active_only=True)]
     plan_clean = (body.plan or "").upper().strip()
-    if plan_clean not in PLANS_CONFIG:
-        valid_plans = ", ".join(PLANS_CONFIG.keys())
+    if plan_clean not in active_plans:
+        valid_plans = ", ".join(active_plans)
         raise AdminServiceError(
             "INVALID_PLAN",
             f"Plan '{body.plan}' no reconocido. Opciones válidas: {valid_plans}",
@@ -228,7 +229,7 @@ def confirm_payment(
     admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """Registra un pago comercial, reactiva la suscripción y notifica al cliente (Story 8.3 - AC #4)."""
+    """Registra un pago comercial, reactiva la suscripción y notifica al cliente (Story 8.3 - AC #4, Story 9.1 - AC #17)."""
     biz = db.query(Business).filter(
         (Business.id == business_id) | (Business.nit == business_id)
     ).first()
@@ -241,6 +242,7 @@ def confirm_payment(
         nit=biz.nit,
         amount=body.amount,
         reference=body.reference,
+        allow_mismatch=body.allow_mismatch,
         notifier=send_telegram_message,
     )
 
@@ -260,6 +262,8 @@ def confirm_payment(
         payment_id=result.payment.id,
         amount=f"{result.payment.amount:.2f}",
         reference=result.payment.reference_code,
+        expected_amount=result.expected_amount,
+        difference=result.difference,
     )
 
 

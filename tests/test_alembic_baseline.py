@@ -32,7 +32,7 @@ BASELINE_TABLES = {
     "payment_records",
     "dian_tax_calendar",
 }
-EXPECTED_TABLES = BASELINE_TABLES | {"sales", "otp_codes", "worker_heartbeats", "business_documents", "tax_deadline_alerts"}  # esquema en head: base + revisiones posteriores
+EXPECTED_TABLES = BASELINE_TABLES | {"sales", "otp_codes", "worker_heartbeats", "business_documents", "tax_deadline_alerts", "pricing_plans", "pricing_rates", "billing_settings", "subscription_price_changes"}  # esquema en head: base + revisiones posteriores
 
 
 @pytest.fixture
@@ -653,9 +653,51 @@ def test_tax_deadline_alerts_revision_and_downgrades(alembic_cfg, engine):
     assert _diff(engine, Base.metadata) == []
 
     # Downgrade a 0009 quita la tabla
-    command.downgrade(alembic_cfg, "-1")
+    command.downgrade(alembic_cfg, "0009")
 
     assert _version_rows(engine) == ["0009"]
     assert "tax_deadline_alerts" not in _tables(engine)
 
 
+
+
+def test_pricing_revision_seeds_backfills_and_downgrades(alembic_cfg, engine):
+    """0011 (Story 9.1): semilla de planes, tarifas y gracia; relleno de monthly_price; downgrade limpio."""
+    command.upgrade(alembic_cfg, "0010")
+    _insert_user(engine, "u-sub-mig")
+    with engine.begin() as conn:
+        for sub_id, plan, base in (("s-tri", "TRIMESTRAL", "150000.00"), ("s-anu", "ANUAL", "600000.00"), ("s-raro", "OTRO", "90000.00")):
+            conn.execute(
+                text(
+                    "INSERT INTO subscriptions (id, client_id, plan, discount_rate, base_price, final_price, start_date,"
+                    " cutoff_date, grace_period_end, status, created_at, updated_at) VALUES (:id, 'u-sub-mig', :plan, 5,"
+                    " :base, :base, '2026-01-01', '2026-04-01', '2026-04-04', 'ACTIVO', '2026-01-01 00:00:00',"
+                    " '2026-01-01 00:00:00')"
+                ),
+                {"id": sub_id, "plan": plan, "base": base},
+            )
+
+    command.upgrade(alembic_cfg, "0011")
+
+    with engine.connect() as conn:
+        plans = conn.execute(text("SELECT code, months, is_active FROM pricing_plans ORDER BY sort_order")).fetchall()
+        assert [(p[0], p[1], bool(p[2])) for p in plans] == [
+            ("MENSUAL", 1, False), ("TRIMESTRAL", 3, True), ("SEMESTRAL", 6, True), ("ANUAL", 12, True),
+        ]
+        rates = conn.execute(text("SELECT monthly_price FROM pricing_rates")).fetchall()
+        assert len(rates) == 4 and all(float(r[0]) == 50000.0 for r in rates)
+        assert conn.execute(text("SELECT grace_days FROM billing_settings")).scalar() == 3
+        subs = dict(conn.execute(text("SELECT id, monthly_price FROM subscriptions")).fetchall())
+        assert float(subs["s-tri"]) == 50000.0
+        assert float(subs["s-anu"]) == 50000.0
+        assert float(subs["s-raro"]) == 30000.0  # plan desconocido: 3 meses
+        origins = {r[0] for r in conn.execute(text("SELECT price_origin FROM subscriptions"))}
+        assert origins == {"TARIFA"}
+
+    command.downgrade(alembic_cfg, "0010")
+    tables = _tables(engine)
+    for t in ("pricing_plans", "pricing_rates", "billing_settings", "subscription_price_changes"):
+        assert t not in tables
+    sub_cols = {c["name"] for c in inspect(engine).get_columns("subscriptions")}
+    assert not {"monthly_price", "price_origin", "price_note"} & sub_cols
+    assert "expected_amount" not in {c["name"] for c in inspect(engine).get_columns("payment_records")}

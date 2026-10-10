@@ -39,6 +39,16 @@ IVA_PERIODICITY_BIMESTRAL = "BIMESTRAL"
 IVA_PERIODICITY_CUATRIMESTRAL = "CUATRIMESTRAL"
 IVA_PERIODICITIES = (IVA_PERIODICITY_BIMESTRAL, IVA_PERIODICITY_CUATRIMESTRAL)
 
+# Orígenes de precio de suscripción (Story 9.1)
+PRICE_ORIGIN_TARIFA = "TARIFA"
+PRICE_ORIGIN_ESPECIAL = "ESPECIAL"
+PRICE_ORIGINS = (PRICE_ORIGIN_TARIFA, PRICE_ORIGIN_ESPECIAL)
+
+# Tipos de contribuyente (Story 9.1)
+TAXPAYER_TYPE_PERSONA_NATURAL = "PERSONA_NATURAL"
+TAXPAYER_TYPE_PERSONA_JURIDICA = "PERSONA_JURIDICA"
+TAXPAYER_TYPES = (TAXPAYER_TYPE_PERSONA_NATURAL, TAXPAYER_TYPE_PERSONA_JURIDICA)
+
 
 class User(Base):
     __tablename__ = "users"
@@ -216,6 +226,11 @@ class Subscription(Base):
     discount_rate = Column(Numeric(5, 2), nullable=False)  # 5.00, 8.00, 10.00
     base_price = Column(Numeric(14, 2), nullable=False)
     final_price = Column(Numeric(14, 2), nullable=False)
+    monthly_price = Column(Numeric(14, 2), nullable=True)  # precio mensual congelado
+    price_origin = Column(
+        String(20), nullable=False, default=PRICE_ORIGIN_TARIFA, server_default=PRICE_ORIGIN_TARIFA
+    )  # TARIFA, ESPECIAL
+    price_note = Column(Text, nullable=True)
     start_date = Column(Date, nullable=False)
     cutoff_date = Column(Date, nullable=False, index=True)
     grace_period_end = Column(Date, nullable=False)  # cutoff_date + 3 días
@@ -226,6 +241,7 @@ class Subscription(Base):
 
     client = relationship("User", back_populates="subscriptions")
     payments = relationship("PaymentRecord", back_populates="subscription", cascade="all, delete-orphan")
+    price_changes = relationship("SubscriptionPriceChange", back_populates="subscription", cascade="all, delete-orphan")
 
 
 class PaymentRecord(Base):
@@ -234,6 +250,7 @@ class PaymentRecord(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     subscription_id = Column(String(36), ForeignKey("subscriptions.id", ondelete="CASCADE"), nullable=False, index=True)
     amount = Column(Numeric(14, 2), nullable=False)
+    expected_amount = Column(Numeric(14, 2), nullable=True)  # lo que debía pagar el periodo al momento del pago
     payment_date = Column(Date, nullable=False)
     payment_method = Column(String(50), default="TRANSFERENCIA", nullable=False)
     reference_code = Column(String(100), nullable=True)
@@ -242,6 +259,82 @@ class PaymentRecord(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     subscription = relationship("Subscription", back_populates="payments")
+
+
+class PricingPlan(Base):
+    """Plan de suscripción configurable (Story 9.1)."""
+    __tablename__ = "pricing_plans"
+
+    code = Column(String(20), primary_key=True)  # mayúsculas, letras y _
+    name = Column(String(60), nullable=False)
+    months = Column(Integer, nullable=False)  # 1–36
+    discount_rate = Column(Numeric(5, 2), nullable=False)  # 0–50
+    is_active = Column(Boolean, default=True, nullable=False)
+    sort_order = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class BillingSetting(Base):
+    """Configuración global de facturación (Story 9.1)."""
+    __tablename__ = "billing_settings"
+
+    id = Column(Integer, primary_key=True, default=1)
+    grace_days = Column(Integer, nullable=False, default=3)  # 1–15
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
+    updated_by_admin_id = Column(String(36), ForeignKey("users.id"), nullable=True)
+
+    updated_by_admin = relationship("User", foreign_keys=[updated_by_admin_id])
+
+
+BillingSettings = BillingSetting
+
+
+class PricingRate(Base):
+    """Tarifa mensual por segmento de negocio y vigencia (Story 9.1)."""
+    __tablename__ = "pricing_rates"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    income_source = Column(String(20), nullable=False)  # DIAN, MANUAL_SALES
+    taxpayer_type = Column(String(20), nullable=False)  # PERSONA_NATURAL, PERSONA_JURIDICA
+    monthly_price = Column(Numeric(14, 2), nullable=False)
+    effective_from = Column(Date, nullable=False)
+    created_by_admin_id = Column(String(36), ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    created_by_admin = relationship("User", foreign_keys=[created_by_admin_id])
+
+    __table_args__ = (
+        CheckConstraint("monthly_price > 0", name="ck_pricing_rates_monthly_price_positive"),
+        UniqueConstraint("income_source", "taxpayer_type", "effective_from", name="uq_pricing_rates_segment_effective"),
+        Index("idx_pricing_rates_lookup", "income_source", "taxpayer_type", "effective_from"),
+    )
+
+
+class SubscriptionPriceChange(Base):
+    """Historial de cambios de precio y planes en una suscripción (Story 9.1)."""
+    __tablename__ = "subscription_price_changes"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    subscription_id = Column(String(36), ForeignKey("subscriptions.id", ondelete="CASCADE"), nullable=False)
+    old_plan = Column(String(20), nullable=True)
+    new_plan = Column(String(20), nullable=True)
+    old_monthly_price = Column(Numeric(14, 2), nullable=True)
+    new_monthly_price = Column(Numeric(14, 2), nullable=True)
+    old_discount_rate = Column(Numeric(5, 2), nullable=True)
+    new_discount_rate = Column(Numeric(5, 2), nullable=True)
+    old_final_price = Column(Numeric(14, 2), nullable=True)
+    new_final_price = Column(Numeric(14, 2), nullable=True)
+    reason = Column(Text, nullable=False)
+    admin_id = Column(String(36), ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    subscription = relationship("Subscription", back_populates="price_changes")
+    admin = relationship("User", foreign_keys=[admin_id])
+
+    __table_args__ = (
+        Index("idx_price_changes_subscription", "subscription_id"),
+    )
 
 
 def _default_key_from_nit_digit(context) -> int:

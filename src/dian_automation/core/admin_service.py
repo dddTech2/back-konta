@@ -27,12 +27,15 @@ from dian_automation.db.models import (
     BusinessDocument,
     DIANExtractionJob,
     PaymentRecord,
+    PricingPlan,
     Subscription,
     TelegramLinkToken,
     User,
     WorkerHeartbeat,
+    PRICE_ORIGIN_TARIFA,
 )
 from dian_automation.queue.exceptions import is_slow_error
+from dian_automation.subscriptions.pricing import PricingService, PricingError
 from dian_automation.subscriptions.service import add_months_to_date
 from dian_automation.telegram.admin_alerts import _cause_text
 from dian_automation.telegram.deep_linking import TelegramDeepLinkingService
@@ -41,30 +44,6 @@ logger = logging.getLogger("admin_service")
 
 # Tabla paramétrica de multiplicadores DIAN para cálculo de dígito de verificación
 DIAN_DV_WEIGHTS = [71, 67, 59, 53, 47, 43, 41, 37, 29, 23, 19, 17, 13, 7, 3]
-
-PLANS_CONFIG: Dict[str, Dict[str, Any]] = {
-    "TRIMESTRAL": {
-        "months": 3,
-        "days": 90,
-        "discount_rate": 5.00,
-        "base_price": 150000.0,
-        "final_price": 142500.0,
-    },
-    "SEMESTRAL": {
-        "months": 6,
-        "days": 180,
-        "discount_rate": 8.00,
-        "base_price": 300000.0,
-        "final_price": 276000.0,
-    },
-    "ANUAL": {
-        "months": 12,
-        "days": 365,
-        "discount_rate": 10.00,
-        "base_price": 600000.0,
-        "final_price": 540000.0,
-    },
-}
 
 INCOME_SOURCE_BY_TIPO: Dict[str, str] = {
     "FACTURADOR": INCOME_SOURCE_DIAN,
@@ -123,6 +102,8 @@ class PaymentResult:
     business: Business
     new_cutoff_date: date
     client_notified: bool
+    expected_amount: Decimal
+    difference: Decimal
 
 
 def calculate_dian_dv(nit: str) -> str:
@@ -184,10 +165,12 @@ def create_client(
 ) -> CreatedClient:
     """Crea o reactiva un cliente (persona o empresa), su negocio y suscripción, generando enlace mágico."""
     plan_clean = (data.plan or "").upper().strip()
-    if plan_clean not in PLANS_CONFIG:
-        valid_plans = ", ".join(PLANS_CONFIG.keys())
-        raise AdminServiceError("INVALID_PLAN", f"Plan '{data.plan}' no reconocido. Opciones válidas: {valid_plans}", 400)
-    plan_info = PLANS_CONFIG[plan_clean]
+    try:
+        plan_obj = PricingService.get_plan(db, plan_clean, active_only=True)
+    except PricingError as pe:
+        active_plans = [p.code for p in PricingService.list_plans(db, active_only=True)]
+        valid_plans = ", ".join(active_plans)
+        raise AdminServiceError("INVALID_PLAN", f"Plan '{data.plan}' no reconocido. Opciones válidas: {valid_plans}", 400) from pe
 
     tipo_clean = (data.tipo_cliente or "").upper().strip()
     if tipo_clean not in ("PERSONA", "EMPRESA"):
@@ -315,32 +298,47 @@ def create_client(
                 )
                 db.add(business)
 
-        # Crear o renovar Suscripción con Descuento
-        today = date.today()
-        cutoff = today + timedelta(days=plan_info["days"])
-        grace_end = cutoff + timedelta(days=3)
+        # Crear o renovar Suscripción con Descuento desde tarifa vigente
+        target_income_source = income_source or (existing_biz.income_source if existing_biz else INCOME_SOURCE_DIAN)
+        try:
+            quote = PricingService.quote_for_segment(
+                db=db,
+                income_source=target_income_source,
+                taxpayer_type=taxpayer_type,
+                plan_code=plan_obj.code,
+                start_date=date.today(),
+            )
+        except PricingError as pe:
+            raise AdminServiceError(pe.code, pe.message, pe.status_code) from pe
 
         subscription = db.query(Subscription).filter(Subscription.client_id == user.id).first()
         if not subscription:
             subscription = Subscription(
                 client_id=user.id,
-                plan=plan_clean,
-                discount_rate=plan_info["discount_rate"],
-                base_price=plan_info["base_price"],
-                final_price=plan_info["final_price"],
-                start_date=today,
-                cutoff_date=cutoff,
-                grace_period_end=grace_end,
+                plan=quote.plan,
+                monthly_price=quote.monthly_price,
+                price_origin=PRICE_ORIGIN_TARIFA,
+                price_note=None,
+                discount_rate=quote.discount_rate,
+                base_price=quote.gross_total,
+                final_price=quote.final_price,
+                start_date=quote.start_date,
+                cutoff_date=quote.cutoff_date,
+                grace_period_end=quote.grace_period_end,
                 status="ACTIVO",
             )
             db.add(subscription)
         else:
-            subscription.plan = plan_clean
-            subscription.discount_rate = plan_info["discount_rate"]
-            subscription.base_price = plan_info["base_price"]
-            subscription.final_price = plan_info["final_price"]
-            subscription.cutoff_date = cutoff
-            subscription.grace_period_end = grace_end
+            subscription.plan = quote.plan
+            subscription.monthly_price = quote.monthly_price
+            subscription.price_origin = PRICE_ORIGIN_TARIFA
+            subscription.price_note = None
+            subscription.discount_rate = quote.discount_rate
+            subscription.base_price = quote.gross_total
+            subscription.final_price = quote.final_price
+            subscription.start_date = quote.start_date
+            subscription.cutoff_date = quote.cutoff_date
+            subscription.grace_period_end = quote.grace_period_end
             subscription.status = "ACTIVO"
 
         db.commit()
@@ -362,10 +360,10 @@ def create_client(
             deep_link_url=deep_link_url,
             tipo_cliente=tipo_clean,
             nit_with_dv=f"{nit_clean}-{dv}",
-            final_price=float(plan_info["final_price"]),
-            discount_rate=float(plan_info["discount_rate"]),
-            cutoff_date=cutoff,
-            grace_period_end=grace_end,
+            final_price=float(quote.final_price),
+            discount_rate=float(quote.discount_rate),
+            cutoff_date=quote.cutoff_date,
+            grace_period_end=quote.grace_period_end,
         )
     except AdminServiceError:
         db.rollback()
@@ -383,6 +381,7 @@ def confirm_payment(
     amount: Any,
     reference: str,
     notifier: Optional[Callable[[int, str], bool]] = None,
+    allow_mismatch: bool = True,
 ) -> PaymentResult:
     """Registra un pago comercial, reactiva la suscripción y notifica al cliente si está vinculado."""
     nit_clean = normalize_nit(nit) or "".join(filter(str.isdigit, str(nit)))
@@ -418,11 +417,22 @@ def confirm_payment(
     if not sub:
         raise AdminServiceError("SUBSCRIPTION_NOT_FOUND", f"El cliente {client.full_name} no tiene ninguna suscripción registrada.", 404)
 
+    expected_amount = Decimal(str(sub.final_price))
+    difference = amount_val - expected_amount
+
+    if amount_val != expected_amount and not allow_mismatch:
+        raise AdminServiceError(
+            "AMOUNT_MISMATCH",
+            f"El valor del periodo es ${expected_amount:,.0f} y el pago es ${amount_val:,.0f} (diferencia ${difference:,.0f}).",
+            409,
+        )
+
     try:
         admin_id = admin.id if admin else None
         payment = PaymentRecord(
             subscription_id=sub.id,
             amount=amount_val,
+            expected_amount=expected_amount,
             payment_date=date.today(),
             payment_method="TRANSFERENCIA",
             reference_code=ref_code,
@@ -432,12 +442,13 @@ def confirm_payment(
         db.add(payment)
 
         today = date.today()
-        plan_cfg = PLANS_CONFIG.get(sub.plan, {"months": 3})
-        months_to_add = plan_cfg.get("months", 3)
+        plan_obj = db.query(PricingPlan).filter(PricingPlan.code == sub.plan).first()
+        months_to_add = plan_obj.months if plan_obj else 3
 
         base_renewal_date = sub.cutoff_date if sub.cutoff_date >= today else today
         new_cutoff = add_months_to_date(base_renewal_date, months_to_add)
-        new_grace_end = new_cutoff + timedelta(days=3)
+        grace_days = PricingService.get_grace_days(db)
+        new_grace_end = new_cutoff + timedelta(days=grace_days)
 
         sub.cutoff_date = new_cutoff
         sub.grace_period_end = new_grace_end
@@ -477,6 +488,8 @@ def confirm_payment(
             business=biz,
             new_cutoff_date=sub.cutoff_date,
             client_notified=client_notified,
+            expected_amount=expected_amount,
+            difference=difference,
         )
     except AdminServiceError:
         db.rollback()
