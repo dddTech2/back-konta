@@ -316,17 +316,21 @@ class AdminClientCreateRequest(BaseModel):
 
 
 class AdminClientCreateResponse(BaseModel):
-    """Resultado del alta de cliente (AC #3)."""
+    """Resultado del alta de cliente (AC #3, Story 9.2 AC #9)."""
     business_id: str
     user_id: str
     activation_link: str
+    final_price: Optional[str] = None
+    monthly_price: Optional[str] = None
+    discount_rate: Optional[str] = None
+    cutoff_date: Optional[str] = None
 
 
 class AdminPaymentCreateRequest(BaseModel):
-    """Registro de pago comercial (AC #4, Story 9.1)."""
+    """Registro de pago comercial (AC #4, Story 9.1, Story 9.2 AC #10)."""
     amount: Any
     reference: str
-    allow_mismatch: bool = True
+    allow_mismatch: bool = False
 
 
 class AdminPaymentItem(BaseModel):
@@ -340,7 +344,7 @@ class AdminPaymentItem(BaseModel):
 
 
 class AdminPaymentResponse(BaseModel):
-    """Respuesta al confirmar pago (AC #4, Story 9.1)."""
+    """Respuesta al confirmar pago (AC #4, Story 9.1, Story 9.2 AC #10)."""
     payment: AdminPaymentItem
     new_cutoff_date: str
     status: str
@@ -348,8 +352,8 @@ class AdminPaymentResponse(BaseModel):
     payment_id: Optional[str] = None
     amount: Optional[str] = None
     reference: Optional[str] = None
-    expected_amount: Optional[Decimal] = None
-    difference: Optional[Decimal] = None
+    expected_amount: Optional[Any] = None
+    difference: Optional[Any] = None
 
 
 class AdminIncomeSourceRequest(BaseModel):
@@ -400,24 +404,45 @@ class AdminTaxProfile(BaseModel):
     is_withholding_agent: bool = False
 
 
+class SubscriptionPriceChangeItem(BaseModel):
+    id: str
+    created_at: Optional[str] = None
+    old_plan: Optional[str] = None
+    new_plan: Optional[str] = None
+    old_monthly_price: Optional[str] = None
+    new_monthly_price: Optional[str] = None
+    old_discount_rate: Optional[str] = None
+    new_discount_rate: Optional[str] = None
+    old_final_price: Optional[str] = None
+    new_final_price: Optional[str] = None
+    reason: str
+    admin: Optional[str] = None
+
+
 class AdminSubscriptionDetail(BaseModel):
-    """Suscripción vigente en la ficha del cliente."""
+    """Suscripción vigente en la ficha del cliente (Story 9.2 AC #7)."""
     id: str
     plan: str
     status: str
     discount_rate: Optional[str] = None
     base_price: Optional[str] = None
     final_price: Optional[str] = None
+    monthly_price: Optional[str] = None
+    price_origin: Optional[str] = "TARIFA"
+    price_note: Optional[str] = None
+    current_rate_monthly: Optional[str] = None
+    price_changes: List[SubscriptionPriceChangeItem] = Field(default_factory=list)
     start_date: Optional[str] = None
     cutoff_date: Optional[str] = None
     grace_period_end: Optional[str] = None
 
 
 class AdminPaymentSummary(BaseModel):
-    """Pago resumido en la ficha del cliente."""
+    """Pago resumido en la ficha del cliente (Story 9.2 AC #10)."""
     id: str
     payment_date: Optional[str] = None
     amount: str
+    expected_amount: Optional[str] = None
     reference_code: Optional[str] = None
     payment_method: Optional[str] = "TRANSFERENCIA"
     verified_by_admin_id: Optional[str] = None
@@ -574,5 +599,125 @@ class AdminDocumentItem(BaseModel):
     size_bytes: int
     created_at: datetime
     document_id: Optional[str] = None
+
+
+# ==============================================================================
+# Story 9.2: Esquemas de Administración de Tarifas, Precios y Planes
+# ==============================================================================
+
+
+class PricingPlanItem(BaseModel):
+    code: str
+    name: str
+    months: int
+    discount_rate: str
+    is_active: bool
+    sort_order: int
+
+
+class PricingPlanCreateRequest(BaseModel):
+    code: str
+    name: str
+    months: int
+    discount_rate: Any
+
+
+class PricingPlanUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    discount_rate: Optional[Any] = None
+    is_active: Optional[bool] = None
+    months: Optional[Any] = None
+
+
+class PricingRateItem(BaseModel):
+    income_source: str
+    taxpayer_type: str
+    monthly_price: str
+    effective_from: str
+
+
+class PricingScheduledRateItem(BaseModel):
+    id: str
+    income_source: str
+    taxpayer_type: str
+    monthly_price: str
+    effective_from: str
+
+
+class PricingQuoteItem(BaseModel):
+    income_source: str
+    taxpayer_type: str
+    plan: str
+    months: int
+    monthly_price: str
+    gross_total: str
+    discount_rate: str
+    discount_amount: str
+    final_price: str
+
+
+class PricingOverviewResponse(BaseModel):
+    """Respuesta de GET /api/admin/pricing (AC #1)."""
+    grace_days: int
+    plans: List[PricingPlanItem]
+    rates: List[PricingRateItem]
+    scheduled: List[PricingScheduledRateItem]
+    quotes: List[PricingQuoteItem]
+
+
+class BillingSettingsResponse(BaseModel):
+    """Configuración de días de gracia (AC #2c)."""
+    grace_days: int
+    updated_at: Optional[str] = None
+
+
+class BillingSettingsUpdateRequest(BaseModel):
+    """Actualización de días de gracia (AC #2c)."""
+    grace_days: int
+
+
+class PricingRateCreateRequest(BaseModel):
+    """Creación o actualización de tarifa (AC #3)."""
+    income_source: str
+    taxpayer_type: str
+    monthly_price: Any
+    effective_from: Optional[date] = None
+
+
+class PricingRateResponse(BaseModel):
+    """Respuesta de tarifa creada/actualizada (AC #3)."""
+    id: str
+    income_source: str
+    taxpayer_type: str
+    monthly_price: str
+    effective_from: str
+    created_by: Optional[str] = None
+
+
+class PricingRateHistoryItem(BaseModel):
+    """Elemento del histórico de tarifas (AC #5)."""
+    id: str
+    income_source: str
+    taxpayer_type: str
+    monthly_price: str
+    effective_from: str
+    created_at: Optional[str] = None
+    created_by: Optional[str] = None
+
+
+class PricingQuoteDetailResponse(PricingQuoteItem):
+    """Cotización individual con fechas calculadas (AC #6)."""
+    start_date: str
+    cutoff_date: str
+
+
+class ClientSubscriptionUpdateRequest(BaseModel):
+    """Modificación de la suscripción de un cliente (AC #8)."""
+    plan: Optional[str] = None
+    monthly_price: Optional[Any] = None
+    discount_rate: Optional[Any] = None
+    use_current_rate: Optional[bool] = None
+    reason: str
+
 
 

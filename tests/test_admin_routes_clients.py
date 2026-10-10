@@ -616,7 +616,11 @@ def test_confirm_payment_reactivates_and_calls_notifier(client_app, admin_header
         raise Exception("Telegram timeout")
 
     monkeypatch.setattr("dian_automation.api.routes_admin.send_telegram_message", failing_notifier)
-    r2 = client_app.post(f"/api/admin/clients/{biz.id}/payments", headers=admin_headers, json={"amount": "100000", "reference": "TR-FAIL-NOTIF"})
+    r2 = client_app.post(
+        f"/api/admin/clients/{biz.id}/payments",
+        headers=admin_headers,
+        json={"amount": "100000", "reference": "TR-FAIL-NOTIF", "allow_mismatch": True},
+    )
     assert r2.status_code == 201
     assert r2.json()["client_notified"] is False
 

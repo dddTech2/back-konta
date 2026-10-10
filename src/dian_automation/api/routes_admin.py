@@ -3,6 +3,7 @@
 import logging
 import re
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from fastapi import (
@@ -18,6 +19,7 @@ from fastapi import (
 from sqlalchemy.orm import Session
 
 from dian_automation.api.dependencies import get_current_admin
+from dian_automation.api.routes_admin_pricing import router as pricing_router
 from dian_automation.api.routes_config import _resolve_bot_username
 from dian_automation.api.schemas import (
     AdminActivationLinkResponse,
@@ -37,6 +39,7 @@ from dian_automation.api.schemas import (
     AdminTaxProfileRequest,
     AdminWorkerStatusResponse,
     ClientDetailResponse,
+    ClientSubscriptionUpdateRequest,
     DocumentLinkResponse,
 )
 from dian_automation.config import config
@@ -49,14 +52,19 @@ from dian_automation.core.admin_service import (
     NewClientData,
     normalize_nit,
 )
-from dian_automation.subscriptions.pricing import PricingService
+from dian_automation.subscriptions.pricing import (
+    MAX_MONTHLY_PRICE,
+    PricingError,
+    PricingService,
+)
 from dian_automation.db.database import get_db
-from dian_automation.db.models import Business, BusinessDocument, User
+from dian_automation.db.models import Business, BusinessDocument, Subscription, User
 from dian_automation.telegram.notify import send_telegram_message
 
 logger = logging.getLogger("routes_admin")
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
+router.include_router(pricing_router)
 
 
 def _require_bot_username() -> str:
@@ -219,6 +227,10 @@ def create_client(
         business_id=created.business.id,
         user_id=created.user.id,
         activation_link=created.deep_link_url,
+        final_price=f"{created.subscription.final_price:.2f}",
+        monthly_price=f"{created.subscription.monthly_price:.2f}" if created.subscription.monthly_price is not None else None,
+        discount_rate=f"{created.subscription.discount_rate:.2f}",
+        cutoff_date=created.cutoff_date.isoformat() if created.cutoff_date else None,
     )
 
 
@@ -229,7 +241,7 @@ def confirm_payment(
     admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """Registra un pago comercial, reactiva la suscripción y notifica al cliente (Story 8.3 - AC #4, Story 9.1 - AC #17)."""
+    """Registra un pago comercial, reactiva la suscripción y notifica al cliente (Story 8.3 - AC #4, Story 9.1 - AC #17, Story 9.2 - AC #10)."""
     biz = db.query(Business).filter(
         (Business.id == business_id) | (Business.nit == business_id)
     ).first()
@@ -262,8 +274,8 @@ def confirm_payment(
         payment_id=result.payment.id,
         amount=f"{result.payment.amount:.2f}",
         reference=result.payment.reference_code,
-        expected_amount=result.expected_amount,
-        difference=result.difference,
+        expected_amount=f"{result.expected_amount:.2f}" if result.expected_amount is not None else None,
+        difference=f"{result.difference:.2f}" if result.difference is not None else None,
     )
 
 
@@ -311,6 +323,94 @@ def update_tax_profile(
         iva_periodicity=body.iva_periodicity,
         is_withholding_agent=body.is_withholding_agent,
     )
+    return admin_service.get_client_detail(db=db, business_id=biz.id, admin=admin)
+
+
+@router.patch("/clients/{business_id}/subscription", response_model=ClientDetailResponse)
+def update_client_subscription(
+    business_id: str,
+    body: ClientSubscriptionUpdateRequest,
+    admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Modifica la suscripción de un cliente (plan, precio o descuento especial) (Story 9.2 - AC #8)."""
+    reason_clean = (body.reason or "").strip()
+    if not reason_clean:
+        raise AdminServiceError("REASON_REQUIRED", "El motivo del cambio de precio es obligatorio.", status_code=422)
+
+    has_plan = body.plan is not None and bool(body.plan.strip())
+    has_price = body.monthly_price is not None
+    has_disc = body.discount_rate is not None
+    use_curr = bool(body.use_current_rate)
+
+    if not (has_plan or has_price or has_disc or use_curr):
+        raise AdminServiceError(
+            "NO_CHANGES_SPECIFIED",
+            "Debes especificar al menos un cambio a la suscripción (plan, precio, descuento o volver a tarifa vigente).",
+            status_code=422,
+        )
+
+    if use_curr and (has_price or has_disc):
+        raise AdminServiceError(
+            "INVALID_PRICE_CHANGE",
+            "Volver a la tarifa vigente no se combina con un precio o descuento especial.",
+            status_code=422,
+        )
+
+    if has_disc:
+        try:
+            disc_dec = Decimal(str(body.discount_rate))
+        except Exception:
+            raise AdminServiceError("INVALID_DISCOUNT_RATE", "El descuento debe ser numérico.", status_code=422)
+        if not (Decimal("0.00") <= disc_dec <= Decimal("50.00")):
+            raise AdminServiceError("INVALID_DISCOUNT_RATE", "El descuento debe estar entre 0% y 50%.", status_code=422)
+
+    if has_price:
+        try:
+            price_dec = Decimal(str(body.monthly_price))
+        except Exception:
+            raise AdminServiceError("INVALID_MONTHLY_PRICE", "El valor mensual debe ser numérico.", status_code=422)
+        if not (Decimal("0") < price_dec <= MAX_MONTHLY_PRICE):
+            raise AdminServiceError("INVALID_MONTHLY_PRICE", "El valor mensual debe ser mayor a 0 y máximo $10.000.000.", status_code=422)
+
+    biz = db.query(Business).filter(
+        (Business.id == business_id) | (Business.nit == business_id)
+    ).first()
+    if not biz:
+        raise AdminServiceError("BUSINESS_NOT_FOUND", f"No se encontró ningún negocio con identificador '{business_id}'.", 404)
+
+    user = biz.client or db.query(User).filter(User.id == biz.client_id).first()
+    if not user:
+        raise AdminServiceError("CLIENT_NOT_FOUND", "No se encontró el usuario cliente asociado al negocio.", 404)
+
+    sub = (
+        db.query(Subscription)
+        .filter(Subscription.client_id == user.id)
+        .order_by(Subscription.created_at.desc(), Subscription.id.desc())
+        .first()
+    )
+    if not sub:
+        raise AdminServiceError("SUBSCRIPTION_NOT_FOUND", "El cliente no tiene ninguna suscripción registrada.", 404)
+
+    try:
+        PricingService.apply_to_subscription(
+            db=db,
+            sub=sub,
+            plan_code=body.plan.strip().upper() if body.plan else None,
+            monthly_price=body.monthly_price,
+            discount_rate=body.discount_rate,
+            use_current_rate=use_curr,
+            reason=reason_clean,
+            admin=admin,
+        )
+        db.commit()
+    except PricingError as pe:
+        db.rollback()
+        raise AdminServiceError(pe.code, pe.message, status_code=pe.status_code) from pe
+    except Exception as e:
+        db.rollback()
+        raise AdminServiceError("INTERNAL_ERROR", f"Error al actualizar suscripción: {str(e)}", 500)
+
     return admin_service.get_client_detail(db=db, business_id=biz.id, admin=admin)
 
 

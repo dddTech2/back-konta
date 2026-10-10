@@ -29,6 +29,7 @@ from dian_automation.db.models import (
     PaymentRecord,
     PricingPlan,
     Subscription,
+    SubscriptionPriceChange,
     TelegramLinkToken,
     User,
     WorkerHeartbeat,
@@ -58,11 +59,18 @@ INCOME_SOURCE_LABELS: Dict[str, str] = {
 class AdminServiceError(Exception):
     """Excepción de dominio para operaciones de administración con código tipado y status HTTP."""
 
-    def __init__(self, code: str, message: str, status_code: int = 400):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        status_code: int = 400,
+        extra: Optional[Dict[str, Any]] = None,
+    ):
         super().__init__(message)
         self.code = code
         self.message = message
         self.status_code = status_code
+        self.extra = extra or {}
 
 
 @dataclass
@@ -91,6 +99,7 @@ class CreatedClient:
     discount_rate: float
     cutoff_date: date
     grace_period_end: date
+    monthly_price: Optional[Decimal] = None
 
 
 @dataclass
@@ -364,6 +373,7 @@ def create_client(
             discount_rate=float(quote.discount_rate),
             cutoff_date=quote.cutoff_date,
             grace_period_end=quote.grace_period_end,
+            monthly_price=quote.monthly_price,
         )
     except AdminServiceError:
         db.rollback()
@@ -425,6 +435,11 @@ def confirm_payment(
             "AMOUNT_MISMATCH",
             f"El valor del periodo es ${expected_amount:,.0f} y el pago es ${amount_val:,.0f} (diferencia ${difference:,.0f}).",
             409,
+            extra={
+                "expected_amount": f"{expected_amount:.2f}",
+                "amount": f"{amount_val:.2f}",
+                "difference": f"{difference:.2f}",
+            },
         )
 
     try:
@@ -838,6 +853,38 @@ def get_client_detail(
 
     subscription_info = None
     if sub:
+        current_rate_monthly = None
+        try:
+            rate = PricingService.current_rate(db, biz.income_source, biz.taxpayer_type)
+            current_rate_monthly = f"{rate.monthly_price:.2f}"
+        except Exception:
+            pass
+
+        price_changes_records = (
+            db.query(SubscriptionPriceChange)
+            .filter(SubscriptionPriceChange.subscription_id == sub.id)
+            .order_by(SubscriptionPriceChange.created_at.desc(), SubscriptionPriceChange.id.desc())
+            .limit(10)
+            .all()
+        )
+        price_changes = [
+            {
+                "id": ch.id,
+                "created_at": ch.created_at.isoformat() if ch.created_at else None,
+                "old_plan": ch.old_plan,
+                "new_plan": ch.new_plan,
+                "old_monthly_price": f"{ch.old_monthly_price:.2f}" if ch.old_monthly_price is not None else None,
+                "new_monthly_price": f"{ch.new_monthly_price:.2f}" if ch.new_monthly_price is not None else None,
+                "old_discount_rate": f"{ch.old_discount_rate:.2f}" if ch.old_discount_rate is not None else None,
+                "new_discount_rate": f"{ch.new_discount_rate:.2f}" if ch.new_discount_rate is not None else None,
+                "old_final_price": f"{ch.old_final_price:.2f}" if ch.old_final_price is not None else None,
+                "new_final_price": f"{ch.new_final_price:.2f}" if ch.new_final_price is not None else None,
+                "reason": ch.reason,
+                "admin": ch.admin.full_name if ch.admin else None,
+            }
+            for ch in price_changes_records
+        ]
+
         subscription_info = {
             "id": sub.id,
             "plan": sub.plan,
@@ -845,6 +892,11 @@ def get_client_detail(
             "discount_rate": f"{sub.discount_rate:.2f}" if sub.discount_rate is not None else None,
             "base_price": f"{sub.base_price:.2f}" if sub.base_price is not None else None,
             "final_price": f"{sub.final_price:.2f}" if sub.final_price is not None else None,
+            "monthly_price": f"{sub.monthly_price:.2f}" if sub.monthly_price is not None else None,
+            "price_origin": sub.price_origin or PRICE_ORIGIN_TARIFA,
+            "price_note": sub.price_note,
+            "current_rate_monthly": current_rate_monthly,
+            "price_changes": price_changes,
             "start_date": sub.start_date.isoformat() if sub.start_date else None,
             "cutoff_date": sub.cutoff_date.isoformat() if sub.cutoff_date else None,
             "grace_period_end": sub.grace_period_end.isoformat() if sub.grace_period_end else None,
@@ -864,6 +916,7 @@ def get_client_detail(
             "id": p.id,
             "payment_date": p.payment_date.isoformat() if p.payment_date else None,
             "amount": f"{p.amount:.2f}",
+            "expected_amount": f"{p.expected_amount:.2f}" if p.expected_amount is not None else None,
             "reference_code": p.reference_code,
             "payment_method": p.payment_method,
             "verified_by_admin_id": p.verified_by_admin_id,
