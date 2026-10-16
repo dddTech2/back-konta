@@ -271,6 +271,10 @@ class PaymentRecord(Base):
     subscription_id = Column(String(36), ForeignKey("subscriptions.id", ondelete="CASCADE"), nullable=False, index=True)
     amount = Column(Numeric(14, 2), nullable=False)
     expected_amount = Column(Numeric(14, 2), nullable=True)  # lo que debía pagar el periodo al momento del pago
+    package = Column(String(10), nullable=True)  # CON_IVA, SIN_IVA (Story 10.3)
+    split_nyo_pct = Column(Numeric(5, 2), nullable=True)  # porcentaje de NYO congelado al confirmar el pago (Story 10.3)
+    nyo_amount = Column(Numeric(14, 2), nullable=True)  # monto asignado a NYO congelado (Story 10.3)
+    visioncontable_amount = Column(Numeric(14, 2), nullable=True)  # monto asignado a Visión Contable congelado (Story 10.3)
     payment_date = Column(Date, nullable=False)
     payment_method = Column(String(50), default="TRANSFERENCIA", nullable=False)
     reference_code = Column(String(100), nullable=True)
@@ -355,6 +359,26 @@ class SubscriptionPriceChange(Base):
 
     __table_args__ = (
         Index("idx_price_changes_subscription", "subscription_id"),
+    )
+
+
+class RevenueSplitSetting(Base):
+    """Configuración de porcentaje de reparto de ingresos entre Visión Contable y NYO por paquete (Story 10.3)."""
+    __tablename__ = "revenue_split_settings"
+
+    package = Column(String(10), primary_key=True)  # CON_IVA, SIN_IVA
+    nyo_pct = Column(Numeric(5, 2), nullable=False)
+    visioncontable_pct = Column(Numeric(5, 2), nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
+    updated_by_admin_id = Column(String(36), ForeignKey("users.id"), nullable=True)
+
+    updated_by_admin = relationship("User", foreign_keys=[updated_by_admin_id])
+
+    __table_args__ = (
+        CheckConstraint(
+            "nyo_pct >= 0 AND visioncontable_pct >= 0 AND nyo_pct + visioncontable_pct = 100",
+            name="ck_revenue_split_settings_valid",
+        ),
     )
 
 

@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from dian_automation.api.dependencies import get_current_admin
 from dian_automation.api.routes_admin_pricing import router as pricing_router
+from dian_automation.api.routes_admin_accounting import router as accounting_router
 from dian_automation.api.routes_config import _resolve_bot_username
 from dian_automation.api.schemas import (
     AdminActivationLinkResponse,
@@ -67,6 +68,7 @@ logger = logging.getLogger("routes_admin")
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
 router.include_router(pricing_router)
+router.include_router(accounting_router)
 
 
 def _require_bot_username() -> str:

@@ -32,7 +32,7 @@ BASELINE_TABLES = {
     "payment_records",
     "dian_tax_calendar",
 }
-EXPECTED_TABLES = BASELINE_TABLES | {"sales", "otp_codes", "worker_heartbeats", "business_documents", "tax_deadline_alerts", "pricing_plans", "pricing_rates", "billing_settings", "subscription_price_changes"}  # esquema en head: base + revisiones posteriores
+EXPECTED_TABLES = BASELINE_TABLES | {"sales", "otp_codes", "worker_heartbeats", "business_documents", "tax_deadline_alerts", "pricing_plans", "pricing_rates", "billing_settings", "subscription_price_changes", "revenue_split_settings"}  # esquema en head: base + revisiones posteriores
 
 
 @pytest.fixture
@@ -786,3 +786,43 @@ def test_pricing_packages_revision_seeds_backfills_and_downgrades(alembic_cfg, e
     assert "package" not in {c["name"] for c in inspect(engine).get_columns("pricing_rates")}
     with engine.connect() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM pricing_rates")).scalar() == 4
+
+
+def test_revenue_split_revision_seeds_backfills_and_downgrades(alembic_cfg, engine):
+    """0014 (Story 10.3): reparto 50/50 por paquete y reparto congelado en los pagos existentes."""
+    command.upgrade(alembic_cfg, "0013")
+    _insert_user(engine, "u-split")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO subscriptions (id, client_id, plan, discount_rate, base_price, final_price, package,"
+                " price_origin, start_date, cutoff_date, grace_period_end, status, created_at, updated_at)"
+                " VALUES ('s-split', 'u-split', 'TRIMESTRAL', 5, 1049700, 997215, 'CON_IVA', 'TARIFA',"
+                " '2026-10-01', '2027-01-01', '2027-01-04', 'ACTIVO', '2026-10-01 00:00:00', '2026-10-01 00:00:00')"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO payment_records (id, subscription_id, amount, payment_date, payment_method, created_at)"
+                " VALUES ('p-split', 's-split', 997215, '2026-10-02', 'TRANSFERENCIA', '2026-10-02 00:00:00')"
+            )
+        )
+
+    command.upgrade(alembic_cfg, "0014")
+
+    with engine.connect() as conn:
+        split = conn.execute(text("SELECT package, nyo_pct, visioncontable_pct FROM revenue_split_settings"
+                                  " ORDER BY package")).fetchall()
+        assert [(r[0], float(r[1]), float(r[2])) for r in split] == [("CON_IVA", 50.0, 50.0), ("SIN_IVA", 50.0, 50.0)]
+        pay = conn.execute(text("SELECT package, split_nyo_pct, nyo_amount, visioncontable_amount"
+                                " FROM payment_records")).one()
+        assert pay[0] == "CON_IVA" and float(pay[1]) == 50.0
+        assert float(pay[2]) == 498608.0 and float(pay[3]) == 498607.0
+    with pytest.raises(IntegrityError):
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE revenue_split_settings SET nyo_pct = 60 WHERE package = 'CON_IVA'"))
+
+    command.downgrade(alembic_cfg, "0013")
+
+    assert "revenue_split_settings" not in _tables(engine)
+    assert "nyo_amount" not in {c["name"] for c in inspect(engine).get_columns("payment_records")}

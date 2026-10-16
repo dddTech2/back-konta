@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from dian_automation.branding import BRAND_NAME
 from dian_automation.config import config
+from dian_automation.core.accounting_service import get_split_setting, split_amount
 from dian_automation.core.business_profile import (
     ProfileError,
     has_einvoicing,
@@ -481,10 +482,21 @@ def confirm_payment(
 
     try:
         admin_id = admin.id if admin else None
+
+        # Reparto comercial congelado (Story 10.3 - AC #6)
+        pkg = sub.package or package_of(biz)
+        split_setting = get_split_setting(db, pkg)
+        split_nyo_pct = split_setting.nyo_pct
+        nyo_amount, visioncontable_amount = split_amount(amount_val, split_nyo_pct)
+
         payment = PaymentRecord(
             subscription_id=sub.id,
             amount=amount_val,
             expected_amount=expected_amount,
+            package=pkg,
+            split_nyo_pct=split_nyo_pct,
+            nyo_amount=nyo_amount,
+            visioncontable_amount=visioncontable_amount,
             payment_date=date.today(),
             payment_method="TRANSFERENCIA",
             reference_code=ref_code,
@@ -1026,6 +1038,8 @@ def get_client_detail(
             "payment_method": p.payment_method,
             "verified_by_admin_id": p.verified_by_admin_id,
             "created_at": p.created_at.isoformat() if p.created_at else None,
+            "nyo_amount": f"{p.nyo_amount:.2f}" if p.nyo_amount is not None else None,
+            "visioncontable_amount": f"{p.visioncontable_amount:.2f}" if p.visioncontable_amount is not None else None,
         }
         for p in payments_records
     ]

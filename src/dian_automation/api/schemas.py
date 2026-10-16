@@ -351,13 +351,15 @@ class AdminPaymentCreateRequest(BaseModel):
 
 
 class AdminPaymentItem(BaseModel):
-    """Detalle de un pago registrado (AC #4)."""
+    """Detalle de un pago registrado (AC #4, Story 10.3 AC #10)."""
     id: str
     amount: str
     payment_date: str
     reference_code: Optional[str] = None
     verified_by_admin_id: Optional[str] = None
     created_at: Optional[str] = None
+    nyo_amount: Optional[str] = None
+    visioncontable_amount: Optional[str] = None
 
 
 class AdminPaymentResponse(BaseModel):
@@ -459,7 +461,7 @@ class AdminSubscriptionDetail(BaseModel):
 
 
 class AdminPaymentSummary(BaseModel):
-    """Pago resumido en la ficha del cliente (Story 9.2 AC #10)."""
+    """Pago resumido en la ficha del cliente (Story 9.2 AC #10, Story 10.3 AC #10)."""
     id: str
     payment_date: Optional[str] = None
     amount: str
@@ -468,6 +470,8 @@ class AdminPaymentSummary(BaseModel):
     payment_method: Optional[str] = "TRANSFERENCIA"
     verified_by_admin_id: Optional[str] = None
     created_at: Optional[str] = None
+    nyo_amount: Optional[str] = None
+    visioncontable_amount: Optional[str] = None
 
 
 class AdminExtractionSummary(BaseModel):
@@ -736,6 +740,100 @@ class ClientSubscriptionUpdateRequest(BaseModel):
     discount_rate: Optional[Any] = None
     use_current_rate: Optional[bool] = None
     reason: str
+
+
+# ==============================================================================
+# Story 10.3: Esquemas de Contabilidad y Reparto Visión Contable / NYO
+# ==============================================================================
+
+
+class RevenueSplitSettingItem(BaseModel):
+    """Configuración de porcentaje de reparto de un paquete (Story 10.3 AC #9)."""
+    package: str
+    nyo_pct: str
+    visioncontable_pct: str
+    updated_at: Optional[str] = None
+
+
+class RevenueSplitUpdateRequest(BaseModel):
+    """Petición para actualizar el reparto de un paquete (Story 10.3 AC #9)."""
+    nyo_pct: Any
+
+
+class AccountingPackageCollectedItem(BaseModel):
+    """Recaudo por paquete (Story 10.3 AC #7, #8)."""
+    total: str
+    count: int
+
+
+class AccountingCollectedSummary(BaseModel):
+    """Resumen de recaudo del periodo (Story 10.3 AC #7, #8)."""
+    total: str
+    count: int
+    by_package: Dict[str, AccountingPackageCollectedItem]
+
+
+class AccountingSplitParty(BaseModel):
+    """Reparto asignado a una parte (NYO o Visión Contable) (Story 10.3 AC #7, #8)."""
+    total: str
+    by_package: Dict[str, str]
+
+
+class AccountingSplitSummary(BaseModel):
+    """Resumen de reparto consolidado (Story 10.3 AC #7, #8)."""
+    nyo: AccountingSplitParty
+    visioncontable: AccountingSplitParty
+
+
+class AccountingClientsSummary(BaseModel):
+    """Métricas de clientes del periodo (Story 10.3 AC #7, #8)."""
+    active_total: int
+    by_package: Dict[str, int]
+    by_income_source: Dict[str, int]
+    new_in_period: int
+
+
+class AccountingMrrSummary(BaseModel):
+    """MRR mensual total y por paquete (Story 10.3 AC #7, #8)."""
+    total: str
+    by_package: Dict[str, str]
+
+
+class AccountingMrrSplitSummary(BaseModel):
+    """Proyección de MRR mensual repartido con el porcentaje vigente (Story 10.3 AC #7, #8)."""
+    nyo: AccountingSplitParty
+    visioncontable: AccountingSplitParty
+
+
+class AccountingMonthlyItem(BaseModel):
+    """Recaudo mensual de los últimos 12 meses (Story 10.3 AC #7, #8)."""
+    month: str
+    CON_IVA: str
+    SIN_IVA: str
+    total: str
+
+
+class AccountingPaymentItem(BaseModel):
+    """Detalle de un pago registrado en el periodo (Story 10.3 AC #7, #8)."""
+    payment_date: str
+    business_id: str
+    commercial_name: str
+    package: str
+    amount: str
+    nyo_amount: str
+    visioncontable_amount: str
+
+
+class AccountingSummaryResponse(BaseModel):
+    """Respuesta consolidada de contabilidad de Konta (Story 10.3 AC #7, #8)."""
+    collected: AccountingCollectedSummary
+    split: AccountingSplitSummary
+    clients: AccountingClientsSummary
+    mrr: AccountingMrrSummary
+    mrr_split: AccountingSplitSummary
+    monthly: List[AccountingMonthlyItem]
+    payments: List[AccountingPaymentItem]
+
 
 
 
