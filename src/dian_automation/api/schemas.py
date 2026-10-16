@@ -71,6 +71,7 @@ class DashboardResponse(BaseModel):
     facturasRecientes: List[RecentInvoice]
     alertaProximoVencimiento: NextTaxAlert
     suscripcion: SubscriptionInfo
+    shows_iva: bool = True
 
 
 class PeriodInvoiceItem(BaseModel):
@@ -166,7 +167,9 @@ class MeResponse(BaseModel):
     """Estado de sesión para la SPA: negocio activo y visibilidad de funciones (sin datos fiscales)."""
     role: str
     business_id: Optional[str] = None
-    income_source: Optional[str] = None  # DIAN, MANUAL_SALES; null sin negocio (Story 6.1)
+    income_source: Optional[str] = None  # DIAN, MANUAL_SALES, MIXED; null sin negocio (Story 6.1, 10.1)
+    vat_responsible: Optional[bool] = None
+    package: Optional[str] = None  # CON_IVA, SIN_IVA; null sin negocio (Story 10.1)
     is_provisioned: bool
     is_blocked: bool
     subscription_status: Optional[str] = None
@@ -275,7 +278,7 @@ class DocumentLinkResponse(BaseModel):
 
 
 class AdminClientListItem(BaseModel):
-    """Ítem de cliente en la lista paginada del panel de administración (AC #1)."""
+    """Ítem de cliente en la lista paginada del panel de administración (AC #1, Story 10.1)."""
     business_id: str
     user_id: str
     legal_name: str
@@ -283,6 +286,8 @@ class AdminClientListItem(BaseModel):
     nit: str
     dv: str
     income_source: str
+    vat_responsible: bool = False
+    package: str = "SIN_IVA"
     taxpayer_type: str
     contact_name: str
     phone: Optional[str] = None
@@ -294,6 +299,10 @@ class AdminClientListItem(BaseModel):
     is_active: bool
 
 
+# Alias para compatibilidad con Story 10.1
+AdminClientItem = AdminClientListItem
+
+
 class AdminClientsListResponse(BaseModel):
     """Respuesta paginada del listado de clientes (AC #1)."""
     items: List[AdminClientListItem]
@@ -303,7 +312,7 @@ class AdminClientsListResponse(BaseModel):
 
 
 class AdminClientCreateRequest(BaseModel):
-    """Alta de cliente desde el panel web de administración (AC #3)."""
+    """Alta de cliente desde el panel web de administración (AC #3, Story 10.1)."""
     person_type: str  # "PERSONA" o "EMPRESA"
     contact_name: str
     phone: str
@@ -312,6 +321,13 @@ class AdminClientCreateRequest(BaseModel):
     nit: Optional[str] = None
     legal_rep_doc: Optional[str] = None
     plan: str
+    income_source: Optional[str] = None
+    vat_responsible: Optional[bool] = None
+
+
+class AdminClientProfileUpdateRequest(BaseModel):
+    """Actualización de paquete y/o perfil de un cliente (Story 10.1)."""
+    vat_responsible: Optional[bool] = None
     income_source: Optional[str] = None
 
 
@@ -383,6 +399,8 @@ class AdminClientBusiness(BaseModel):
     legal_rep_doc: Optional[str] = None
     economic_activity: Optional[str] = None
     income_source: str
+    vat_responsible: bool = False
+    package: str = "SIN_IVA"
     is_active: bool
     created_at: Optional[str] = None
 
@@ -478,6 +496,8 @@ class ClientDetailResponse(BaseModel):
     nit: Optional[str] = None
     dv: Optional[str] = None
     income_source: Optional[str] = None
+    vat_responsible: Optional[bool] = None
+    package: Optional[str] = None
     taxpayer_type: Optional[str] = None
     contact_name: Optional[str] = None
     phone: Optional[str] = None
@@ -530,9 +550,10 @@ class AdminWorkerStatusResponse(BaseModel):
 
 
 class AdminSummaryResponse(BaseModel):
-    """Resumen consolidado de administración web (AC #1)."""
+    """Resumen consolidado de administración web (AC #1, Story 10.1)."""
     clients_by_status: Dict[str, int]
     clients_by_income_source: Dict[str, int]
+    clients_by_package: Dict[str, int] = Field(default_factory=dict)
     upcoming_cutoffs: List[AdminSummaryCutoffItem]
     in_grace: List[AdminSummaryGraceItem]
     payments_this_month: AdminSummaryPaymentsMonth

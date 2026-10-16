@@ -793,3 +793,36 @@ def test_activation_link_without_bot_username_is_503(client_app, admin_headers, 
 
     assert resp.status_code == 503
     assert resp.json()["code"] == "BOT_USERNAME_UNAVAILABLE"
+
+
+def test_patch_profile_story_10_1(client_app, admin_headers, db_session):
+    """PATCH .../profile (Story 10.1): cambia paquete y perfil, valida la combinación y no toca el precio."""
+    user = User(id="usr-pf-1", email="pf@test.co", full_name="User PF", phone="3009990022", role="CLIENT")
+    biz = Business(id="biz-pf-1", client_id=user.id, legal_name="PF SAS", commercial_name="PF",
+                   nit="901444555", dv="1", income_source="DIAN", vat_responsible=True,
+                   iva_periodicity="BIMESTRAL")
+    db_session.add_all([user, biz])
+    db_session.commit()
+    url = f"/api/admin/clients/{biz.id}/profile"
+
+    empty = client_app.patch(url, headers=admin_headers, json={})
+    assert empty.status_code == 422
+
+    bad = client_app.patch(url, headers=admin_headers, json={"income_source": "MIXED", "vat_responsible": True})
+    assert bad.status_code == 400 and bad.json()["code"] == "VAT_REQUIRES_EINVOICING"
+
+    ok = client_app.patch(url, headers=admin_headers, json={"income_source": "MIXTO", "vat_responsible": False})
+    assert ok.status_code == 200
+    body = ok.json()
+    assert body["business"]["income_source"] == "MIXED"
+    assert body["business"]["package"] == "SIN_IVA" and body["package"] == "SIN_IVA"
+    db_session.expire_all()
+    assert db_session.get(Business, biz.id).iva_periodicity is None
+
+    listing = client_app.get("/api/admin/clients", headers=admin_headers).json()
+    item = next(i for i in listing["items"] if i["business_id"] == biz.id)
+    assert item["package"] == "SIN_IVA" and item["vat_responsible"] is False
+
+    summary = client_app.get("/api/admin/summary", headers=admin_headers).json()
+    assert summary["clients_by_package"]["SIN_IVA"] >= 1
+    assert summary["clients_by_income_source"]["MIXED"] >= 1

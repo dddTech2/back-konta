@@ -32,6 +32,11 @@ from dian_automation.db.models import (
     Invoice,
     INCOME_SOURCE_MANUAL_SALES,
 )
+from dian_automation.core.business_profile import (
+    has_einvoicing,
+    has_manual_sales,
+    shows_iva,
+)
 from dian_automation.core.calendar_engine import (
     CalendarNotLoadedError,
     TaxCalendarEngine,
@@ -128,7 +133,7 @@ class ClientTelegramBot:
         if err_code:
             return {"success": False, "reason": err_code, "message": err_msg}
 
-        if business.income_source == INCOME_SOURCE_MANUAL_SALES:
+        if has_manual_sales(business):
             month = target_period or datetime.now(ZoneInfo("America/Bogota")).strftime("%Y-%m")
             try:
                 data = income_service.summary(db, business, month)
@@ -202,6 +207,16 @@ class ClientTelegramBot:
         else:
             var_str = "N/D (Periodo inicial)"
 
+        iva_section = ""
+        if shows_iva(business):
+            iva_section = (
+                "───────────────────────────────\n"
+                "🏛️ *LIQUIDACIÓN DE IVA:*\n"
+                f"  • *IVA Generado (Ventas):* ${float(summary.iva_generado):,.0f} COP\n"
+                f"  • *IVA Descontable (Compras):* ${float(summary.iva_descontable):,.0f} COP\n"
+                f"  • {balance_str}\n"
+            )
+
         message = (
             f"📊 *RESUMEN FISCAL DEL MES ({summary.period_year_month})*\n"
             f"🏢 *Empresa:* {business.commercial_name} (`NIT {business.nit}-{business.dv}`)\n"
@@ -209,11 +224,7 @@ class ClientTelegramBot:
             f"💵 *Total Facturado:* ${float(summary.total_invoiced_net):,.0f} COP\n"
             f"📊 *Variación vs Mes Anterior:* {var_str}\n"
             f"📑 *Documentos Procesados:* {summary.total_invoices_count}\n"
-            "───────────────────────────────\n"
-            "🏛️ *LIQUIDACIÓN DE IVA:*\n"
-            f"  • *IVA Generado (Ventas):* ${float(summary.iva_generado):,.0f} COP\n"
-            f"  • *IVA Descontable (Compras):* ${float(summary.iva_descontable):,.0f} COP\n"
-            f"  • {balance_str}\n"
+            f"{iva_section}"
             "───────────────────────────────\n"
             "⚖️ *RETENCIONES EN LA FUENTE:*\n"
             f"  • *ReteIVA:* ${float(summary.rete_iva_total):,.0f} COP\n"
@@ -240,7 +251,7 @@ class ClientTelegramBot:
         if err_code:
             return {"success": False, "reason": err_code, "message": err_msg}
 
-        if business.income_source == INCOME_SOURCE_MANUAL_SALES:
+        if not has_einvoicing(business):
             return {
                 "success": True,
                 "count": 0,
@@ -305,7 +316,7 @@ class ClientTelegramBot:
         if err_code:
             return {"success": False, "reason": err_code, "message": err_msg}
 
-        if business.income_source == INCOME_SOURCE_MANUAL_SALES:
+        if not has_einvoicing(business):
             return {
                 "success": True,
                 "count": 0,
@@ -505,11 +516,11 @@ class ClientTelegramBot:
         if err_code:
             return {"success": False, "reason": err_code, "message": err_msg}
 
-        if business.income_source != INCOME_SOURCE_MANUAL_SALES:
+        if not has_manual_sales(business):
             return {
                 "success": False,
                 "reason": "NOT_MANUAL_SALES",
-                "message": "ℹ️ Tu negocio factura electrónicamente: las ventas salen de la DIAN y no se registran a mano.",
+                "message": "ℹ️ Tu perfil no registra ventas manuales.",
             }
 
         numbered_sales = sales_service.list_recent_sales_numbered(db, business, 10)
@@ -561,11 +572,11 @@ class ClientTelegramBot:
         if err_code:
             return {"success": False, "reason": err_code, "message": err_msg}
 
-        if business.income_source != INCOME_SOURCE_MANUAL_SALES:
+        if not has_manual_sales(business):
             return {
                 "success": False,
                 "reason": "NOT_MANUAL_SALES",
-                "message": "ℹ️ Tu negocio factura electrónicamente: las ventas salen de la DIAN y no se registran a mano.",
+                "message": "ℹ️ Tu perfil no registra ventas manuales.",
             }
 
         num = cls.parse_anular_venta_command(text)
@@ -628,7 +639,7 @@ class ClientTelegramBot:
 
         biz_name = business.commercial_name if business else "tu empresa"
 
-        if business and business.income_source == INCOME_SOURCE_MANUAL_SALES:
+        if business and not has_einvoicing(business):
             return (
                 f"👋 *¡Hola, bienvenido a {BRAND_NAME} Bot!*\n"
                 f"_{BRAND_TAGLINE}_\n"
@@ -641,6 +652,24 @@ class ClientTelegramBot:
                 "🗑️ */anular_venta* — Anula una venta mal registrada: `/anular_venta 2`.\n"
                 "ℹ️ */ayuda* — Muestra este menú de opciones.\n\n"
                 "🔒 _Tus cifras de ingresos se basan en las ventas registradas por el cliente y los egresos en tus facturas electrónicas recibidas._"
+            )
+
+        if business and has_manual_sales(business):
+            # Perfil mixto (Story 10.1): factura electrónicamente y además registra ventas.
+            return (
+                f"👋 *¡Hola, bienvenido a {BRAND_NAME} Bot!*\n"
+                f"_{BRAND_TAGLINE}_\n"
+                f"Asistente contable inteligente para *{biz_name}*.\n\n"
+                "Puedes consultar tu información en cualquier momento con estos comandos:\n\n"
+                "📊 */resumen* — Ingresos, egresos y utilidad del mes.\n"
+                "🧾 */facturas* — Últimas 4 facturas electrónicas emitidas con clientes y montos.\n"
+                "🗓️ */vencimientos* — Fechas límite de tus obligaciones tributarias según tu NIT.\n"
+                "📝 */venta* — Registra una venta sin factura: `/venta 150000 | descripción opcional`.\n"
+                "🧾 */mis_ventas* — Tus últimas 10 ventas, cada una con su número para anular.\n"
+                "🗑️ */anular_venta* — Anula una venta mal registrada: `/anular_venta 2`.\n"
+                "📱 */dashboard* — Enlace a tu panel web/móvil con gráficos e historial completo.\n"
+                "ℹ️ */ayuda* — Muestra este menú de opciones.\n\n"
+                "🔒 _Tus facturas provienen de la DIAN; tus ventas, de lo que registras aquí o en la web._"
             )
 
         return (
@@ -701,7 +730,7 @@ class ClientTelegramBot:
         elif text_clean.startswith("/ayuda") or text_clean.startswith("/help") or text_clean == "/start":
             return cls.handle_help(sender_chat_id, db)
 
-        if business and business.income_source == INCOME_SOURCE_MANUAL_SALES:
+        if business and not has_einvoicing(business):
             return (
                 "🤖 No reconozco ese comando.\n\n"
                 "Comandos disponibles:\n"

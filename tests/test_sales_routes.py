@@ -257,7 +257,7 @@ def test_post_sale_with_dian_business_returns_409_and_no_row(client, seeded, bea
 
     assert response.status_code == 409
     assert response.json()["detail"] == (
-        "Tu negocio factura electrónicamente: las ventas salen de la DIAN y no se registran a mano."
+        "Tu perfil no registra ventas manuales"
     )
     assert seeded.query(Sale).filter(Sale.business_id == "biz-dian").count() == 0
 
@@ -357,7 +357,7 @@ def test_void_sale_route_dian_business_returns_409(seeded, bearer):
         app.dependency_overrides.clear()
 
     assert response.status_code == 409
-    assert "Tu negocio factura electrónicamente" in response.json()["detail"]
+    assert "Tu perfil no registra ventas manuales" in response.json()["detail"]
 
 
 def test_void_sale_route_blocked_subscription_returns_403(seeded, bearer):

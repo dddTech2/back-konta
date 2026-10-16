@@ -503,6 +503,8 @@ def test_me_for_provisioned_user(client, db, ana, bearer):
         "role": "CLIENT",
         "business_id": "biz-ana",
         "income_source": "DIAN",
+        "vat_responsible": True,
+        "package": "CON_IVA",
         "is_provisioned": True,
         "is_blocked": False,
         "subscription_status": "ACTIVO",
@@ -579,7 +581,7 @@ def test_me_with_several_businesses_returns_the_oldest_active_one_without_fiscal
     resp = client.get("/api/auth/me", headers=bearer("ana"))
 
     assert resp.json()["business_id"] == "biz-ana-old"
-    assert set(resp.json()) == {"role", "business_id", "income_source", "is_provisioned", "is_blocked",
+    assert set(resp.json()) == {"role", "business_id", "income_source", "vat_responsible", "package", "is_provisioned", "is_blocked",
                                 "subscription_status", "has_warning_banner", "redirect_url"}
 
 

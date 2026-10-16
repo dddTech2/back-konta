@@ -489,7 +489,7 @@ def test_crear_cliente_saves_the_business_type(db_session_factory, text, nit, ex
 
 @pytest.mark.parametrize(
     "text",
-    [PERSONA + " | MIXTO", EMPRESA + " | mixto", PERSONA + " | FACTURADOR | de_mas", EMPRESA + " | FACTURADOR | x"],
+    [PERSONA + " | OTRO", EMPRESA + " | otro", PERSONA + " | FACTURADOR | de_mas", EMPRESA + " | FACTURADOR | x"],
     ids=["persona_tipo_invalido", "empresa_tipo_invalido", "persona_campo_de_mas", "empresa_campo_de_mas"],
 )
 def test_crear_cliente_rejects_bad_business_type_or_extra_fields_without_creating_anything(db_session_factory, text):
@@ -564,7 +564,7 @@ def test_cambiar_tipo_accepts_a_nit_with_verification_digit_and_ignores_the_subs
     "text, reason",
     [
         ("/cambiar_tipo 999999999 | FACTURADOR", "BUSINESS_NOT_FOUND"),
-        ("/cambiar_tipo 901008579 | MIXTO", "INVALID_SYNTAX"),
+        ("/cambiar_tipo 901008579 | OTRO", "INVALID_SYNTAX"),
         ("/cambiar_tipo 901008579", "INVALID_SYNTAX"),
         ("/cambiar_tipo", "INVALID_SYNTAX"),
         ("/cambiar_tipo 12 | FACTURADOR", "INVALID_SYNTAX"),
@@ -1212,5 +1212,110 @@ def test_documentos_and_retirar_documento_flow(db_session_factory, tmp_path, mon
 
         res_final = AdminTelegramBot.execute_documentos(ADMIN_CHAT, f"/documentos {biz.nit}", db)
         assert res_final["count"] == 0
+    finally:
+        db.close()
+
+
+# ==============================================================================
+# Story 10.1: perfil mixto y paquete
+# ==============================================================================
+
+
+def test_crear_cliente_mixto_queda_sin_iva(db_session_factory):
+    db = db_session_factory()
+    try:
+        res = _crear(db, PERSONA + " | MIXTO")
+
+        assert res["success"] is True and res["income_source"] == "MIXED" and res["package"] == "SIN_IVA"
+        assert "*Paquete:*" in res["message"]
+        biz = db.query(Business).filter(Business.id == res["business_id"]).one()
+        assert biz.vat_responsible is False
+    finally:
+        db.close()
+
+
+def test_crear_cliente_facturador_sin_iva(db_session_factory):
+    db = db_session_factory()
+    try:
+        res = _crear(db, PERSONA + " | FACTURADOR | IVA=NO")
+
+        assert res["success"] is True and res["income_source"] == "DIAN" and res["package"] == "SIN_IVA"
+    finally:
+        db.close()
+
+
+def test_crear_cliente_mixto_con_iva_se_rechaza_sin_crear_nada(db_session_factory):
+    db = db_session_factory()
+    try:
+        res = _crear(db, PERSONA + " | MIXTO | IVA=SI")
+
+        assert res["success"] is False and res["reason"] == "VAT_REQUIRES_EINVOICING"
+        assert db.query(Business).count() == 0
+    finally:
+        db.close()
+
+
+def test_paquete_cambia_iva_sin_tocar_el_precio(db_session_factory):
+    db = db_session_factory()
+    try:
+        biz = _seed_business(db, "FACTURADOR")
+        sub = db.query(Subscription).filter(Subscription.client_id == biz.client_id).one()
+        price_before = sub.final_price
+
+        res = AdminTelegramBot.execute_paquete(ADMIN_CHAT, "/paquete 901008579 | SIN_IVA", db)
+
+        assert res["success"] is True and res["package"] == "SIN_IVA"
+        assert _business(db, "901008579").vat_responsible is False
+        assert db.query(Subscription).filter(Subscription.client_id == biz.client_id).one().final_price == price_before
+        routed = AdminTelegramBot.handle_admin_message(ADMIN_CHAT, "/paquete 901008579 | CON_IVA", db)
+        assert "Paquete del negocio actualizado" in routed
+    finally:
+        db.close()
+
+
+def test_paquete_con_iva_en_negocio_de_ventas_se_rechaza(db_session_factory):
+    db = db_session_factory()
+    try:
+        _seed_business(db, "VENTAS_MANUALES")
+
+        res = AdminTelegramBot.execute_paquete(ADMIN_CHAT, "/paquete 901008579 | CON_IVA", db)
+
+        assert res["success"] is False and res["reason"] == "VAT_REQUIRES_EINVOICING"
+        assert _business(db, "901008579").vat_responsible is False
+    finally:
+        db.close()
+
+
+def test_cambiar_tipo_a_mixto_deja_el_negocio_sin_iva(db_session_factory):
+    db = db_session_factory()
+    try:
+        _seed_business(db, "FACTURADOR")
+        _business(db, "901008579").iva_periodicity = "BIMESTRAL"
+        db.commit()
+
+        res = AdminTelegramBot.execute_cambiar_tipo(ADMIN_CHAT, "/cambiar_tipo 901008579 | MIXTO", db)
+
+        biz = _business(db, "901008579")
+        assert res["success"] is True and res["package"] == "SIN_IVA"
+        assert biz.income_source == "MIXED" and biz.vat_responsible is False and biz.iva_periodicity is None
+    finally:
+        db.close()
+
+
+def test_perfil_tributario_actualiza_la_responsabilidad_de_iva(db_session_factory):
+    db = db_session_factory()
+    try:
+        _seed_business(db, "FACTURADOR")
+        AdminTelegramBot.execute_paquete(ADMIN_CHAT, "/paquete 901008579 | SIN_IVA", db)
+
+        AdminTelegramBot.execute_perfil_tributario(
+            ADMIN_CHAT, "/perfil_tributario 901008579 | IVA=BIMESTRAL | RETENCION=NO", db
+        )
+        assert _business(db, "901008579").vat_responsible is True
+
+        AdminTelegramBot.execute_perfil_tributario(
+            ADMIN_CHAT, "/perfil_tributario 901008579 | IVA=NINGUNO | RETENCION=NO", db
+        )
+        assert _business(db, "901008579").vat_responsible is False
     finally:
         db.close()

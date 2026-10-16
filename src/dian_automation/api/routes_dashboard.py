@@ -4,8 +4,9 @@ from typing import Tuple, Dict, Any, List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from dian_automation.core.business_profile import has_einvoicing, shows_iva
 from dian_automation.db.database import get_db
-from dian_automation.db.models import Business, User, MonthlyTaxSummary, Invoice, Subscription, INCOME_SOURCE_MANUAL_SALES
+from dian_automation.db.models import Business, User, MonthlyTaxSummary, Invoice, Subscription
 from dian_automation.api.dependencies import get_business_with_access
 from dian_automation.api.schemas import (
     DashboardResponse,
@@ -56,10 +57,11 @@ def get_dashboard(
 ):
     """Retorna todas las métricas consolidadas consumidas por la pantalla de inicio."""
     business, user, access_check = business_access
-    if business.income_source == INCOME_SOURCE_MANUAL_SALES:
+    if not has_einvoicing(business):
         raise HTTPException(status_code=404, detail="Este servicio no aplica a tu tipo de negocio.")
 
     today = today_bogota()
+    is_shows_iva = shows_iva(business)
 
     # 1. Información del negocio
     biz_info = BusinessInfo(
@@ -84,7 +86,7 @@ def get_dashboard(
         latest = summaries[0]
         resumen = MetricSummary(
             total=float(latest.total_invoiced_net),
-            ivaAcumulado=float(latest.iva_generado),
+            ivaAcumulado=float(latest.iva_generado) if is_shows_iva else 0.0,
             numFacturas=latest.total_invoices_count,
             variacion=float(latest.variation_vs_previous_pct or 0.0),
             periodo=latest.period_year_month,
@@ -140,7 +142,7 @@ def get_dashboard(
                 fecha=_format_short_date(inv.issue_date),
                 cliente=inv.receiver_name or "Consumidor final",
                 valor=float(inv.total),
-                iva=float(inv.iva),
+                iva=float(inv.iva) if is_shows_iva else 0.0,
                 tipo="Emitido",
             )
         )
@@ -198,4 +200,5 @@ def get_dashboard(
         facturasRecientes=facturas_recientes,
         alertaProximoVencimiento=alerta,
         suscripcion=sub_info,
+        shows_iva=is_shows_iva,
     )

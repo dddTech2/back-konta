@@ -12,8 +12,9 @@ from dian_automation.core.calendar_engine import (
     TaxCalendarEngine,
     today_bogota,
 )
+from dian_automation.core.business_profile import has_einvoicing
 from dian_automation.db.database import get_db
-from dian_automation.db.models import Business, INCOME_SOURCE_MANUAL_SALES, User
+from dian_automation.db.models import Business, User
 
 router = APIRouter(prefix="/api/calendar", tags=["Calendario"])
 
@@ -27,7 +28,7 @@ def get_tax_calendar(
     """Retorna las obligaciones tributarias aplicables al negocio según su perfil."""
     business, user, _ = business_access
 
-    if business.income_source == INCOME_SOURCE_MANUAL_SALES:
+    if not has_einvoicing(business):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Este servicio no aplica a tu tipo de negocio.",

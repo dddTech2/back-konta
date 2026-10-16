@@ -8,11 +8,11 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from dian_automation.config import config
+from dian_automation.core.business_profile import has_einvoicing, shows_iva
 from dian_automation.core.calendar_repository import find_deadlines
 from dian_automation.db.models import (
     Business,
     DIANTaxCalendar,
-    INCOME_SOURCE_MANUAL_SALES,
     IVA_PERIODICITY_BIMESTRAL,
     IVA_PERIODICITY_CUATRIMESTRAL,
 )
@@ -134,7 +134,7 @@ class TaxCalendarEngine:
 
     def obligations(self, business: Business, today: Optional[date] = None) -> List[Obligation]:
         """Calcula y retorna la lista de obligaciones tributarias ordenadas para el negocio."""
-        if business.income_source == INCOME_SOURCE_MANUAL_SALES:
+        if not has_einvoicing(business):
             return []
 
         if today is None:
@@ -152,10 +152,11 @@ class TaxCalendarEngine:
             )
 
         tax_types: List[str] = []
-        if business.iva_periodicity == IVA_PERIODICITY_BIMESTRAL:
-            tax_types.append("IVA_BIMESTRAL")
-        elif business.iva_periodicity == IVA_PERIODICITY_CUATRIMESTRAL:
-            tax_types.append("IVA_CUATRIMESTRAL")
+        if shows_iva(business):
+            if business.iva_periodicity == IVA_PERIODICITY_BIMESTRAL:
+                tax_types.append("IVA_BIMESTRAL")
+            elif business.iva_periodicity == IVA_PERIODICITY_CUATRIMESTRAL:
+                tax_types.append("IVA_CUATRIMESTRAL")
 
         if business.is_withholding_agent:
             tax_types.append("RETEFUENTE")

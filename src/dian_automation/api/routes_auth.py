@@ -15,8 +15,9 @@ from dian_automation.api.schemas import (
     TokenResponse,
 )
 from dian_automation.core import auth_service
+from dian_automation.core.business_profile import package_of
 from dian_automation.db.database import get_db
-from dian_automation.db.models import User
+from dian_automation.db.models import Business, User
 
 router = APIRouter(prefix="/api/auth", tags=["Auth"])
 
@@ -43,4 +44,13 @@ def link_login(payload: LinkLoginSchema, db: Session = Depends(get_db)):
 @router.get("/me", response_model=MeResponse)
 def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> Dict[str, Any]:
     """Negocio activo y estado de suscripción de la sesión; nunca responde 403."""
-    return auth_service.get_me(user, db)
+    data = auth_service.get_me(user, db)
+    business_id = data.get("business_id")
+    if business_id:
+        biz = db.get(Business, business_id)
+        data["vat_responsible"] = biz.vat_responsible if biz else None
+        data["package"] = package_of(biz) if biz else None
+    else:
+        data["vat_responsible"] = None
+        data["package"] = None
+    return data

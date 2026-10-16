@@ -19,11 +19,15 @@ from dian_automation.branding import BRAND_NAME
 from dian_automation.config import config
 from dian_automation.core import admin_service, document_service
 from dian_automation.core.admin_service import AdminServiceError, NewClientData
+from dian_automation.core.business_profile import package_of
 from dian_automation.db.models import (
     INCOME_SOURCE_DIAN,
     INCOME_SOURCE_MANUAL_SALES,
+    INCOME_SOURCE_MIXED,
     IVA_PERIODICITY_BIMESTRAL,
     IVA_PERIODICITY_CUATRIMESTRAL,
+    PACKAGE_CON_IVA,
+    PACKAGE_SIN_IVA,
     User,
     Business,
     Subscription,
@@ -65,27 +69,37 @@ class AdminTelegramBot:
     USAGE_MESSAGE = (
         "⚠️ *Uso incorrecto.* La plantilla depende del *Tipo de cliente* (primer campo):\n\n"
         "👤 *Persona Natural:*\n"
-        "`/crear_cliente PERSONA | Nombre Completo | Celular | Cédula | Plan [| Módulo]`\n"
+        "`/crear_cliente PERSONA | Nombre Completo | Celular | Cédula | Plan [| Módulo] [| IVA=SI|NO]`\n"
         "_Ejemplo (DIAN):_ `/crear_cliente PERSONA | Andrea Torres | 3001234567 | 1000000001 | TRIMESTRAL`\n"
-        "_Ejemplo (Ventas):_ `/crear_cliente PERSONA | Andrea Torres | 3001234567 | 1000000001 | TRIMESTRAL | VENTAS_MANUALES`\n\n"
+        "_Ejemplo (Ventas):_ `/crear_cliente PERSONA | Andrea Torres | 3001234567 | 1000000001 | TRIMESTRAL | VENTAS_MANUALES`\n"
+        "_Ejemplo (Mixto):_ `/crear_cliente PERSONA | Andrea Torres | 3001234567 | 1000000001 | TRIMESTRAL | MIXTO`\n\n"
         "🏢 *Empresa (Representante Legal):*\n"
-        "`/crear_cliente EMPRESA | Nombre Contacto | Celular | Nombre Empresa | NIT Empresa | Cédula Representante | Plan [| Módulo]`\n"
+        "`/crear_cliente EMPRESA | Nombre Contacto | Celular | Nombre Empresa | NIT Empresa | Cédula Representante | Plan [| Módulo] [| IVA=SI|NO]`\n"
         "_Ejemplo (DIAN):_ `/crear_cliente EMPRESA | Andrea Torres | 3001234567 | Ferretería El Roble SAS | 901008579 | 10000002 | TRIMESTRAL`\n"
-        "_Ejemplo (Ventas):_ `/crear_cliente EMPRESA | Andrea Torres | 3001234567 | Ferretería El Roble SAS | 901008579 | 10000002 | TRIMESTRAL | VENTAS_MANUALES`\n\n"
+        "_Ejemplo (Ventas):_ `/crear_cliente EMPRESA | Andrea Torres | 3001234567 | Ferretería El Roble SAS | 901008579 | 10000002 | TRIMESTRAL | VENTAS_MANUALES`\n"
+        "_Ejemplo (Mixto):_ `/crear_cliente EMPRESA | Andrea Torres | 3001234567 | Ferretería El Roble SAS | 901008579 | 10000002 | TRIMESTRAL | MIXTO`\n\n"
         "_Planes disponibles: TRIMESTRAL, SEMESTRAL, ANUAL_\n"
-        "*Módulo* (último campo, opcional):\n"
+        "*Módulo* (opcional):\n"
         "• `FACTURADOR` (por defecto): factura electrónicamente, cifras e IVA desde la DIAN.\n"
-        "• `VENTAS_MANUALES`: registra sus ventas a mano en el módulo de ingresos, sin IVA ni calendario tributario."
+        "• `VENTAS_MANUALES`: registra sus ventas a mano en el módulo de ingresos, sin IVA ni calendario tributario.\n"
+        "• `MIXTO`: factura electrónicamente y registra ventas manuales.\n"
+        "*IVA=SI|NO* (opcional): responsabilidad de IVA (por defecto SI para FACTURADOR, NO para los demás)."
     )
 
     # Tipo de negocio que la administradora escribe en los comandos -> valor guardado en `businesses.income_source`.
     INCOME_SOURCE_BY_TIPO: Dict[str, str] = {
         "FACTURADOR": INCOME_SOURCE_DIAN,
         "VENTAS_MANUALES": INCOME_SOURCE_MANUAL_SALES,
+        "MIXTO": INCOME_SOURCE_MIXED,
     }
     INCOME_SOURCE_LABELS: Dict[str, str] = {
         INCOME_SOURCE_DIAN: "🧾 Facturador electrónico (cifras desde la DIAN)",
         INCOME_SOURCE_MANUAL_SALES: "✍️ Ventas manuales (registra sus ventas a mano)",
+        INCOME_SOURCE_MIXED: "🔄 Mixto (facturación electrónica + ventas manuales)",
+    }
+    PACKAGE_LABELS: Dict[str, str] = {
+        PACKAGE_CON_IVA: "📦 Con IVA (declarante de IVA)",
+        PACKAGE_SIN_IVA: "📦 Sin IVA (no responsable de IVA)",
     }
 
     # Tipos de documentos y alias aceptados por el bot (Story 7.4a)
@@ -180,7 +194,7 @@ class AdminTelegramBot:
                 + cls.USAGE_MESSAGE,
             )
 
-        max_parts = 6 if tipo_clean == "PERSONA" else 8  # el TIPO de negocio (opcional) va al final
+        max_parts = 7 if tipo_clean == "PERSONA" else 9  # Módulo y/o IVA=SI|NO (opcionales) al final
         if len(parts) > max_parts:
             return False, None, cls.USAGE_MESSAGE
 
@@ -189,7 +203,7 @@ class AdminTelegramBot:
                 return (
                     False,
                     None,
-                    "⚠️ *Faltan datos en la plantilla de Persona Natural.* Debes incluir 5 campos separados por `|`:\n"
+                    "⚠️ *Faltan datos en la plantilla de Persona Natural.* Debes incluir al menos 5 campos separados por `|`:\n"
                     "`/crear_cliente PERSONA | Nombre | Celular | Cédula | Plan`\n\n"
                     "_Ejemplo:_ `/crear_cliente PERSONA | Andrea Torres | 3001234567 | 1000000001 | TRIMESTRAL`",
                 )
@@ -201,7 +215,7 @@ class AdminTelegramBot:
                 return (
                     False,
                     None,
-                    "⚠️ *Faltan datos en la plantilla de Empresa.* Debes incluir 7 campos separados por `|`:\n"
+                    "⚠️ *Faltan datos en la plantilla de Empresa.* Debes incluir al menos 7 campos separados por `|`:\n"
                     "`/crear_cliente EMPRESA | Nombre Contacto | Celular | Nombre Empresa | NIT Empresa | "
                     "Cédula Representante | Plan`\n\n"
                     "_Ejemplo:_ `/crear_cliente EMPRESA | Andrea Torres | 3001234567 | Ferretería El Roble SAS | "
@@ -253,17 +267,48 @@ class AdminTelegramBot:
             return False, None, f"⚠️ Plan '{plan_raw}' no reconocido. Opciones válidas: {planes_validos}"
 
         income_source = None  # sin TIPO: un negocio nuevo queda DIAN y uno existente conserva el suyo
-        negocio_pos = 5 if tipo_clean == "PERSONA" else 7
-        negocio_raw = parts[negocio_pos] if len(parts) > negocio_pos else ""
-        if negocio_raw:
-            income_source = cls.INCOME_SOURCE_BY_TIPO.get(negocio_raw.upper())
-            if income_source is None:
-                return (
-                    False,
-                    None,
-                    f"⚠️ Módulo '{negocio_raw}' no reconocido. Debe ser `FACTURADOR` o `VENTAS_MANUALES`.\n\n"
-                    + cls.USAGE_MESSAGE,
-                )
+        vat_responsible = None
+        extra_parts = parts[5:] if tipo_clean == "PERSONA" else parts[7:]
+        for extra in extra_parts:
+            extra_clean = extra.strip()
+            if not extra_clean:
+                continue
+            if "=" in extra_clean:
+                k, sep, v = extra_clean.partition("=")
+                k_clean = cls._plain_upper(k)
+                v_clean = cls._plain_upper(v)
+                if k_clean == "IVA":
+                    if v_clean in ("SI", "SÍ"):
+                        vat_responsible = True
+                    elif v_clean == "NO":
+                        vat_responsible = False
+                    else:
+                        return (
+                            False,
+                            None,
+                            f"⚠️ Valor de IVA '{v.strip()}' no reconocido. Debe ser `SI` o `NO`.\n\n"
+                            + cls.USAGE_MESSAGE,
+                        )
+                else:
+                    return (
+                        False,
+                        None,
+                        f"⚠️ Parámetro '{extra_clean}' no reconocido.\n\n"
+                        + cls.USAGE_MESSAGE,
+                    )
+            else:
+                mod_upper = extra_clean.upper()
+                if mod_upper in cls.INCOME_SOURCE_BY_TIPO:
+                    income_source = cls.INCOME_SOURCE_BY_TIPO[mod_upper]
+                elif mod_upper in (INCOME_SOURCE_DIAN, INCOME_SOURCE_MANUAL_SALES, INCOME_SOURCE_MIXED):
+                    income_source = mod_upper
+                else:
+                    return (
+                        False,
+                        None,
+                        f"⚠️ Módulo '{extra_clean}' no reconocido. Debe ser `FACTURADOR`, `VENTAS_MANUALES` o `MIXTO`.\n\n"
+                        + cls.USAGE_MESSAGE,
+                    )
 
         return True, {
             "tipo_cliente": tipo_clean,
@@ -274,6 +319,7 @@ class AdminTelegramBot:
             "legal_rep_doc": rep_doc_clean,
             "plan": plan_clean,
             "income_source": income_source,
+            "vat_responsible": vat_responsible,
         }, None
 
     @classmethod
@@ -318,6 +364,7 @@ class AdminTelegramBot:
             legal_rep_doc=data["legal_rep_doc"],
             plan=data["plan"],
             income_source=data["income_source"],
+            vat_responsible=data.get("vat_responsible"),
         )
 
         try:
@@ -356,7 +403,7 @@ class AdminTelegramBot:
         grace_end = subscription.grace_period_end
         deep_link_url = created.deep_link_url
 
-        # Construir respuesta enriquecida para Katerinn
+        # Construir respuesta enriquecida para Katerinn (Story 10.1 - AC #13)
         tipo_label = "🏢 Empresa (Representante Legal)" if tipo_cliente == "EMPRESA" else "👤 Persona Natural"
         dv_note = "_(DV calculado automáticamente — algoritmo DIAN módulo 11, no fue suministrado)_"
         if tipo_cliente == "EMPRESA":
@@ -371,10 +418,15 @@ class AdminTelegramBot:
 
         cliente_line = f"👤 *Cliente:* {user.full_name}\n" if tipo_cliente == "PERSONA" else ""
 
+        pkg = package_of(business)
+        pkg_label = cls.PACKAGE_LABELS.get(pkg, pkg)
+        perfil_label = cls.INCOME_SOURCE_LABELS.get(business.income_source, business.income_source)
+
         response_message = (
             "✅ *Cliente creado con éxito.*\n\n"
             f"📂 *Tipo:* {tipo_label}\n"
-            f"🗂️ *Tipo de negocio:* {cls.INCOME_SOURCE_LABELS.get(business.income_source, business.income_source)}\n"
+            f"🗂️ *Tipo de negocio:* {perfil_label}\n"
+            f"📦 *Paquete:* {pkg_label}\n"
             f"{cliente_line}"
             f"📱 *Teléfono:* `{user.phone}`\n"
             f"{id_lines}"
@@ -399,6 +451,7 @@ class AdminTelegramBot:
             "nit": f"{nit_clean}-{dv}",
             "legal_rep_doc": legal_rep_doc,
             "income_source": business.income_source,
+            "package": pkg,
             "plan": plan_name,
             "final_price": final_price,
             "deep_link_url": deep_link_url,
@@ -783,14 +836,14 @@ class AdminTelegramBot:
     CAMBIAR_TIPO_USAGE = (
         "⚠️ *Uso incorrecto.* Formato requerido:\n"
         "`/cambiar_tipo NIT | TIPO`\n\n"
-        "_TIPO:_ `FACTURADOR` (factura electrónicamente, cifras desde la DIAN) o `VENTAS_MANUALES` "
-        "(registra sus ventas a mano).\n"
-        "_Ejemplo:_ `/cambiar_tipo 901008579 | VENTAS_MANUALES`"
+        "_TIPO:_ `FACTURADOR` (factura electrónicamente, cifras desde la DIAN), `VENTAS_MANUALES` "
+        "(registra sus ventas a mano) o `MIXTO` (facturación electrónica + ventas manuales).\n"
+        "_Ejemplo:_ `/cambiar_tipo 901008579 | MIXTO`"
     )
 
     @classmethod
     def parse_cambiar_tipo_command(cls, text: str) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
-        """Analiza `/cambiar_tipo NIT | FACTURADOR|VENTAS_MANUALES`."""
+        """Analiza `/cambiar_tipo NIT | FACTURADOR|VENTAS_MANUALES|MIXTO`."""
         match = re.match(r"^/cambiar_tipo\b\s*(.*)", text, re.IGNORECASE | re.DOTALL)
         if not match:
             return False, None, "Comando no reconocido."
@@ -816,7 +869,7 @@ class AdminTelegramBot:
 
     @classmethod
     def execute_cambiar_tipo(cls, sender_chat_id: int, text: str, db: Session) -> Dict[str, Any]:
-        """Cambia el tipo (DIAN o ventas manuales) de un negocio existente. No depende de la suscripción."""
+        """Cambia el tipo (DIAN, ventas manuales o mixto) de un negocio existente (Story 10.1 - AC #13)."""
         if not cls.is_authorized_admin(sender_chat_id, db):
             logger.warning(f"Intento de /cambiar_tipo no autorizado desde chat_id={sender_chat_id}")
             return {
@@ -836,11 +889,11 @@ class AdminTelegramBot:
         )
 
         try:
-            biz = admin_service.set_income_source(
+            biz = admin_service.set_business_profile(
                 db=db,
-                admin=admin_user,
-                nit=data["nit"],
+                business_id=data["nit"],
                 income_source=data["income_source"],
+                admin=admin_user,
             )
         except AdminServiceError as e:
             if e.code == "BUSINESS_NOT_FOUND":
@@ -856,15 +909,118 @@ class AdminTelegramBot:
             logger.error(f"Error cambiando tipo del NIT {data['nit']}: {e}", exc_info=True)
             return {"success": False, "reason": "INTERNAL_ERROR", "message": f"❌ Error interno al cambiar el tipo: {str(e)}"}
 
+        pkg = package_of(biz)
+        pkg_label = cls.PACKAGE_LABELS.get(pkg, pkg)
+        perfil_label = cls.INCOME_SOURCE_LABELS.get(biz.income_source, biz.income_source)
+
         logger.info(f"Admin chat {sender_chat_id} cambió el tipo del NIT {biz.nit} a {biz.income_source}")
         return {
             "success": True,
             "business_id": biz.id,
             "income_source": biz.income_source,
+            "package": pkg,
             "message": (
                 "✅ *Tipo de negocio actualizado.*\n\n"
                 f"🏢 *Empresa:* {biz.commercial_name} (NIT `{biz.nit}-{biz.dv}`)\n"
-                f"🗂️ *Tipo:* {cls.INCOME_SOURCE_LABELS[biz.income_source]}"
+                f"🗂️ *Tipo:* {perfil_label}\n"
+                f"📦 *Paquete:* {pkg_label}"
+            ),
+        }
+
+    PAQUETE_USAGE = (
+        "⚠️ *Uso incorrecto.* Formato requerido:\n"
+        "`/paquete NIT | PAQUETE`\n\n"
+        "_PAQUETE:_ `CON_IVA` (responsable de IVA) o `SIN_IVA` (no responsable de IVA).\n"
+        "_Ejemplo:_ `/paquete 901008579 | CON_IVA`"
+    )
+
+    @classmethod
+    def parse_paquete_command(cls, text: str) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
+        """Analiza `/paquete NIT | CON_IVA|SIN_IVA` (Story 10.1 - AC #13)."""
+        match = re.match(r"^/paquete\b\s*(.*)", text, re.IGNORECASE | re.DOTALL)
+        if not match:
+            return False, None, "Comando no reconocido."
+
+        parts = [p.strip() for p in match.group(1).strip().split("|")]
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            return False, None, cls.PAQUETE_USAGE
+
+        nit = cls.normalize_nit(parts[0])
+        if not nit:
+            return (
+                False,
+                None,
+                f"⚠️ El NIT '{parts[0]}' no es válido (debe tener al menos 6 dígitos numéricos).\n\n"
+                + cls.PAQUETE_USAGE,
+            )
+
+        pkg_raw = cls._plain_upper(parts[1])
+        if pkg_raw in ("CON_IVA", "CON IVA", "CONIVA"):
+            vat_responsible = True
+        elif pkg_raw in ("SIN_IVA", "SIN IVA", "SINIVA"):
+            vat_responsible = False
+        else:
+            return False, None, f"⚠️ Paquete '{parts[1]}' no reconocido. Debe ser `CON_IVA` o `SIN_IVA`.\n\n" + cls.PAQUETE_USAGE
+
+        return True, {"nit": nit, "vat_responsible": vat_responsible}, None
+
+    @classmethod
+    def execute_paquete(cls, sender_chat_id: int, text: str, db: Session) -> Dict[str, Any]:
+        """Actualiza el paquete comercial (responsabilidad de IVA) de un negocio existente (Story 10.1 - AC #13)."""
+        if not cls.is_authorized_admin(sender_chat_id, db):
+            logger.warning(f"Intento de /paquete no autorizado desde chat_id={sender_chat_id}")
+            return {
+                "success": False,
+                "reason": "UNAUTHORIZED",
+                "message": "⛔ *Acceso denegado:* Este comando está restringido a la administración comercial autorizada.",
+            }
+
+        is_valid, data, error_msg = cls.parse_paquete_command(text)
+        if not is_valid:
+            return {"success": False, "reason": "INVALID_SYNTAX", "message": error_msg}
+
+        admin_user = (
+            db.query(User)
+            .filter(User.telegram_chat_id == sender_chat_id, User.role == "ADMIN")
+            .first()
+        )
+
+        try:
+            biz = admin_service.set_business_profile(
+                db=db,
+                business_id=data["nit"],
+                vat_responsible=data["vat_responsible"],
+                admin=admin_user,
+            )
+        except AdminServiceError as e:
+            if e.code == "BUSINESS_NOT_FOUND":
+                msg = (
+                    f"❌ No se encontró ningún negocio registrado con NIT `{data['nit']}`.\n\n"
+                    + cls.PAQUETE_USAGE
+                )
+            else:
+                msg = f"❌ {e.message}"
+            return {"success": False, "reason": e.code, "message": msg}
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error cambiando paquete del NIT {data['nit']}: {e}", exc_info=True)
+            return {"success": False, "reason": "INTERNAL_ERROR", "message": f"❌ Error interno al cambiar el paquete: {str(e)}"}
+
+        pkg = package_of(biz)
+        pkg_label = cls.PACKAGE_LABELS.get(pkg, pkg)
+        perfil_label = cls.INCOME_SOURCE_LABELS.get(biz.income_source, biz.income_source)
+
+        logger.info(f"Admin chat {sender_chat_id} cambió el paquete del NIT {biz.nit} a {pkg}")
+        return {
+            "success": True,
+            "business_id": biz.id,
+            "vat_responsible": biz.vat_responsible,
+            "package": pkg,
+            "message": (
+                "✅ *Paquete del negocio actualizado.*\n\n"
+                f"🏢 *Empresa:* {biz.commercial_name} (NIT `{biz.nit}-{biz.dv}`)\n"
+                f"📦 *Paquete:* {pkg_label}\n"
+                f"🗂️ *Perfil:* {perfil_label}"
             ),
         }
 
@@ -1442,6 +1598,10 @@ class AdminTelegramBot:
             res = cls.execute_cambiar_tipo(sender_chat_id, text_clean, db)
             return res["message"]
 
+        elif text_clean.startswith("/paquete"):
+            res = cls.execute_paquete(sender_chat_id, text_clean, db)
+            return res["message"]
+
         elif text_clean.startswith("/perfil_tributario"):
             res = cls.execute_perfil_tributario(sender_chat_id, text_clean, db)
             return res["message"]
@@ -1471,16 +1631,20 @@ class AdminTelegramBot:
                 "1️⃣ *Crear Cliente:* Da de alta a un usuario, negocio y suscripción con enlace mágico.\n"
                 "La plantilla depende del *Tipo de cliente* (primer campo: `PERSONA` o `EMPRESA`):\n\n"
                 "👤 *Persona Natural:*\n"
-                "`/crear_cliente PERSONA | Nombre | Celular | Cédula | Plan [| Módulo]`\n"
+                "`/crear_cliente PERSONA | Nombre | Celular | Cédula | Plan [| Módulo] [| IVA=SI|NO]`\n"
                 "_Ejemplo (DIAN):_ `/crear_cliente PERSONA | Andrea Torres | 3001234567 | 1000000001 | TRIMESTRAL`\n"
-                "_Ejemplo (Ventas):_ `/crear_cliente PERSONA | Andrea Torres | 3001234567 | 1000000001 | TRIMESTRAL | VENTAS_MANUALES`\n\n"
+                "_Ejemplo (Ventas):_ `/crear_cliente PERSONA | Andrea Torres | 3001234567 | 1000000001 | TRIMESTRAL | VENTAS_MANUALES`\n"
+                "_Ejemplo (Mixto):_ `/crear_cliente PERSONA | Andrea Torres | 3001234567 | 1000000001 | TRIMESTRAL | MIXTO`\n\n"
                 "🏢 *Empresa (Representante Legal):*\n"
-                "`/crear_cliente EMPRESA | Nombre Contacto | Celular | Nombre Empresa | NIT Empresa | Cédula Representante | Plan [| Módulo]`\n"
+                "`/crear_cliente EMPRESA | Nombre Contacto | Celular | Nombre Empresa | NIT Empresa | Cédula Representante | Plan [| Módulo] [| IVA=SI|NO]`\n"
                 "_Ejemplo (DIAN):_ `/crear_cliente EMPRESA | Andrea Torres | 3001234567 | Ferretería El Roble SAS | 901008579 | 10000002 | TRIMESTRAL`\n"
-                "_Ejemplo (Ventas):_ `/crear_cliente EMPRESA | Andrea Torres | 3001234567 | Ferretería El Roble SAS | 901008579 | 10000002 | TRIMESTRAL | VENTAS_MANUALES`\n\n"
-                "*Módulo* (último campo, opcional):\n"
+                "_Ejemplo (Ventas):_ `/crear_cliente EMPRESA | Andrea Torres | 3001234567 | Ferretería El Roble SAS | 901008579 | 10000002 | TRIMESTRAL | VENTAS_MANUALES`\n"
+                "_Ejemplo (Mixto):_ `/crear_cliente EMPRESA | Andrea Torres | 3001234567 | Ferretería El Roble SAS | 901008579 | 10000002 | TRIMESTRAL | MIXTO`\n\n"
+                "*Módulo* (opcional):\n"
                 "• `FACTURADOR` (por defecto): factura electrónicamente, cifras e IVA desde la DIAN.\n"
-                "• `VENTAS_MANUALES`: registra sus ventas a mano en el módulo de ingresos, sin IVA ni calendario tributario.\n\n"
+                "• `VENTAS_MANUALES`: registra sus ventas a mano en el módulo de ingresos, sin IVA ni calendario tributario.\n"
+                "• `MIXTO`: factura electrónicamente y registra ventas manuales.\n"
+                "*IVA=SI|NO* (opcional): responsabilidad de IVA (por defecto SI para FACTURADOR, NO para los demás).\n\n"
                 "2️⃣ *Confirmar Pago:* Registra transferencias, reactiva cuentas y levanta suspensiones:\n"
                 "`/confirmar_pago NIT | Monto | Referencia`\n"
                 "_Ejemplo:_ `/confirmar_pago 901008579 | <monto> | TR-998822`\n\n"
@@ -1492,27 +1656,30 @@ class AdminTelegramBot:
                 "_Ejemplo (rango):_ `/ejecutar_extraccion 901008579 | 6 meses` (últimos 6 meses "
                 "calendario completos, sin contar el mes en curso, en una sola solicitud)\n"
                 "_Periodo opcional — si se omite, usa el mes anterior completo._\n\n"
-                "5️⃣ *Cambiar tipo de negocio:* Pasa un cliente entre facturador electrónico y ventas manuales:\n"
-                "`/cambiar_tipo NIT | FACTURADOR` o `/cambiar_tipo NIT | VENTAS_MANUALES`\n"
-                "_Ejemplo:_ `/cambiar_tipo 901008579 | VENTAS_MANUALES`\n\n"
-                "6️⃣ *Perfil tributario (solo facturadores):* Periodicidad de IVA y agente de retención, para el calendario:\n"
+                "5️⃣ *Cambiar tipo de negocio:* Pasa un cliente entre facturador electrónico, ventas manuales o mixto:\n"
+                "`/cambiar_tipo NIT | FACTURADOR|VENTAS_MANUALES|MIXTO`\n"
+                "_Ejemplo:_ `/cambiar_tipo 901008579 | MIXTO`\n\n"
+                "6️⃣ *Cambiar paquete:* Asigna si el negocio es responsable de IVA o no:\n"
+                "`/paquete NIT | CON_IVA|SIN_IVA`\n"
+                "_Ejemplo:_ `/paquete 901008579 | CON_IVA`\n\n"
+                "7️⃣ *Perfil tributario (solo facturadores):* Periodicidad de IVA y agente de retención, para el calendario:\n"
                 "`/perfil_tributario NIT | IVA=BIMESTRAL|CUATRIMESTRAL|NINGUNO | RETENCION=SI|NO`\n"
                 "_Ejemplo:_ `/perfil_tributario 901008579 | IVA=CUATRIMESTRAL | RETENCION=SI`\n\n"
-                "7️⃣ *Liberar Telegram:* Desvincula un chat de Telegram asociado a una cuenta:\n"
+                "8️⃣ *Liberar Telegram:* Desvincula un chat de Telegram asociado a una cuenta:\n"
                 "`/liberar_telegram <chat_id>`\n"
                 "_Ejemplo:_ `/liberar_telegram 123456789`\n\n"
-                "8️⃣ *Subir Documento:* Carga un documento (PDF, PNG o JPG) al panel del cliente:\n"
+                "9️⃣ *Subir Documento:* Carga un documento (PDF, PNG o JPG) al panel del cliente:\n"
                 "Adjunta el archivo y escribe en el caption:\n"
                 "`/subir_documento <NIT> <TIPO> [descripción]`\n"
                 "_Tipos:_ `RUT`, `CAMARA`, `CEDULA`, `BANCARIA`, `OTRO`\n"
                 "_Ejemplo:_ `/subir_documento 901008579 RUT`\n\n"
-                "9️⃣ *Consultar Documentos:* Lista los documentos activos de un cliente:\n"
+                "🔟 *Consultar Documentos:* Lista los documentos activos de un cliente:\n"
                 "`/documentos <NIT>`\n"
                 "_Ejemplo:_ `/documentos 901008579`\n\n"
-                "🔟 *Retirar Documento:* Da de baja un documento del cliente por su número:\n"
+                "1️⃣1️⃣ *Retirar Documento:* Da de baja un documento del cliente por su número:\n"
                 "`/retirar_documento <NIT> <número>`\n"
                 "_Ejemplo:_ `/retirar_documento 901008579 1`\n\n"
-                "1️⃣1️⃣ *Panel de Administración:* Enlace directo para acceder al panel web de administración:\n"
+                "1️⃣2️⃣ *Panel de Administración:* Enlace directo para acceder al panel web de administración:\n"
                 "`/panel`"
             )
 

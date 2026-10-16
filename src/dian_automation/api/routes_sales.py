@@ -15,8 +15,9 @@ from dian_automation.api.schemas import (
     SaleVoidResponse,
 )
 from dian_automation.core import income_service, sales_service
+from dian_automation.core.business_profile import has_manual_sales
 from dian_automation.db.database import get_db
-from dian_automation.db.models import Business, INCOME_SOURCE_MANUAL_SALES, Sale, User
+from dian_automation.db.models import Business, Sale, User
 from dian_automation.subscriptions.lockout_service import SubscriptionBlockedError
 
 router = APIRouter(prefix="/api/sales", tags=["Ventas"])
@@ -31,10 +32,10 @@ def list_sales(
     business_access: Tuple[Business, User, Dict[str, Any]] = Depends(get_business_with_access),
     db: Session = Depends(get_db),
 ) -> SaleListResponse:
-    """Lista las ventas no anuladas del mes (por defecto mes actual en Bogotá) para un negocio MANUAL_SALES."""
+    """Lista las ventas no anuladas del mes (por defecto mes actual en Bogotá) para un negocio con ventas manuales."""
     business, user, _access = business_access
 
-    if business.income_source != INCOME_SOURCE_MANUAL_SALES:
+    if not has_manual_sales(business):
         raise HTTPException(status_code=404, detail="Este servicio no aplica a tu tipo de negocio.")
 
     target_month = month

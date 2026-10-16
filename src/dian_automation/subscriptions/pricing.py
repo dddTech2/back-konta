@@ -326,6 +326,9 @@ class PricingService:
     ) -> PricingRate:
         """Obtiene la tarifa vigente (effective_from <= on) para el segmento dado."""
         ensure_default_pricing(db)
+        if income_source == "MIXED":
+            # Story 10.1: hasta la tarifa por paquete (10.2) el perfil mixto cotiza como ventas manuales.
+            income_source = INCOME_SOURCE_MANUAL_SALES
         target_date = on or datetime.now(ZoneInfo("America/Bogota")).date()
         rate = (
             db.query(PricingRate)

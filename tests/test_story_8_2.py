@@ -403,6 +403,8 @@ def test_me_endpoint_for_admin(client, db):
         "role": "ADMIN",
         "business_id": None,
         "income_source": None,
+        "vat_responsible": None,
+        "package": None,
         "is_provisioned": False,
         "is_blocked": False,
         "subscription_status": None,

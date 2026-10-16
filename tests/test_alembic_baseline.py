@@ -701,3 +701,33 @@ def test_pricing_revision_seeds_backfills_and_downgrades(alembic_cfg, engine):
     sub_cols = {c["name"] for c in inspect(engine).get_columns("subscriptions")}
     assert not {"monthly_price", "price_origin", "price_note"} & sub_cols
     assert "expected_amount" not in {c["name"] for c in inspect(engine).get_columns("payment_records")}
+
+
+def test_packages_profile_revision_backfills_and_downgrades(alembic_cfg, engine):
+    """0012 (Story 10.1): DIAN queda con IVA, el resto sin IVA; downgrade convierte MIXED en MANUAL_SALES."""
+    command.upgrade(alembic_cfg, "0011")
+    _insert_user(engine, "u-pkg")
+    with engine.begin() as conn:
+        for biz_id, nit, source in (("b-dian", "900100100", "DIAN"), ("b-ventas", "900200200", "MANUAL_SALES")):
+            conn.execute(
+                text(
+                    "INSERT INTO businesses (id, client_id, legal_name, commercial_name, nit, dv, taxpayer_type,"
+                    " income_source, is_withholding_agent, is_active, created_at, updated_at) VALUES (:id, 'u-pkg',"
+                    " 'N', 'N', :nit, '1', 'PERSONA_NATURAL', :src, 0, 1, '2026-01-01 00:00:00',"
+                    " '2026-01-01 00:00:00')"
+                ),
+                {"id": biz_id, "nit": nit, "src": source},
+            )
+
+    command.upgrade(alembic_cfg, "0012")
+
+    with engine.begin() as conn:
+        vat = {r[0]: bool(r[1]) for r in conn.execute(text("SELECT id, vat_responsible FROM businesses"))}
+        assert vat == {"b-dian": True, "b-ventas": False}
+        conn.execute(text("UPDATE businesses SET income_source = 'MIXED' WHERE id = 'b-ventas'"))
+
+    command.downgrade(alembic_cfg, "0011")
+
+    assert "vat_responsible" not in {c["name"] for c in inspect(engine).get_columns("businesses")}
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT income_source FROM businesses WHERE id = 'b-ventas'")).scalar() == "MANUAL_SALES"

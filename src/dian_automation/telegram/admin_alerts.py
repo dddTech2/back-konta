@@ -14,12 +14,12 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from dian_automation.core.business_profile import has_einvoicing
 from dian_automation.db.models import (
     User,
     DIANExtractionJob,
     Business,
     Invoice,
-    INCOME_SOURCE_MANUAL_SALES,
 )
 from dian_automation.queue.exceptions import STALE_PROCESSING_CODE, is_slow_error
 from dian_automation.telegram.tech_ops_bot import TechOpsAlertBot, create_tech_ops_on_failure_callback
@@ -194,7 +194,7 @@ def notify_misclassified_business(
             return False
 
         business = db.query(Business).filter(Business.id == job.business_id).first()
-        if not business or business.income_source != INCOME_SOURCE_MANUAL_SALES:
+        if not business or has_einvoicing(business):
             return False
 
         issued_count = (

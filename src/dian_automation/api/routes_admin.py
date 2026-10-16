@@ -25,6 +25,7 @@ from dian_automation.api.schemas import (
     AdminActivationLinkResponse,
     AdminClientCreateRequest,
     AdminClientCreateResponse,
+    AdminClientProfileUpdateRequest,
     AdminClientsListResponse,
     AdminDocumentItem,
     AdminExtractionCreateRequest,
@@ -48,6 +49,7 @@ from dian_automation.core.admin_service import (
     INCOME_SOURCE_BY_TIPO,
     INCOME_SOURCE_DIAN,
     INCOME_SOURCE_MANUAL_SALES,
+    INCOME_SOURCE_MIXED,
     AdminServiceError,
     NewClientData,
     normalize_nit,
@@ -186,12 +188,12 @@ def create_client(
         inc_raw = body.income_source.upper().strip()
         if inc_raw in INCOME_SOURCE_BY_TIPO:
             income_source = INCOME_SOURCE_BY_TIPO[inc_raw]
-        elif inc_raw in (INCOME_SOURCE_DIAN, INCOME_SOURCE_MANUAL_SALES):
+        elif inc_raw in (INCOME_SOURCE_DIAN, INCOME_SOURCE_MANUAL_SALES, INCOME_SOURCE_MIXED):
             income_source = inc_raw
         else:
             raise AdminServiceError(
                 "INVALID_INCOME_SOURCE",
-                f"Módulo '{body.income_source}' no reconocido. Debe ser FACTURADOR o VENTAS_MANUALES.",
+                f"Módulo '{body.income_source}' no reconocido. Debe ser FACTURADOR, VENTAS_MANUALES o MIXTO.",
                 status_code=422,
             )
 
@@ -209,6 +211,7 @@ def create_client(
         legal_rep_doc=legal_rep_clean,
         plan=plan_clean,
         income_source=income_source,
+        vat_responsible=body.vat_responsible,
     )
     bot_username = _require_bot_username()
     try:
@@ -220,6 +223,8 @@ def create_client(
             allow_existing_nit=False,
         )
     except AdminServiceError as e:
+        if e.code == "VAT_REQUIRES_EINVOICING":
+            raise
         status_code_mapped = 422 if e.status_code == 400 else e.status_code
         raise AdminServiceError(e.code, e.message, status_code_mapped)
 
@@ -277,6 +282,31 @@ def confirm_payment(
         expected_amount=f"{result.expected_amount:.2f}" if result.expected_amount is not None else None,
         difference=f"{result.difference:.2f}" if result.difference is not None else None,
     )
+
+
+@router.patch("/clients/{business_id}/profile", response_model=ClientDetailResponse)
+def update_business_profile(
+    business_id: str,
+    body: AdminClientProfileUpdateRequest,
+    admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Actualiza el perfil de negocio (origen de ingresos y/o responsabilidad de IVA) (Story 10.1 - AC #6, #7)."""
+    if body.vat_responsible is None and body.income_source is None:
+        raise AdminServiceError(
+            "NO_CHANGES_SPECIFIED",
+            "Debes especificar al menos un cambio (vat_responsible o income_source).",
+            status_code=422,
+        )
+
+    biz = admin_service.set_business_profile(
+        db=db,
+        business_id=business_id,
+        vat_responsible=body.vat_responsible,
+        income_source=body.income_source,
+        admin=admin,
+    )
+    return admin_service.get_client_detail(db=db, business_id=biz.id, admin=admin)
 
 
 @router.patch("/clients/{business_id}/income-source", response_model=ClientDetailResponse)

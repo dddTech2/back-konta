@@ -202,7 +202,7 @@ def test_dian_business_fails_with_not_manual_sales_and_no_row(db):
         _register(db, who="dian", total="100")
 
     assert exc.value.code == SalesError.NOT_MANUAL_SALES
-    assert "Tu negocio factura electrónicamente" in exc.value.message
+    assert "Tu perfil no registra ventas manuales" in exc.value.message
     assert _count(db) == 0
 
 
@@ -295,7 +295,7 @@ def test_void_sale_dian_business_raises_not_manual_sales(db):
         void_sale(db, user=user_dian, business=biz_dian, sale_id="any-id")
 
     assert exc.value.code == SalesError.NOT_MANUAL_SALES
-    assert "Tu negocio factura electrónicamente" in exc.value.message
+    assert "Tu perfil no registra ventas manuales" in exc.value.message
 
 
 def test_void_sale_blocked_subscription_raises_business_blocked_and_changes_nothing(db):

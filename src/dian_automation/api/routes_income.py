@@ -12,7 +12,8 @@ from dian_automation.api.dependencies import get_business_with_access
 from dian_automation.api.schemas import IncomeSummaryItem, IncomeSummaryResponse
 from dian_automation.core import income_service
 from dian_automation.db.database import get_db
-from dian_automation.db.models import Business, INCOME_SOURCE_MANUAL_SALES, User
+from dian_automation.core.business_profile import has_manual_sales
+from dian_automation.db.models import Business, User
 
 router = APIRouter(prefix="/api/income-summary", tags=["Ingresos"])
 
@@ -33,10 +34,10 @@ def get_income_summary(
     business_access: Tuple[Business, User, Dict[str, Any]] = Depends(get_business_with_access),
     db: Session = Depends(get_db),
 ) -> IncomeSummaryResponse:
-    """Retorna el resumen de ingresos, egresos y utilidad para un negocio MANUAL_SALES."""
+    """Retorna el resumen de ingresos, egresos y utilidad para un negocio con ventas manuales."""
     business, user, _ = business_access
 
-    if business.income_source != INCOME_SOURCE_MANUAL_SALES:
+    if not has_manual_sales(business):
         raise HTTPException(status_code=404, detail="Este servicio no aplica a tu tipo de negocio.")
 
     target_month = month

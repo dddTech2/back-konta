@@ -574,3 +574,26 @@ def test_previous_year_obligations_crossing_year_boundary(db):
     labels_25 = [o.etiqueta for o in obs_enero_25]
     assert "Nov – Dic 2026" not in labels_25
     assert "Ene – Feb 2027" in labels_25
+
+
+def test_business_without_vat_gets_no_iva_obligations_even_with_periodicity(db):
+    """Story 10.1: las obligaciones de IVA dependen de `vat_responsible`, no solo de la periodicidad."""
+    _seed_calendar_2026(db)
+    engine = TaxCalendarEngine(db)
+    biz = _make_business(nit="901401201", iva_periodicity=IVA_PERIODICITY_BIMESTRAL)
+    biz.vat_responsible = False
+
+    types = {o.tax_type for o in engine.obligations(biz, today=date(2026, 1, 1))}
+
+    assert types == {"RENTA_PERSONAS_NATURALES"}
+
+
+def test_mixed_business_gets_calendar_obligations(db):
+    """Story 10.1: el perfil mixto factura electrónicamente y conserva su calendario."""
+    _seed_calendar_2026(db)
+    engine = TaxCalendarEngine(db)
+    biz = _make_business(nit="901401201", iva_periodicity=None, income_source="MIXED")
+
+    types = {o.tax_type for o in engine.obligations(biz, today=date(2026, 1, 1))}
+
+    assert types == {"RENTA_PERSONAS_NATURALES"}

@@ -701,7 +701,7 @@ def test_registrar_venta_dian_business_returns_informational_message_and_no_sale
     """/registrar_venta con negocio DIAN responde con mensaje informativo y no crea venta."""
     resp = _send(db_session_factory, "/registrar_venta 100000", chat_id=ANDREA_CHAT)
 
-    assert "ℹ️ Tu negocio factura electrónicamente: las ventas salen de la DIAN y no se registran a mano." in resp
+    assert "ℹ️ Tu perfil no registra ventas manuales" in resp
     assert _sales(db_session_factory) == []
 
 
@@ -1169,7 +1169,7 @@ def test_mis_ventas_dian_business_not_applicable(db_session_factory):
         resp = ClientTelegramBot.handle_mis_ventas(sender_chat_id=ANDREA_CHAT, db=db)
         assert resp["success"] is False
         assert resp["reason"] == "NOT_MANUAL_SALES"
-        assert "ℹ️ Tu negocio factura electrónicamente: las ventas salen de la DIAN y no se registran a mano." in resp["message"]
+        assert "ℹ️ Tu perfil no registra ventas manuales" in resp["message"]
     finally:
         db.close()
 
@@ -1520,7 +1520,7 @@ def test_anular_venta_dian_and_blocked_business_no_void(db_session_factory):
         )
         assert resp_dian["success"] is False
         assert resp_dian["reason"] == "NOT_MANUAL_SALES"
-        assert "ℹ️ Tu negocio factura electrónicamente: las ventas salen de la DIAN y no se registran a mano." in resp_dian["message"]
+        assert "ℹ️ Tu perfil no registra ventas manuales" in resp_dian["message"]
 
         # Cliente BLOQUEADO
         resp_bloq = ClientTelegramBot.handle_anular_venta(
@@ -1740,7 +1740,7 @@ def test_story_7_1_venta_rejections_dian_and_blocked(db_session_factory):
     """AC #1: /venta rechaza negocios DIAN y clientes bloqueados."""
     # Negocio DIAN
     resp_dian = _send(db_session_factory, "/venta 50000", chat_id=ANDREA_CHAT)
-    assert "ℹ️ Tu negocio factura electrónicamente: las ventas salen de la DIAN y no se registran a mano." in resp_dian
+    assert "ℹ️ Tu perfil no registra ventas manuales" in resp_dian
 
     # Suscripción BLOQUEADA
     resp_bloq = _send(db_session_factory, "/venta 50000", chat_id=CARLOS_CHAT)

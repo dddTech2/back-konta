@@ -15,7 +15,8 @@ from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from dian_automation.core import income_service
-from dian_automation.db.models import Business, INCOME_SOURCE_MANUAL_SALES, Sale, User
+from dian_automation.core.business_profile import has_manual_sales
+from dian_automation.db.models import Business, Sale, User
 from dian_automation.subscriptions.lockout_service import SubscriptionLockoutService
 
 RECORDED_VIA_TELEGRAM = "TELEGRAM"
@@ -113,10 +114,10 @@ def register_sale(
             "Suscripción suspendida por pago pendiente: no se pueden registrar ventas.",
         )
 
-    if business.income_source != INCOME_SOURCE_MANUAL_SALES:
+    if not has_manual_sales(business):
         raise SalesError(
             SalesError.NOT_MANUAL_SALES,
-            "Tu negocio factura electrónicamente: las ventas salen de la DIAN y no se registran a mano.",
+            "Tu perfil no registra ventas manuales",
         )
 
     total_amount = parse_total(total)
@@ -215,10 +216,10 @@ def void_sale(db: Session, *, user: User, business: Business, sale_id: str, now:
             "Suscripción suspendida por pago pendiente: no se pueden anular ventas.",
         )
 
-    if business.income_source != INCOME_SOURCE_MANUAL_SALES:
+    if not has_manual_sales(business):
         raise SalesError(
             SalesError.NOT_MANUAL_SALES,
-            "Tu negocio factura electrónicamente: las ventas salen de la DIAN y no se registran a mano.",
+            "Tu perfil no registra ventas manuales",
         )
 
     sale = (

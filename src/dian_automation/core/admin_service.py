@@ -18,9 +18,16 @@ from sqlalchemy.orm import Session
 
 from dian_automation.branding import BRAND_NAME
 from dian_automation.config import config
+from dian_automation.core.business_profile import (
+    ProfileError,
+    has_einvoicing,
+    package_of,
+    validate_profile,
+)
 from dian_automation.db.models import (
     INCOME_SOURCE_DIAN,
     INCOME_SOURCE_MANUAL_SALES,
+    INCOME_SOURCE_MIXED,
     IVA_PERIODICITY_BIMESTRAL,
     IVA_PERIODICITY_CUATRIMESTRAL,
     Business,
@@ -34,6 +41,9 @@ from dian_automation.db.models import (
     User,
     WorkerHeartbeat,
     PRICE_ORIGIN_TARIFA,
+    PACKAGE_CON_IVA,
+    PACKAGE_SIN_IVA,
+    PACKAGES,
 )
 from dian_automation.queue.exceptions import is_slow_error
 from dian_automation.subscriptions.pricing import PricingService, PricingError
@@ -49,10 +59,12 @@ DIAN_DV_WEIGHTS = [71, 67, 59, 53, 47, 43, 41, 37, 29, 23, 19, 17, 13, 7, 3]
 INCOME_SOURCE_BY_TIPO: Dict[str, str] = {
     "FACTURADOR": INCOME_SOURCE_DIAN,
     "VENTAS_MANUALES": INCOME_SOURCE_MANUAL_SALES,
+    "MIXTO": INCOME_SOURCE_MIXED,
 }
 INCOME_SOURCE_LABELS: Dict[str, str] = {
     INCOME_SOURCE_DIAN: "🧾 Facturador electrónico (cifras desde la DIAN)",
     INCOME_SOURCE_MANUAL_SALES: "✍️ Ventas manuales (registra sus ventas a mano)",
+    INCOME_SOURCE_MIXED: "🔄 Mixto (facturación electrónica + ventas manuales)",
 }
 
 
@@ -84,6 +96,7 @@ class NewClientData:
     business_name: Optional[str] = None
     legal_rep_doc: Optional[str] = None
     income_source: Optional[str] = None
+    vat_responsible: Optional[bool] = None
 
 
 @dataclass
@@ -171,6 +184,7 @@ def create_client(
     data: NewClientData,
     bot_username: str = "KontaBot",
     allow_existing_nit: bool = True,
+    vat_responsible: Optional[bool] = None,
 ) -> CreatedClient:
     """Crea o reactiva un cliente (persona o empresa), su negocio y suscripción, generando enlace mágico."""
     plan_clean = (data.plan or "").upper().strip()
@@ -213,10 +227,12 @@ def create_client(
         inc_raw = data.income_source.upper().strip()
         if inc_raw in INCOME_SOURCE_BY_TIPO:
             income_source = INCOME_SOURCE_BY_TIPO[inc_raw]
-        elif inc_raw in (INCOME_SOURCE_DIAN, INCOME_SOURCE_MANUAL_SALES):
+        elif inc_raw in (INCOME_SOURCE_DIAN, INCOME_SOURCE_MANUAL_SALES, INCOME_SOURCE_MIXED):
             income_source = inc_raw
+        elif inc_raw in ("MIXTO", "MIXED"):
+            income_source = INCOME_SOURCE_MIXED
         else:
-            raise AdminServiceError("INVALID_INCOME_SOURCE", f"Módulo '{data.income_source}' no reconocido. Debe ser FACTURADOR o VENTAS_MANUALES.", 400)
+            raise AdminServiceError("INVALID_INCOME_SOURCE", f"Módulo '{data.income_source}' no reconocido. Debe ser FACTURADOR, VENTAS_MANUALES o MIXTO.", 400)
 
     taxpayer_type = "PERSONA_JURIDICA" if tipo_clean == "EMPRESA" else "PERSONA_NATURAL"
     business_name = data.business_name.strip() if tipo_clean == "EMPRESA" and data.business_name else full_name
@@ -232,6 +248,16 @@ def create_client(
         existing_user = db.query(User).filter(
             ((User.phone == phone) | (User.full_name == full_name)) & (User.role == "CLIENT")
         ).first()
+
+    target_income_source = income_source or (existing_biz.income_source if existing_biz else INCOME_SOURCE_DIAN)
+    eff_vat = vat_responsible if vat_responsible is not None else data.vat_responsible
+    if eff_vat is None:
+        eff_vat = True if target_income_source == INCOME_SOURCE_DIAN else False
+
+    try:
+        validate_profile(eff_vat, target_income_source)
+    except ProfileError as pe:
+        raise AdminServiceError(pe.code, pe.message, 400) from pe
 
     try:
         if existing_user:
@@ -249,6 +275,7 @@ def create_client(
                     taxpayer_type=taxpayer_type,
                     legal_rep_doc=legal_rep_clean,
                     income_source=income_source or INCOME_SOURCE_DIAN,
+                    vat_responsible=eff_vat,
                     is_active=True,
                 )
                 db.add(business)
@@ -260,6 +287,9 @@ def create_client(
                 business.dv = dv
                 business.taxpayer_type = taxpayer_type
                 business.legal_rep_doc = legal_rep_clean
+                business.vat_responsible = eff_vat
+                if not eff_vat:
+                    business.iva_periodicity = None
                 if income_source:
                     business.income_source = income_source
         else:
@@ -291,6 +321,9 @@ def create_client(
                 business.dv = dv
                 business.taxpayer_type = taxpayer_type
                 business.legal_rep_doc = legal_rep_clean
+                business.vat_responsible = eff_vat
+                if not eff_vat:
+                    business.iva_periodicity = None
                 if income_source:
                     business.income_source = income_source
             else:
@@ -303,12 +336,12 @@ def create_client(
                     taxpayer_type=taxpayer_type,
                     legal_rep_doc=legal_rep_clean,
                     income_source=income_source or INCOME_SOURCE_DIAN,
+                    vat_responsible=eff_vat,
                     is_active=True,
                 )
                 db.add(business)
 
         # Crear o renovar Suscripción con Descuento desde tarifa vigente
-        target_income_source = income_source or (existing_biz.income_source if existing_biz else INCOME_SOURCE_DIAN)
         try:
             quote = PricingService.quote_for_segment(
                 db=db,
@@ -515,38 +548,83 @@ def confirm_payment(
         raise AdminServiceError("INTERNAL_ERROR", f"Error interno al registrar el pago: {str(e)}", 500)
 
 
+def set_business_profile(
+    db: Session,
+    business_id: str,
+    *,
+    vat_responsible: Optional[bool] = None,
+    income_source: Optional[str] = None,
+    admin: Optional[User] = None,
+) -> Business:
+    """Actualiza el perfil de negocio (origen de ingresos y/o responsabilidad de IVA) (Story 10.1 - AC #6, #7, #13).
+
+    No altera la tarifa ni el plan de suscripción del cliente.
+    Si vat_responsible se vuelve False y existía iva_periodicity configurada, se limpia a None.
+    """
+    id_str = str(business_id).strip()
+    biz = db.query(Business).filter(
+        (Business.id == id_str) | (Business.nit == id_str)
+    ).first()
+    if not biz:
+        nit_clean = normalize_nit(id_str) or "".join(filter(str.isdigit, id_str))
+        if nit_clean:
+            biz = db.query(Business).filter(Business.nit == nit_clean).first()
+    if not biz:
+        raise AdminServiceError("BUSINESS_NOT_FOUND", f"No se encontró ningún negocio con identificador '{business_id}'.", 404)
+
+    target_income = biz.income_source
+    if income_source is not None:
+        src_upper = income_source.upper().strip()
+        if src_upper in INCOME_SOURCE_BY_TIPO:
+            target_income = INCOME_SOURCE_BY_TIPO[src_upper]
+        elif src_upper in (INCOME_SOURCE_DIAN, INCOME_SOURCE_MANUAL_SALES, INCOME_SOURCE_MIXED):
+            target_income = src_upper
+        else:
+            raise AdminServiceError("INVALID_INCOME_SOURCE", f"Tipo '{income_source}' no reconocido.", 400)
+
+    if vat_responsible is not None:
+        target_vat = bool(vat_responsible)
+    elif target_income != INCOME_SOURCE_DIAN:
+        # Un declarante de IVA siempre factura electrónicamente: al pasar a ventas o mixto queda Sin IVA.
+        target_vat = False
+    else:
+        target_vat = biz.vat_responsible
+
+    try:
+        validate_profile(target_vat, target_income)
+    except ProfileError as e:
+        raise AdminServiceError(e.code, e.message, 400)
+
+    try:
+        biz.vat_responsible = target_vat
+        biz.income_source = target_income
+        if not target_vat and biz.iva_periodicity is not None:
+            biz.iva_periodicity = None
+        db.commit()
+        db.refresh(biz)
+        return biz
+    except AdminServiceError:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error actualizando perfil del negocio {business_id}: {e}", exc_info=True)
+        raise AdminServiceError("INTERNAL_ERROR", f"Error interno al actualizar el perfil: {str(e)}", 500)
+
+
 def set_income_source(
     db: Session,
     admin: Optional[User],
     nit: str,
     income_source: str,
 ) -> Business:
-    """Cambia el tipo de negocio (DIAN o ventas manuales) sin modificar la suscripción."""
-    nit_clean = normalize_nit(nit) or "".join(filter(str.isdigit, str(nit)))
-    if len(nit_clean) < 6:
-        raise AdminServiceError("INVALID_NIT", f"El NIT '{nit}' no es válido (debe tener al menos 6 dígitos numéricos).", 400)
-
-    src_upper = (income_source or "").upper().strip()
-    if src_upper in INCOME_SOURCE_BY_TIPO:
-        mapped_source = INCOME_SOURCE_BY_TIPO[src_upper]
-    elif src_upper in (INCOME_SOURCE_DIAN, INCOME_SOURCE_MANUAL_SALES):
-        mapped_source = src_upper
-    else:
-        raise AdminServiceError("INVALID_INCOME_SOURCE", f"Tipo '{income_source}' no reconocido.", 400)
-
-    biz = db.query(Business).filter(Business.nit == nit_clean).first()
-    if not biz:
-        raise AdminServiceError("BUSINESS_NOT_FOUND", f"No se encontró ningún negocio registrado con NIT {nit_clean}.", 404)
-
-    try:
-        biz.income_source = mapped_source
-        db.commit()
-        db.refresh(biz)
-        return biz
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error cambiando tipo del NIT {nit_clean}: {e}", exc_info=True)
-        raise AdminServiceError("INTERNAL_ERROR", f"Error interno al cambiar el tipo: {str(e)}", 500)
+    """Cambia el tipo de negocio (DIAN, ventas manuales o mixto) sin modificar la suscripción."""
+    return set_business_profile(
+        db=db,
+        business_id=nit,
+        income_source=income_source,
+        admin=admin,
+    )
 
 
 def set_tax_profile(
@@ -556,7 +634,12 @@ def set_tax_profile(
     iva_periodicity: Optional[str],
     is_withholding_agent: bool,
 ) -> Business:
-    """Fija la periodicidad de IVA y si es agente de retención en un negocio facturador (DIAN)."""
+    """Fija la periodicidad de IVA y si es agente de retención.
+
+    Si iva_periodicity es BIMESTRAL o CUATRIMESTRAL, fuerza vat_responsible=True
+    (y falla con 400 VAT_REQUIRES_EINVOICING si el negocio no es DIAN).
+    Si iva_periodicity es NINGUNO o None, fuerza vat_responsible=False.
+    """
     nit_clean = normalize_nit(nit) or "".join(filter(str.isdigit, str(nit)))
     if len(nit_clean) < 6:
         raise AdminServiceError("INVALID_NIT", f"El NIT '{nit}' no es válido (debe tener al menos 6 dígitos numéricos).", 400)
@@ -576,19 +659,32 @@ def set_tax_profile(
     if not biz:
         raise AdminServiceError("BUSINESS_NOT_FOUND", f"No se encontró ningún negocio registrado con NIT {nit_clean}.", 404)
 
-    if biz.income_source != INCOME_SOURCE_DIAN:
+    if not has_einvoicing(biz):
         raise AdminServiceError(
             "NOT_APPLICABLE",
-            f"{biz.commercial_name} registra sus ventas a mano: no tiene IVA, ICA ni otros impuestos que configurar. El perfil tributario aplica solo a negocios facturadores.",
+            f"{biz.commercial_name} registra sus ventas a mano: no tiene IVA, ICA ni otros impuestos que configurar. El perfil tributario aplica solo a negocios que facturan electrónicamente.",
             400,
         )
 
+    if clean_iva in (IVA_PERIODICITY_BIMESTRAL, IVA_PERIODICITY_CUATRIMESTRAL):
+        target_vat = True
+        try:
+            validate_profile(target_vat, biz.income_source)
+        except ProfileError as e:
+            raise AdminServiceError(e.code, e.message, 400)
+    else:
+        target_vat = False
+
     try:
+        biz.vat_responsible = target_vat
         biz.iva_periodicity = clean_iva
         biz.is_withholding_agent = bool(is_withholding_agent)
         db.commit()
         db.refresh(biz)
         return biz
+    except AdminServiceError:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         logger.error(f"Error guardando perfil tributario del NIT {nit_clean}: {e}", exc_info=True)
@@ -808,6 +904,8 @@ def list_clients_paged(
             "nit": biz.nit,
             "dv": biz.dv,
             "income_source": biz.income_source,
+            "vat_responsible": bool(biz.vat_responsible),
+            "package": package_of(biz),
             "taxpayer_type": biz.taxpayer_type,
             "contact_name": user.full_name,
             "phone": user.phone,
@@ -980,6 +1078,8 @@ def get_client_detail(
             "legal_rep_doc": biz.legal_rep_doc,
             "economic_activity": biz.economic_activity,
             "income_source": biz.income_source,
+            "vat_responsible": bool(biz.vat_responsible),
+            "package": package_of(biz),
             "is_active": bool(biz.is_active),
             "created_at": biz.created_at.isoformat() if biz.created_at else None,
         },
@@ -1008,6 +1108,8 @@ def get_client_detail(
         "nit": biz.nit,
         "dv": biz.dv,
         "income_source": biz.income_source,
+        "vat_responsible": bool(biz.vat_responsible),
+        "package": package_of(biz),
         "taxpayer_type": biz.taxpayer_type,
         "contact_name": user.full_name,
         "phone": user.phone,
@@ -1207,6 +1309,11 @@ def get_admin_summary(
     clients_by_income_source = {
         "DIAN": 0,
         "MANUAL_SALES": 0,
+        "MIXED": 0,
+    }
+    clients_by_package = {
+        PACKAGE_CON_IVA: 0,
+        PACKAGE_SIN_IVA: 0,
     }
     upcoming_cutoffs = []
     in_grace = []
@@ -1215,8 +1322,17 @@ def get_admin_summary(
         # Origen de ingresos
         if biz.income_source == INCOME_SOURCE_MANUAL_SALES:
             clients_by_income_source["MANUAL_SALES"] += 1
+        elif biz.income_source == INCOME_SOURCE_MIXED:
+            clients_by_income_source["MIXED"] += 1
         else:
             clients_by_income_source["DIAN"] += 1
+
+        # Paquete comercial (Story 10.1 - AC #14)
+        pkg = package_of(biz)
+        if pkg in clients_by_package:
+            clients_by_package[pkg] += 1
+        else:
+            clients_by_package[pkg] = 1
 
         # Estado de suscripción
         if not sub:
@@ -1305,6 +1421,7 @@ def get_admin_summary(
     return {
         "clients_by_status": clients_by_status,
         "clients_by_income_source": clients_by_income_source,
+        "clients_by_package": clients_by_package,
         "upcoming_cutoffs": upcoming_cutoffs,
         "in_grace": in_grace,
         "payments_this_month": {

@@ -29,10 +29,28 @@ def generate_uuid() -> str:
     return str(uuid.uuid4())
 
 
-# Tipo de negocio (Story 6.1): origen de las cifras. Son códigos de datos, no estados en español (ADR-006).
+# Tipo de negocio (Story 6.1, 10.1): origen de las cifras. Son códigos de datos, no estados en español (ADR-006).
 INCOME_SOURCE_DIAN = "DIAN"  # factura electrónicamente: cifras e impuestos desde el informe de la DIAN
 INCOME_SOURCE_MANUAL_SALES = "MANUAL_SALES"  # registra sus ventas a mano; sin IVA ni ICA
-INCOME_SOURCES = (INCOME_SOURCE_DIAN, INCOME_SOURCE_MANUAL_SALES)
+INCOME_SOURCE_MIXED = "MIXED"  # factura electrónicamente + ventas manuales (Story 10.1)
+INCOME_SOURCES = (INCOME_SOURCE_DIAN, INCOME_SOURCE_MANUAL_SALES, INCOME_SOURCE_MIXED)
+
+# Paquetes Konta según responsabilidad de IVA (Story 10.1)
+PACKAGE_CON_IVA = "CON_IVA"
+PACKAGE_SIN_IVA = "SIN_IVA"
+PACKAGES = (PACKAGE_CON_IVA, PACKAGE_SIN_IVA)
+
+INCOME_SOURCE_BY_TIPO = {
+    "FACTURADOR": INCOME_SOURCE_DIAN,
+    "VENTAS_MANUALES": INCOME_SOURCE_MANUAL_SALES,
+    "MIXTO": INCOME_SOURCE_MIXED,
+}
+
+
+def _default_vat_responsible(context) -> bool:
+    """Por defecto, igual que el relleno de 0012: un facturador (DIAN) es declarante de IVA."""
+    income_source = context.get_current_parameters().get("income_source") or INCOME_SOURCE_DIAN
+    return income_source == INCOME_SOURCE_DIAN
 
 # Perfil tributario de un negocio DIAN: periodicidad del IVA (NULL = no responsable de IVA).
 IVA_PERIODICITY_BIMESTRAL = "BIMESTRAL"
@@ -86,7 +104,8 @@ class Business(Base):
     invoice_prefix_filter = Column(String(50), nullable=True)
     income_source = Column(
         String(20), nullable=False, default=INCOME_SOURCE_DIAN, server_default=INCOME_SOURCE_DIAN
-    )  # DIAN, MANUAL_SALES
+    )  # DIAN, MANUAL_SALES, MIXED
+    vat_responsible = Column(Boolean, nullable=False, default=_default_vat_responsible, server_default=false())
     iva_periodicity = Column(String(20), nullable=True)  # BIMESTRAL, CUATRIMESTRAL; NULL = sin IVA
     is_withholding_agent = Column(Boolean, nullable=False, default=False, server_default=false())
     is_active = Column(Boolean, default=True, nullable=False)

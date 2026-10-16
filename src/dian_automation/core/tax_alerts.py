@@ -23,6 +23,7 @@ from dian_automation.core.calendar_engine import (
 from dian_automation.db.models import (
     Business,
     INCOME_SOURCE_DIAN,
+    INCOME_SOURCE_MIXED,
     TaxDeadlineAlert,
     User,
     MOMENT_PROXIMO,
@@ -233,7 +234,7 @@ class TaxDeadlineAlerter:
                 db.query(Business)
                 .filter(
                     Business.is_active.is_(True),
-                    Business.income_source == INCOME_SOURCE_DIAN,
+                    Business.income_source.in_([INCOME_SOURCE_DIAN, INCOME_SOURCE_MIXED]),
                 )
                 .all()
             )
