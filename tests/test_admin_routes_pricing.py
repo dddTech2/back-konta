@@ -41,6 +41,11 @@ def fixture_db_session():
     Base.metadata.create_all(bind=engine)
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     db = TestingSessionLocal()
+    # Tarifas de prueba por paquete ($50.000 desde 2026-01-01) en lugar de la semilla real (Story 10.2).
+    for pkg in ("CON_IVA", "SIN_IVA"):
+        db.add(PricingRate(id=f"rate-test-{pkg}", package=pkg, monthly_price=Decimal("50000.00"),
+                           effective_from=date(2026, 1, 1)))
+    db.commit()
     try:
         yield db
     finally:
@@ -126,10 +131,10 @@ def test_pricing_routes_security(client_app, client_headers):
         ("POST", "/api/admin/pricing/plans", {"code": "TEST", "name": "Test", "months": 3, "discount_rate": "5.00"}),
         ("GET", "/api/admin/pricing/settings", None),
         ("PUT", "/api/admin/pricing/settings", {"grace_days": 5}),
-        ("POST", "/api/admin/pricing/rates", {"income_source": "DIAN", "taxpayer_type": "PERSONA_NATURAL", "monthly_price": "55000"}),
+        ("POST", "/api/admin/pricing/rates", {"package": "CON_IVA", "monthly_price": "55000"}),
         ("DELETE", "/api/admin/pricing/rates/rate-123", None),
-        ("GET", "/api/admin/pricing/rates/history?income_source=DIAN&taxpayer_type=PERSONA_NATURAL", None),
-        ("GET", "/api/admin/pricing/quote?income_source=DIAN&taxpayer_type=PERSONA_NATURAL&plan=TRIMESTRAL", None),
+        ("GET", "/api/admin/pricing/rates/history?package=CON_IVA", None),
+        ("GET", "/api/admin/pricing/quote?package=CON_IVA&plan=TRIMESTRAL", None),
         ("PATCH", "/api/admin/clients/biz-123/subscription", {"plan": "ANUAL", "reason": "Upgrade"}),
     ]
 
@@ -149,7 +154,7 @@ def test_pricing_routes_security(client_app, client_headers):
 
 
 def test_get_pricing_overview_seed(client_app, admin_headers):
-    """GET /api/admin/pricing devuelve 4 tarifas vigentes, 12 cotizaciones, grace_days 3 y planes ordenados."""
+    """GET /api/admin/pricing devuelve 2 tarifas (una por paquete), 6 cotizaciones, grace_days 3 y planes ordenados."""
     res = client_app.get("/api/admin/pricing", headers=admin_headers)
     assert res.status_code == 200
     data = res.json()
@@ -161,22 +166,20 @@ def test_get_pricing_overview_seed(client_app, admin_headers):
     assert data["plans"][0]["is_active"] is False
     assert data["plans"][1]["is_active"] is True
 
-    # 4 tarifas de los 4 segmentos en orden estricto
+    # Una tarifa por paquete, en orden Con IVA, Sin IVA (Story 10.2)
     rates = data["rates"]
-    assert len(rates) == 4
-    assert rates[0]["income_source"] == "DIAN" and rates[0]["taxpayer_type"] == "PERSONA_NATURAL"
-    assert rates[1]["income_source"] == "DIAN" and rates[1]["taxpayer_type"] == "PERSONA_JURIDICA"
-    assert rates[2]["income_source"] == "MANUAL_SALES" and rates[2]["taxpayer_type"] == "PERSONA_NATURAL"
-    assert rates[3]["income_source"] == "MANUAL_SALES" and rates[3]["taxpayer_type"] == "PERSONA_JURIDICA"
+    assert [r["package"] for r in rates] == ["CON_IVA", "SIN_IVA"]
+    assert all("income_source" not in r for r in rates)
     for r in rates:
         assert r["monthly_price"] == "50000.00"
 
     # scheduled vacío inicialmente
     assert data["scheduled"] == []
 
-    # quotes: 4 segmentos x 3 planes activos = 12 cotizaciones
+    # quotes: 2 paquetes x 3 planes activos = 6 cotizaciones
     quotes = data["quotes"]
-    assert len(quotes) == 12
+    assert len(quotes) == 6
+    assert {q["package"] for q in quotes} == {"CON_IVA", "SIN_IVA"}
     for q in quotes:
         assert "monthly_price" in q
         assert "gross_total" in q
@@ -263,7 +266,7 @@ def test_create_plan_and_appears_in_quotes(client_app, admin_headers):
     res_overview = client_app.get("/api/admin/pricing", headers=admin_headers)
     quotes = res_overview.json()["quotes"]
     bianual_quotes = [q for q in quotes if q["plan"] == "BIANUAL"]
-    assert len(bianual_quotes) == 4
+    assert len(bianual_quotes) == 2
 
     # Duplicado -> 409 PLAN_EXISTS
     res_dup = client_app.post(
@@ -360,8 +363,7 @@ def test_rates_creation_and_update(client_app, admin_headers, db_session):
         "/api/admin/pricing/rates",
         headers=admin_headers,
         json={
-            "income_source": "DIAN",
-            "taxpayer_type": "PERSONA_NATURAL",
+            "package": "CON_IVA",
             "monthly_price": "55000.00",
             "effective_from": today_bogota.isoformat(),
         },
@@ -373,8 +375,7 @@ def test_rates_creation_and_update(client_app, admin_headers, db_session):
         "/api/admin/pricing/rates",
         headers=admin_headers,
         json={
-            "income_source": "DIAN",
-            "taxpayer_type": "PERSONA_NATURAL",
+            "package": "CON_IVA",
             "monthly_price": "60000.00",
             "effective_from": today_bogota.isoformat(),
         },
@@ -388,8 +389,7 @@ def test_rates_creation_and_update(client_app, admin_headers, db_session):
         "/api/admin/pricing/rates",
         headers=admin_headers,
         json={
-            "income_source": "DIAN",
-            "taxpayer_type": "PERSONA_NATURAL",
+            "package": "CON_IVA",
             "monthly_price": "70000.00",
             "effective_from": future_date.isoformat(),
         },
@@ -408,8 +408,7 @@ def test_rates_creation_and_update(client_app, admin_headers, db_session):
         "/api/admin/pricing/rates",
         headers=admin_headers,
         json={
-            "income_source": "DIAN",
-            "taxpayer_type": "PERSONA_NATURAL",
+            "package": "CON_IVA",
             "monthly_price": "40000.00",
             "effective_from": past_date.isoformat(),
         },
@@ -421,12 +420,12 @@ def test_rates_creation_and_update(client_app, admin_headers, db_session):
     assert client_app.post(
         "/api/admin/pricing/rates",
         headers=admin_headers,
-        json={"income_source": "DIAN", "taxpayer_type": "PERSONA_NATURAL", "monthly_price": "0"},
+        json={"package": "CON_IVA", "monthly_price": "0"},
     ).status_code == 422
     assert client_app.post(
         "/api/admin/pricing/rates",
         headers=admin_headers,
-        json={"income_source": "DIAN", "taxpayer_type": "PERSONA_NATURAL", "monthly_price": "15000000"},
+        json={"package": "CON_IVA", "monthly_price": "15000000"},
     ).status_code == 422
 
 
@@ -445,8 +444,7 @@ def test_delete_scheduled_rate_vs_effective(client_app, admin_headers, db_sessio
         "/api/admin/pricing/rates",
         headers=admin_headers,
         json={
-            "income_source": "MANUAL_SALES",
-            "taxpayer_type": "PERSONA_JURIDICA",
+            "package": "SIN_IVA",
             "monthly_price": "80000.00",
             "effective_from": future_date.isoformat(),
         },
@@ -476,21 +474,20 @@ def test_rate_history_and_quote_with_person_type(client_app, admin_headers):
     """GET /rates/history y GET /quote con person_type y validaciones."""
     # Historial
     res_hist = client_app.get(
-        "/api/admin/pricing/rates/history?income_source=DIAN&taxpayer_type=PERSONA_NATURAL",
+        "/api/admin/pricing/rates/history?package=CON_IVA",
         headers=admin_headers,
     )
     assert res_hist.status_code == 200
     assert len(res_hist.json()) >= 1
 
-    # Quote con person_type=PERSONA y FACTURADOR
+    # Quote por responsabilidad de IVA (alternativa a package)
     res_quote = client_app.get(
-        "/api/admin/pricing/quote?income_source=FACTURADOR&person_type=PERSONA&plan=TRIMESTRAL",
+        "/api/admin/pricing/quote?vat_responsible=true&plan=TRIMESTRAL",
         headers=admin_headers,
     )
     assert res_quote.status_code == 200
     q = res_quote.json()
-    assert q["income_source"] == "DIAN"
-    assert q["taxpayer_type"] == "PERSONA_NATURAL"
+    assert q["package"] == "CON_IVA"
     assert q["plan"] == "TRIMESTRAL"
     assert "start_date" in q
     assert "cutoff_date" in q
@@ -499,7 +496,7 @@ def test_rate_history_and_quote_with_person_type(client_app, admin_headers):
 
     # Plan inactivo (MENSUAL) -> 400 INVALID_PLAN
     res_inactive = client_app.get(
-        "/api/admin/pricing/quote?income_source=DIAN&person_type=PERSONA&plan=MENSUAL",
+        "/api/admin/pricing/quote?package=SIN_IVA&plan=MENSUAL",
         headers=admin_headers,
     )
     assert res_inactive.status_code == 400

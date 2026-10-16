@@ -12,7 +12,16 @@ from decimal import Decimal
 from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
 
-from dian_automation.db.models import User, Business, Subscription, PRICE_ORIGIN_ESPECIAL, PRICE_ORIGIN_TARIFA
+from dian_automation.core.business_profile import package_of
+from dian_automation.db.models import (
+    User,
+    Business,
+    Subscription,
+    PACKAGE_CON_IVA,
+    PACKAGE_SIN_IVA,
+    PRICE_ORIGIN_ESPECIAL,
+    PRICE_ORIGIN_TARIFA,
+)
 
 logger = logging.getLogger("subscriptions")
 
@@ -88,6 +97,7 @@ class SubscriptionService:
         start_date: Optional[date] = None,
         base_monthly_price: Optional[Decimal] = None,
         db: Optional[Session] = None,
+        package: Optional[str] = None,
     ) -> PlanQuote:
         """Calcula el presupuesto de un plan delegando en PricingService."""
         from dian_automation.subscriptions.pricing import PricingService
@@ -113,8 +123,9 @@ class SubscriptionService:
                     plan_code=plan_obj.code,
                 )
             else:
-                # Usa tarifa vigente por defecto
-                rate = PricingService.current_rate(session, "DIAN", "PERSONA_NATURAL", on=start_date)
+                # Usa tarifa vigente por paquete (CON_IVA por defecto si no se indica)
+                pkg = package or PACKAGE_CON_IVA
+                rate = PricingService.current_rate(session, pkg, on=start_date)
                 return PricingService.quote(
                     monthly_price=rate.monthly_price,
                     months=plan_obj.months,
@@ -161,8 +172,7 @@ class SubscriptionService:
                 .first()
             )
 
-        inc_source = biz.income_source if biz else "DIAN"
-        tx_type = biz.taxpayer_type if biz else "PERSONA_NATURAL"
+        pkg = package_of(biz)
 
         plan_obj = PricingService.get_plan(db, plan, active_only=True)
         grace_days = PricingService.get_grace_days(db)
@@ -179,7 +189,7 @@ class SubscriptionService:
             )
         else:
             price_origin = PRICE_ORIGIN_TARIFA
-            rate = PricingService.current_rate(db, inc_source, tx_type, on=start_date)
+            rate = PricingService.current_rate(db, pkg, on=start_date)
             quote = PricingService.quote(
                 monthly_price=rate.monthly_price,
                 months=plan_obj.months,
@@ -192,6 +202,7 @@ class SubscriptionService:
         subscription = Subscription(
             client_id=client.id,
             plan=quote.plan,
+            package=pkg,
             monthly_price=quote.monthly_price,
             price_origin=price_origin,
             discount_rate=quote.discount_rate,
@@ -272,9 +283,8 @@ class SubscriptionService:
                     .order_by(Business.created_at.asc())
                     .first()
                 )
-            inc_source = biz.income_source if biz else "DIAN"
-            tx_type = biz.taxpayer_type if biz else "PERSONA_NATURAL"
-            rate = PricingService.current_rate(db, inc_source, tx_type, on=renewal_start)
+            pkg = sub.package or package_of(biz)
+            rate = PricingService.current_rate(db, pkg, on=renewal_start)
             quote = PricingService.quote(
                 monthly_price=rate.monthly_price,
                 months=plan_obj.months,
@@ -284,6 +294,8 @@ class SubscriptionService:
                 plan_code=plan_obj.code,
             )
             sub.monthly_price = rate.monthly_price
+            if sub.package is None:
+                sub.package = pkg
 
         sub.plan = quote.plan
         sub.discount_rate = quote.discount_rate

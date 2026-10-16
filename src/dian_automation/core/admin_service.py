@@ -113,6 +113,7 @@ class CreatedClient:
     cutoff_date: date
     grace_period_end: date
     monthly_price: Optional[Decimal] = None
+    package: Optional[str] = None
 
 
 @dataclass
@@ -341,12 +342,12 @@ def create_client(
                 )
                 db.add(business)
 
-        # Crear o renovar Suscripción con Descuento desde tarifa vigente
+        # Crear o renovar Suscripción con Descuento desde tarifa vigente por paquete (Story 10.2)
+        client_pkg = package_of(business)
         try:
-            quote = PricingService.quote_for_segment(
+            quote = PricingService.quote_for_package(
                 db=db,
-                income_source=target_income_source,
-                taxpayer_type=taxpayer_type,
+                package=client_pkg,
                 plan_code=plan_obj.code,
                 start_date=date.today(),
             )
@@ -358,6 +359,7 @@ def create_client(
             subscription = Subscription(
                 client_id=user.id,
                 plan=quote.plan,
+                package=client_pkg,
                 monthly_price=quote.monthly_price,
                 price_origin=PRICE_ORIGIN_TARIFA,
                 price_note=None,
@@ -372,6 +374,7 @@ def create_client(
             db.add(subscription)
         else:
             subscription.plan = quote.plan
+            subscription.package = client_pkg
             subscription.monthly_price = quote.monthly_price
             subscription.price_origin = PRICE_ORIGIN_TARIFA
             subscription.price_note = None
@@ -407,6 +410,7 @@ def create_client(
             cutoff_date=quote.cutoff_date,
             grace_period_end=quote.grace_period_end,
             monthly_price=quote.monthly_price,
+            package=client_pkg,
         )
     except AdminServiceError:
         db.rollback()
@@ -951,9 +955,10 @@ def get_client_detail(
 
     subscription_info = None
     if sub:
+        curr_pkg = package_of(biz)
         current_rate_monthly = None
         try:
-            rate = PricingService.current_rate(db, biz.income_source, biz.taxpayer_type)
+            rate = PricingService.current_rate(db, curr_pkg)
             current_rate_monthly = f"{rate.monthly_price:.2f}"
         except Exception:
             pass
@@ -987,6 +992,8 @@ def get_client_detail(
             "id": sub.id,
             "plan": sub.plan,
             "status": sub.status,
+            "package": sub.package,
+            "current_package": curr_pkg,
             "discount_rate": f"{sub.discount_rate:.2f}" if sub.discount_rate is not None else None,
             "base_price": f"{sub.base_price:.2f}" if sub.base_price is not None else None,
             "final_price": f"{sub.final_price:.2f}" if sub.final_price is not None else None,

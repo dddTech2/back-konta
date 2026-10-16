@@ -731,3 +731,58 @@ def test_packages_profile_revision_backfills_and_downgrades(alembic_cfg, engine)
     assert "vat_responsible" not in {c["name"] for c in inspect(engine).get_columns("businesses")}
     with engine.connect() as conn:
         assert conn.execute(text("SELECT income_source FROM businesses WHERE id = 'b-ventas'")).scalar() == "MANUAL_SALES"
+
+
+def test_pricing_packages_revision_seeds_backfills_and_downgrades(alembic_cfg, engine):
+    """0013 (Story 10.2): tarifas por paquete, paquete de las suscripciones desde el negocio; downgrade limpio."""
+    command.upgrade(alembic_cfg, "0012")
+    with engine.begin() as conn:
+        for user_id in ("u-con", "u-sin"):
+            conn.execute(
+                text(
+                    "INSERT INTO users (id, email, full_name, role, is_telegram_linked, is_active, created_at,"
+                    " updated_at) VALUES (:id, :email, 'Ana', 'CLIENT', 0, 1, '2026-01-01 00:00:00',"
+                    " '2026-01-01 00:00:00')"
+                ),
+                {"id": user_id, "email": f"{user_id}@b.co"},
+            )
+        for biz_id, user_id, nit, source, vat in (
+            ("b-con", "u-con", "900300300", "DIAN", 1),
+            ("b-sin", "u-sin", "900400400", "MIXED", 0),
+        ):
+            conn.execute(
+                text(
+                    "INSERT INTO businesses (id, client_id, legal_name, commercial_name, nit, dv, taxpayer_type,"
+                    " income_source, vat_responsible, is_withholding_agent, is_active, created_at, updated_at)"
+                    " VALUES (:id, :uid, 'N', 'N', :nit, '1', 'PERSONA_NATURAL', :src, :vat, 0, 1,"
+                    " '2026-01-01 00:00:00', '2026-01-01 00:00:00')"
+                ),
+                {"id": biz_id, "uid": user_id, "nit": nit, "src": source, "vat": vat},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO subscriptions (id, client_id, plan, discount_rate, base_price, final_price,"
+                    " monthly_price, price_origin, start_date, cutoff_date, grace_period_end, status, created_at,"
+                    " updated_at) VALUES (:id, :uid, 'TRIMESTRAL', 5, 150000, 142500, 50000, 'TARIFA', '2026-01-01',"
+                    " '2026-04-01', '2026-04-04', 'ACTIVO', '2026-01-01 00:00:00', '2026-01-01 00:00:00')"
+                ),
+                {"id": f"s-{biz_id}", "uid": user_id},
+            )
+
+    command.upgrade(alembic_cfg, "0013")
+
+    with engine.connect() as conn:
+        rates = dict(conn.execute(text("SELECT package, monthly_price FROM pricing_rates WHERE package IS NOT NULL")).fetchall())
+        assert {k: float(v) for k, v in rates.items()} == {"CON_IVA": 349900.0, "SIN_IVA": 249900.0}
+        assert conn.execute(text("SELECT COUNT(*) FROM pricing_rates WHERE package IS NULL")).scalar() == 4
+        subs = dict(conn.execute(text("SELECT id, package FROM subscriptions")).fetchall())
+        assert subs == {"s-b-con": "CON_IVA", "s-b-sin": "SIN_IVA"}
+        prices = {float(r[0]) for r in conn.execute(text("SELECT monthly_price FROM subscriptions"))}
+        assert prices == {50000.0}  # precio congelado: el relleno no toca el valor
+
+    command.downgrade(alembic_cfg, "0012")
+
+    assert "package" not in {c["name"] for c in inspect(engine).get_columns("subscriptions")}
+    assert "package" not in {c["name"] for c in inspect(engine).get_columns("pricing_rates")}
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM pricing_rates")).scalar() == 4

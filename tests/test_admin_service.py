@@ -99,7 +99,7 @@ def test_create_client_persona_dian_and_manual_sales(db_session_factory):
         assert created_dian.business.taxpayer_type == "PERSONA_NATURAL"
         assert created_dian.subscription.plan == "TRIMESTRAL"
         assert created_dian.subscription.status == "ACTIVO"
-        assert created_dian.final_price == 142500.0
+        assert created_dian.final_price == 997215.0  # Con IVA
         assert "t.me" in created_dian.deep_link_url
 
         # Persona Ventas Manuales
@@ -113,7 +113,7 @@ def test_create_client_persona_dian_and_manual_sales(db_session_factory):
         )
         created_manual = create_client(db, admin, data_manual)
         assert created_manual.business.income_source == "MANUAL_SALES"
-        assert created_manual.final_price == 276000.0
+        assert created_manual.final_price == 1379448.0  # Sin IVA: $249.900 × 6 − 8%
     finally:
         db.close()
 
@@ -138,7 +138,7 @@ def test_create_client_empresa(db_session_factory):
         assert created.business.legal_rep_doc == "10000002"
         assert created.business.taxpayer_type == "PERSONA_JURIDICA"
         assert created.subscription.plan == "ANUAL"
-        assert created.final_price == 540000.0
+        assert created.final_price == 3778920.0
     finally:
         db.close()
 

@@ -250,6 +250,7 @@ class Subscription(Base):
         String(20), nullable=False, default=PRICE_ORIGIN_TARIFA, server_default=PRICE_ORIGIN_TARIFA
     )  # TARIFA, ESPECIAL
     price_note = Column(Text, nullable=True)
+    package = Column(String(10), nullable=True)  # CON_IVA, SIN_IVA (Story 10.2)
     start_date = Column(Date, nullable=False)
     cutoff_date = Column(Date, nullable=False, index=True)
     grace_period_end = Column(Date, nullable=False)  # cutoff_date + 3 días
@@ -310,12 +311,13 @@ BillingSettings = BillingSetting
 
 
 class PricingRate(Base):
-    """Tarifa mensual por segmento de negocio y vigencia (Story 9.1)."""
+    """Tarifa mensual por paquete Konta y vigencia (Story 9.1, Story 10.2)."""
     __tablename__ = "pricing_rates"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    income_source = Column(String(20), nullable=False)  # DIAN, MANUAL_SALES
-    taxpayer_type = Column(String(20), nullable=False)  # PERSONA_NATURAL, PERSONA_JURIDICA
+    package = Column(String(10), nullable=True)  # CON_IVA, SIN_IVA (Story 10.2)
+    income_source = Column(String(20), nullable=True)  # DIAN, MANUAL_SALES (legado)
+    taxpayer_type = Column(String(20), nullable=True)  # PERSONA_NATURAL, PERSONA_JURIDICA (legado)
     monthly_price = Column(Numeric(14, 2), nullable=False)
     effective_from = Column(Date, nullable=False)
     created_by_admin_id = Column(String(36), ForeignKey("users.id"), nullable=True)
@@ -325,8 +327,8 @@ class PricingRate(Base):
 
     __table_args__ = (
         CheckConstraint("monthly_price > 0", name="ck_pricing_rates_monthly_price_positive"),
-        UniqueConstraint("income_source", "taxpayer_type", "effective_from", name="uq_pricing_rates_segment_effective"),
-        Index("idx_pricing_rates_lookup", "income_source", "taxpayer_type", "effective_from"),
+        UniqueConstraint("package", "effective_from", name="uq_pricing_rates_package_effective"),
+        Index("idx_pricing_rates_package", "package", "effective_from"),
     )
 
 

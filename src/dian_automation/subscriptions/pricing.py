@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from dian_automation.core.business_profile import package_of
 from dian_automation.db.models import (
     Business,
     BillingSetting,
@@ -22,12 +23,11 @@ from dian_automation.db.models import (
     SubscriptionPriceChange,
     User,
     generate_uuid,
-    INCOME_SOURCE_DIAN,
-    INCOME_SOURCE_MANUAL_SALES,
+    PACKAGE_CON_IVA,
+    PACKAGE_SIN_IVA,
+    PACKAGES,
     PRICE_ORIGIN_ESPECIAL,
     PRICE_ORIGIN_TARIFA,
-    TAXPAYER_TYPE_PERSONA_JURIDICA,
-    TAXPAYER_TYPE_PERSONA_NATURAL,
 )
 from dian_automation.subscriptions.service import PlanQuote, add_months_to_date
 
@@ -47,18 +47,16 @@ class PricingError(Exception):
 
 
 def ensure_default_pricing(db: Session) -> None:
-    """Garantiza la presencia de la semilla de planes, tarifas y configuración de facturación.
+    """Garantiza la presencia de la semilla de planes, tarifas y configuración de facturación (Story 9.1, Story 10.2).
 
-    Idempotente: si pricing_plans y pricing_rates están vacías inserta la semilla de AC #1–#2;
-    si falta la fila de billing_settings, la crea con grace_days = 3. Solo hace `flush` (nunca commit):
-    se llama en medio de operaciones de quien llama (p. ej. `create_client`) y no debe confirmar su
-    transacción a medias; la semilla queda guardada cuando quien llama hace commit.
+    Idempotente: si pricing_plans está vacía inserta los planes base;
+    si no hay ninguna fila con package en pricing_rates inserta la semilla de tarifas
+    por paquete (CON_IVA $349.900 y SIN_IVA $249.900 vigentes desde literal 2026-10-15);
+    si falta la fila de billing_settings, la crea con grace_days = 3. Solo hace `flush` (nunca commit).
     """
     seeded = False
     plans_count = db.query(PricingPlan).count()
-    rates_count = db.query(PricingRate).count()
-
-    if plans_count == 0 and rates_count == 0:
+    if plans_count == 0:
         seeded = True
         now_dt = datetime.utcnow()
         default_plans = [
@@ -105,40 +103,28 @@ def ensure_default_pricing(db: Session) -> None:
         ]
         db.add_all(default_plans)
 
-        eff_date = date(2026, 1, 1)
+    package_rates_count = db.query(PricingRate).filter(PricingRate.package.isnot(None)).count()
+    if package_rates_count == 0:
+        seeded = True
+        now_dt = datetime.utcnow()
+        eff_date = date(2026, 10, 15)
         default_rates = [
             PricingRate(
                 id=generate_uuid(),
-                income_source=INCOME_SOURCE_DIAN,
-                taxpayer_type=TAXPAYER_TYPE_PERSONA_NATURAL,
-                monthly_price=Decimal("50000.00"),
+                package=PACKAGE_CON_IVA,
+                income_source=None,
+                taxpayer_type=None,
+                monthly_price=Decimal("349900.00"),
                 effective_from=eff_date,
                 created_by_admin_id=None,
                 created_at=now_dt,
             ),
             PricingRate(
                 id=generate_uuid(),
-                income_source=INCOME_SOURCE_DIAN,
-                taxpayer_type=TAXPAYER_TYPE_PERSONA_JURIDICA,
-                monthly_price=Decimal("50000.00"),
-                effective_from=eff_date,
-                created_by_admin_id=None,
-                created_at=now_dt,
-            ),
-            PricingRate(
-                id=generate_uuid(),
-                income_source=INCOME_SOURCE_MANUAL_SALES,
-                taxpayer_type=TAXPAYER_TYPE_PERSONA_NATURAL,
-                monthly_price=Decimal("50000.00"),
-                effective_from=eff_date,
-                created_by_admin_id=None,
-                created_at=now_dt,
-            ),
-            PricingRate(
-                id=generate_uuid(),
-                income_source=INCOME_SOURCE_MANUAL_SALES,
-                taxpayer_type=TAXPAYER_TYPE_PERSONA_JURIDICA,
-                monthly_price=Decimal("50000.00"),
+                package=PACKAGE_SIN_IVA,
+                income_source=None,
+                taxpayer_type=None,
+                monthly_price=Decimal("249900.00"),
                 effective_from=eff_date,
                 created_by_admin_id=None,
                 created_at=now_dt,
@@ -320,21 +306,18 @@ class PricingService:
     def current_rate(
         cls,
         db: Session,
-        income_source: str,
-        taxpayer_type: str,
+        package: str,
         on: Optional[date] = None,
     ) -> PricingRate:
-        """Obtiene la tarifa vigente (effective_from <= on) para el segmento dado."""
+        """Obtiene la tarifa vigente (effective_from <= on) para el paquete dado (CON_IVA o SIN_IVA)."""
         ensure_default_pricing(db)
-        if income_source == "MIXED":
-            # Story 10.1: hasta la tarifa por paquete (10.2) el perfil mixto cotiza como ventas manuales.
-            income_source = INCOME_SOURCE_MANUAL_SALES
+        pkg_clean = (package or "").upper().strip()
         target_date = on or datetime.now(ZoneInfo("America/Bogota")).date()
         rate = (
             db.query(PricingRate)
             .filter(
-                PricingRate.income_source == income_source,
-                PricingRate.taxpayer_type == taxpayer_type,
+                PricingRate.package.isnot(None),
+                PricingRate.package == pkg_clean,
                 PricingRate.effective_from <= target_date,
             )
             .order_by(PricingRate.effective_from.desc())
@@ -343,7 +326,7 @@ class PricingService:
         if not rate:
             raise PricingError(
                 "NO_RATE",
-                f"No hay tarifa vigente para {income_source} y {taxpayer_type} a la fecha {target_date}.",
+                f"No hay tarifa vigente para el paquete '{package}' a la fecha {target_date}.",
                 409,
             )
         return rate
@@ -388,18 +371,17 @@ class PricingService:
         )
 
     @classmethod
-    def quote_for_segment(
+    def quote_for_package(
         cls,
         db: Session,
-        income_source: str,
-        taxpayer_type: str,
+        package: str,
         plan_code: str,
         start_date: Optional[date] = None,
     ) -> PlanQuote:
-        """Calcula el presupuesto combinando la tarifa vigente del segmento y el descuento del plan activo."""
+        """Calcula el presupuesto combinando la tarifa vigente del paquete y el descuento del plan activo."""
         plan = cls.get_plan(db, plan_code, active_only=True)
         s_date = start_date or datetime.now(ZoneInfo("America/Bogota")).date()
-        rate = cls.current_rate(db, income_source, taxpayer_type, on=s_date)
+        rate = cls.current_rate(db, package, on=s_date)
         grace_days = cls.get_grace_days(db)
         return cls.quote(
             monthly_price=rate.monthly_price,
@@ -488,12 +470,12 @@ class PricingService:
                     .order_by(Business.created_at.asc())
                     .first()
                 )
-            inc_src = biz.income_source if biz else INCOME_SOURCE_DIAN
-            tx_type = biz.taxpayer_type if biz else TAXPAYER_TYPE_PERSONA_NATURAL
-            rate = cls.current_rate(db, inc_src, tx_type)
+            pkg = package_of(biz)
+            rate = cls.current_rate(db, pkg)
             new_monthly_price = rate.monthly_price
             new_discount_rate = target_plan.discount_rate
             sub.price_note = None
+            sub.package = pkg
         else:
             # Solo se especificó plan_code: conserva monthly_price y price_origin y toma descuento del plan
             new_price_origin = sub.price_origin or PRICE_ORIGIN_TARIFA

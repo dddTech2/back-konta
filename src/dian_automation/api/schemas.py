@@ -332,10 +332,11 @@ class AdminClientProfileUpdateRequest(BaseModel):
 
 
 class AdminClientCreateResponse(BaseModel):
-    """Resultado del alta de cliente (AC #3, Story 9.2 AC #9)."""
+    """Resultado del alta de cliente (AC #3, Story 9.2 AC #9, Story 10.2 AC #12)."""
     business_id: str
     user_id: str
     activation_link: str
+    package: Optional[str] = None
     final_price: Optional[str] = None
     monthly_price: Optional[str] = None
     discount_rate: Optional[str] = None
@@ -438,10 +439,12 @@ class SubscriptionPriceChangeItem(BaseModel):
 
 
 class AdminSubscriptionDetail(BaseModel):
-    """Suscripción vigente en la ficha del cliente (Story 9.2 AC #7)."""
+    """Suscripción vigente en la ficha del cliente (Story 9.2 AC #7, Story 10.2 AC #11)."""
     id: str
     plan: str
     status: str
+    package: Optional[str] = None
+    current_package: Optional[str] = None
     discount_rate: Optional[str] = None
     base_price: Optional[str] = None
     final_price: Optional[str] = None
@@ -651,23 +654,20 @@ class PricingPlanUpdateRequest(BaseModel):
 
 
 class PricingRateItem(BaseModel):
-    income_source: str
-    taxpayer_type: str
+    package: str
     monthly_price: str
     effective_from: str
 
 
 class PricingScheduledRateItem(BaseModel):
     id: str
-    income_source: str
-    taxpayer_type: str
+    package: str
     monthly_price: str
     effective_from: str
 
 
 class PricingQuoteItem(BaseModel):
-    income_source: str
-    taxpayer_type: str
+    package: str
     plan: str
     months: int
     monthly_price: str
@@ -678,7 +678,7 @@ class PricingQuoteItem(BaseModel):
 
 
 class PricingOverviewResponse(BaseModel):
-    """Respuesta de GET /api/admin/pricing (AC #1)."""
+    """Respuesta de GET /api/admin/pricing (AC #1, Story 10.2 AC #9)."""
     grace_days: int
     plans: List[PricingPlanItem]
     rates: List[PricingRateItem]
@@ -698,28 +698,25 @@ class BillingSettingsUpdateRequest(BaseModel):
 
 
 class PricingRateCreateRequest(BaseModel):
-    """Creación o actualización de tarifa (AC #3)."""
-    income_source: str
-    taxpayer_type: str
+    """Creación o actualización de tarifa (Story 10.2 AC #10)."""
+    package: str
     monthly_price: Any
     effective_from: Optional[date] = None
 
 
 class PricingRateResponse(BaseModel):
-    """Respuesta de tarifa creada/actualizada (AC #3)."""
+    """Respuesta de tarifa creada/actualizada (Story 10.2 AC #10)."""
     id: str
-    income_source: str
-    taxpayer_type: str
+    package: str
     monthly_price: str
     effective_from: str
     created_by: Optional[str] = None
 
 
 class PricingRateHistoryItem(BaseModel):
-    """Elemento del histórico de tarifas (AC #5)."""
+    """Elemento del histórico de tarifas (Story 10.2 AC #10)."""
     id: str
-    income_source: str
-    taxpayer_type: str
+    package: str
     monthly_price: str
     effective_from: str
     created_at: Optional[str] = None
@@ -727,7 +724,7 @@ class PricingRateHistoryItem(BaseModel):
 
 
 class PricingQuoteDetailResponse(PricingQuoteItem):
-    """Cotización individual con fechas calculadas (AC #6)."""
+    """Cotización individual con fechas calculadas (Story 10.2 AC #10)."""
     start_date: str
     cutoff_date: str
 

@@ -39,53 +39,53 @@ def db_session_factory():
 
 def test_trimestral_plan_quote_discount_and_dates(db_session_factory):
     """Plan TRIMESTRAL aplica 5% de descuento sobre 3 meses y 72h (3 días) de gracia."""
-    start = date(2026, 9, 15)
+    start = date(2026, 11, 15)
     quote = SubscriptionService.calculate_quote("TRIMESTRAL", start_date=start, db=db_session_factory())
 
     assert quote.plan == "TRIMESTRAL"
     assert quote.months == 3
-    assert quote.base_monthly_price == Decimal("50000.00")
-    assert quote.gross_total == Decimal("150000.00")
+    assert quote.base_monthly_price == Decimal("349900.00")  # paquete Con IVA (Story 10.2)
+    assert quote.gross_total == Decimal("1049700.00")
     assert quote.discount_rate == Decimal("5.00")
-    assert quote.discount_amount == Decimal("7500.00")
-    assert quote.final_price == Decimal("142500.00")  # $150,000 - 5%
+    assert quote.discount_amount == Decimal("52485.00")
+    assert quote.final_price == Decimal("997215.00")  # $1.049.700 - 5%
 
     # Fechas
     assert quote.start_date == start
-    assert quote.cutoff_date == date(2026, 12, 15)  # 3 meses exactos
-    assert quote.grace_period_end == date(2026, 12, 18)  # +3 días (72h)
+    assert quote.cutoff_date == date(2027, 2, 15)  # 3 meses exactos
+    assert quote.grace_period_end == date(2027, 2, 18)  # +3 días (72h)
 
 
 def test_semestral_plan_quote_discount_and_dates(db_session_factory):
     """Plan SEMESTRAL aplica 8% de descuento sobre 6 meses y 72h de gracia."""
-    start = date(2026, 9, 15)
+    start = date(2026, 11, 15)
     quote = SubscriptionService.calculate_quote("SEMESTRAL", start_date=start, db=db_session_factory())
 
     assert quote.plan == "SEMESTRAL"
     assert quote.months == 6
-    assert quote.gross_total == Decimal("300000.00")
+    assert quote.gross_total == Decimal("2099400.00")
     assert quote.discount_rate == Decimal("8.00")
-    assert quote.discount_amount == Decimal("24000.00")
-    assert quote.final_price == Decimal("276000.00")  # $300,000 - 8%
+    assert quote.discount_amount == Decimal("167952.00")
+    assert quote.final_price == Decimal("1931448.00")  # $2.099.400 - 8%
 
-    assert quote.cutoff_date == date(2027, 3, 15)  # 6 meses exactos
-    assert quote.grace_period_end == date(2027, 3, 18)  # +3 días (72h)
+    assert quote.cutoff_date == date(2027, 5, 15)  # 6 meses exactos
+    assert quote.grace_period_end == date(2027, 5, 18)  # +3 días (72h)
 
 
 def test_anual_plan_quote_discount_and_dates(db_session_factory):
     """Plan ANUAL aplica 10% de descuento sobre 12 meses y 72h de gracia."""
-    start = date(2026, 9, 15)
+    start = date(2026, 11, 15)
     quote = SubscriptionService.calculate_quote("ANUAL", start_date=start, db=db_session_factory())
 
     assert quote.plan == "ANUAL"
     assert quote.months == 12
-    assert quote.gross_total == Decimal("600000.00")
+    assert quote.gross_total == Decimal("4198800.00")
     assert quote.discount_rate == Decimal("10.00")
-    assert quote.discount_amount == Decimal("60000.00")
-    assert quote.final_price == Decimal("540000.00")  # $600,000 - 10%
+    assert quote.discount_amount == Decimal("419880.00")
+    assert quote.final_price == Decimal("3778920.00")  # $4.198.800 - 10%
 
-    assert quote.cutoff_date == date(2027, 9, 15)  # 1 año exacto
-    assert quote.grace_period_end == date(2027, 9, 18)  # +3 días (72h)
+    assert quote.cutoff_date == date(2027, 11, 15)  # 1 año exacto
+    assert quote.grace_period_end == date(2027, 11, 18)  # +3 días (72h)
 
 
 def test_mensual_plan_quote_no_discount(db_session_factory):
@@ -95,17 +95,17 @@ def test_mensual_plan_quote_no_discount(db_session_factory):
     _db.commit()
     _db.close()
     """Plan MENSUAL aplica tarifa base sin descuento comercial."""
-    start = date(2026, 9, 15)
+    start = date(2026, 11, 15)
     quote = SubscriptionService.calculate_quote("MENSUAL", start_date=start, db=db_session_factory())
 
     assert quote.plan == "MENSUAL"
     assert quote.months == 1
-    assert quote.gross_total == Decimal("50000.00")
+    assert quote.gross_total == Decimal("349900.00")
     assert quote.discount_rate == Decimal("0.00")
     assert quote.discount_amount == Decimal("0.00")
-    assert quote.final_price == Decimal("50000.00")
-    assert quote.cutoff_date == date(2026, 10, 15)
-    assert quote.grace_period_end == date(2026, 10, 18)
+    assert quote.final_price == Decimal("349900.00")
+    assert quote.cutoff_date == date(2026, 12, 15)
+    assert quote.grace_period_end == date(2026, 12, 18)
 
 
 def test_invalid_plan_raises_value_error(db_session_factory):
@@ -122,7 +122,7 @@ def test_create_subscription_in_database(db_session_factory):
         sub = SubscriptionService.create_subscription(
             client_id="usr-test-sub-client",
             plan="SEMESTRAL",
-            start_date=date(2026, 9, 1),
+            start_date=date(2026, 11, 1),
             db=db,
         )
 
@@ -130,11 +130,12 @@ def test_create_subscription_in_database(db_session_factory):
         assert sub.client_id == "usr-test-sub-client"
         assert sub.plan == "SEMESTRAL"
         assert sub.discount_rate == Decimal("8.00")
-        assert sub.final_price == Decimal("276000.00")
+        assert sub.final_price == Decimal("1379448.00")  # sin negocio: paquete Sin IVA, $249.900 × 6 − 8%
         assert sub.status == "ACTIVO"
-        assert sub.start_date == date(2026, 9, 1)
-        assert sub.cutoff_date == date(2027, 3, 1)
-        assert sub.grace_period_end == date(2027, 3, 4)
+        assert sub.package == "SIN_IVA"
+        assert sub.start_date == date(2026, 11, 1)
+        assert sub.cutoff_date == date(2027, 5, 1)
+        assert sub.grace_period_end == date(2027, 5, 4)
 
         # Relación en User
         user = db.query(User).filter(User.id == "usr-test-sub-client").first()
@@ -182,7 +183,7 @@ def test_renew_subscription_extends_period(db_session_factory):
         assert renewed.id == sub.id
         assert renewed.plan == "ANUAL"
         assert renewed.discount_rate == Decimal("10.00")
-        assert renewed.final_price == Decimal("540000.00")
+        assert renewed.final_price == Decimal("2698920.00")  # Sin IVA: $249.900 × 12 − 10%
         # El corte debe haberse extendido 12 meses a partir del corte inicial
         expected_new_cutoff = add_months_to_date(initial_cutoff, 12)
         assert renewed.cutoff_date == expected_new_cutoff

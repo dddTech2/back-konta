@@ -25,17 +25,13 @@ from dian_automation.api.schemas import (
     PricingScheduledRateItem,
 )
 from dian_automation.core.admin_service import (
-    INCOME_SOURCE_BY_TIPO,
     AdminServiceError,
 )
 from dian_automation.db.database import get_db
 from dian_automation.db.models import (
-    INCOME_SOURCE_DIAN,
-    INCOME_SOURCE_MANUAL_SALES,
-    INCOME_SOURCES,
-    TAXPAYER_TYPE_PERSONA_JURIDICA,
-    TAXPAYER_TYPE_PERSONA_NATURAL,
-    TAXPAYER_TYPES,
+    PACKAGE_CON_IVA,
+    PACKAGE_SIN_IVA,
+    PACKAGES,
     PricingPlan,
     PricingRate,
     User,
@@ -56,7 +52,7 @@ def get_pricing_overview(
     admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """Consulta consolidada de tarifas, planes y cotizaciones activas (Story 9.2 - AC #1)."""
+    """Consulta consolidada de tarifas, planes y cotizaciones activas (Story 9.2 - AC #1, Story 10.2 - AC #9)."""
     ensure_default_pricing(db)
     today_bogota = datetime.now(ZoneInfo("America/Bogota")).date()
     grace_days = PricingService.get_grace_days(db)
@@ -74,20 +70,12 @@ def get_pricing_overview(
         for p in plans_models
     ]
 
-    segments = [
-        (INCOME_SOURCE_DIAN, TAXPAYER_TYPE_PERSONA_NATURAL),
-        (INCOME_SOURCE_DIAN, TAXPAYER_TYPE_PERSONA_JURIDICA),
-        (INCOME_SOURCE_MANUAL_SALES, TAXPAYER_TYPE_PERSONA_NATURAL),
-        (INCOME_SOURCE_MANUAL_SALES, TAXPAYER_TYPE_PERSONA_JURIDICA),
-    ]
-
     rates = []
-    for inc, tx in segments:
-        r = PricingService.current_rate(db, inc, tx, on=today_bogota)
+    for pkg in (PACKAGE_CON_IVA, PACKAGE_SIN_IVA):
+        r = PricingService.current_rate(db, pkg, on=today_bogota)
         rates.append(
             PricingRateItem(
-                income_source=r.income_source,
-                taxpayer_type=r.taxpayer_type,
+                package=r.package or pkg,
                 monthly_price=f"{r.monthly_price:.2f}",
                 effective_from=r.effective_from.isoformat(),
             )
@@ -95,15 +83,17 @@ def get_pricing_overview(
 
     scheduled_models = (
         db.query(PricingRate)
-        .filter(PricingRate.effective_from > today_bogota)
+        .filter(
+            PricingRate.package.isnot(None),
+            PricingRate.effective_from > today_bogota,
+        )
         .order_by(PricingRate.effective_from.asc(), PricingRate.created_at.asc())
         .all()
     )
     scheduled = [
         PricingScheduledRateItem(
             id=sr.id,
-            income_source=sr.income_source,
-            taxpayer_type=sr.taxpayer_type,
+            package=sr.package,
             monthly_price=f"{sr.monthly_price:.2f}",
             effective_from=sr.effective_from.isoformat(),
         )
@@ -112,13 +102,12 @@ def get_pricing_overview(
 
     quotes = []
     active_plans = [p for p in plans_models if p.is_active]
-    for inc, tx in segments:
+    for pkg in (PACKAGE_CON_IVA, PACKAGE_SIN_IVA):
         for p in active_plans:
-            q = PricingService.quote_for_segment(db, inc, tx, p.code, start_date=today_bogota)
+            q = PricingService.quote_for_package(db, pkg, p.code, start_date=today_bogota)
             quotes.append(
                 PricingQuoteItem(
-                    income_source=inc,
-                    taxpayer_type=tx,
+                    package=pkg,
                     plan=p.code,
                     months=q.months,
                     monthly_price=f"{q.monthly_price:.2f}",
@@ -308,27 +297,13 @@ def create_or_update_rate(
     admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """Crea una tarifa mensual o actualiza la del mismo segmento y fecha (Story 9.2 - AC #3)."""
+    """Crea una tarifa mensual o actualiza la del mismo paquete y fecha (Story 9.2 - AC #3, Story 10.2 - AC #10)."""
     ensure_default_pricing(db)
-    inc_raw = (body.income_source or "").strip().upper()
-    if inc_raw in INCOME_SOURCE_BY_TIPO:
-        inc_raw = INCOME_SOURCE_BY_TIPO[inc_raw]
-    if inc_raw not in INCOME_SOURCES:
+    pkg_raw = (body.package or "").strip().upper()
+    if pkg_raw not in PACKAGES:
         raise AdminServiceError(
-            "INVALID_INCOME_SOURCE",
-            f"Origen de ingresos '{body.income_source}' inválido. Opciones: {', '.join(INCOME_SOURCES)}",
-            status_code=422,
-        )
-
-    tx_raw = (body.taxpayer_type or "").strip().upper()
-    if tx_raw == "PERSONA":
-        tx_raw = TAXPAYER_TYPE_PERSONA_NATURAL
-    elif tx_raw == "EMPRESA":
-        tx_raw = TAXPAYER_TYPE_PERSONA_JURIDICA
-    if tx_raw not in TAXPAYER_TYPES:
-        raise AdminServiceError(
-            "INVALID_TAXPAYER_TYPE",
-            f"Tipo de contribuyente '{body.taxpayer_type}' inválido. Opciones: {', '.join(TAXPAYER_TYPES)}",
+            "INVALID_PACKAGE",
+            f"Paquete '{body.package}' inválido. Opciones: {', '.join(PACKAGES)}",
             status_code=422,
         )
 
@@ -356,8 +331,7 @@ def create_or_update_rate(
     existing = (
         db.query(PricingRate)
         .filter(
-            PricingRate.income_source == inc_raw,
-            PricingRate.taxpayer_type == tx_raw,
+            PricingRate.package == pkg_raw,
             PricingRate.effective_from == eff_date,
         )
         .first()
@@ -371,8 +345,7 @@ def create_or_update_rate(
         response.status_code = status.HTTP_200_OK
         return PricingRateResponse(
             id=existing.id,
-            income_source=existing.income_source,
-            taxpayer_type=existing.taxpayer_type,
+            package=existing.package,
             monthly_price=f"{existing.monthly_price:.2f}",
             effective_from=existing.effective_from.isoformat(),
             created_by=admin.full_name if admin else None,
@@ -380,8 +353,7 @@ def create_or_update_rate(
     else:
         new_rate = PricingRate(
             id=generate_uuid(),
-            income_source=inc_raw,
-            taxpayer_type=tx_raw,
+            package=pkg_raw,
             monthly_price=price_val,
             effective_from=eff_date,
             created_by_admin_id=admin.id if admin else None,
@@ -393,8 +365,7 @@ def create_or_update_rate(
         response.status_code = status.HTTP_201_CREATED
         return PricingRateResponse(
             id=new_rate.id,
-            income_source=new_rate.income_source,
-            taxpayer_type=new_rate.taxpayer_type,
+            package=new_rate.package,
             monthly_price=f"{new_rate.monthly_price:.2f}",
             effective_from=new_rate.effective_from.isoformat(),
             created_by=admin.full_name if admin else None,
@@ -428,41 +399,23 @@ def delete_scheduled_rate(
 
 @router.get("/rates/history", response_model=List[PricingRateHistoryItem])
 def get_rate_history(
-    income_source: str = Query(..., description="Origen de ingresos (DIAN o MANUAL_SALES)"),
-    taxpayer_type: str = Query(..., description="Tipo de contribuyente (PERSONA_NATURAL o PERSONA_JURIDICA)"),
+    package: str = Query(..., description="Paquete Konta (CON_IVA o SIN_IVA)"),
     admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """Historial de tarifas de un segmento ordenadas de la más reciente a la más antigua (Story 9.2 - AC #5)."""
+    """Historial de tarifas de un paquete ordenadas de la más reciente a la más antigua (Story 9.2 - AC #5, Story 10.2 - AC #10)."""
     ensure_default_pricing(db)
-    inc_raw = (income_source or "").strip().upper()
-    if inc_raw in INCOME_SOURCE_BY_TIPO:
-        inc_raw = INCOME_SOURCE_BY_TIPO[inc_raw]
-    if inc_raw not in INCOME_SOURCES:
+    pkg_raw = (package or "").strip().upper()
+    if pkg_raw not in PACKAGES:
         raise AdminServiceError(
-            "INVALID_INCOME_SOURCE",
-            f"Origen de ingresos '{income_source}' inválido.",
-            status_code=422,
-        )
-
-    tx_raw = (taxpayer_type or "").strip().upper()
-    if tx_raw == "PERSONA":
-        tx_raw = TAXPAYER_TYPE_PERSONA_NATURAL
-    elif tx_raw == "EMPRESA":
-        tx_raw = TAXPAYER_TYPE_PERSONA_JURIDICA
-    if tx_raw not in TAXPAYER_TYPES:
-        raise AdminServiceError(
-            "INVALID_TAXPAYER_TYPE",
-            f"Tipo de contribuyente '{taxpayer_type}' inválido.",
+            "INVALID_PACKAGE",
+            f"Paquete '{package}' inválido. Opciones: {', '.join(PACKAGES)}",
             status_code=422,
         )
 
     rates = (
         db.query(PricingRate)
-        .filter(
-            PricingRate.income_source == inc_raw,
-            PricingRate.taxpayer_type == tx_raw,
-        )
+        .filter(PricingRate.package == pkg_raw)
         .order_by(PricingRate.effective_from.desc(), PricingRate.created_at.desc())
         .all()
     )
@@ -470,8 +423,7 @@ def get_rate_history(
     return [
         PricingRateHistoryItem(
             id=r.id,
-            income_source=r.income_source,
-            taxpayer_type=r.taxpayer_type,
+            package=r.package,
             monthly_price=f"{r.monthly_price:.2f}",
             effective_from=r.effective_from.isoformat(),
             created_at=r.created_at.isoformat() if r.created_at else None,
@@ -483,45 +435,30 @@ def get_rate_history(
 
 @router.get("/quote", response_model=PricingQuoteDetailResponse)
 def get_quote(
-    income_source: str = Query(..., description="Origen de ingresos"),
-    taxpayer_type: Optional[str] = Query(None, description="Tipo de contribuyente"),
-    person_type: Optional[str] = Query(None, description="PERSONA o EMPRESA"),
+    package: Optional[str] = Query(None, description="Paquete Konta (CON_IVA o SIN_IVA)"),
+    vat_responsible: Optional[bool] = Query(None, description="Alternativa a package: true para CON_IVA, false para SIN_IVA"),
     plan: str = Query(..., description="Código del plan"),
     admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """Calcula la cotización para un segmento y plan activo (Story 9.2 - AC #6)."""
+    """Calcula la cotización para un paquete y plan activo (Story 9.2 - AC #6, Story 10.2 - AC #10)."""
     ensure_default_pricing(db)
-    inc_raw = (income_source or "").strip().upper()
-    if inc_raw in INCOME_SOURCE_BY_TIPO:
-        inc_raw = INCOME_SOURCE_BY_TIPO[inc_raw]
-    if inc_raw not in INCOME_SOURCES:
+    target_package = None
+    if package is not None and package.strip() != "":
+        pkg_clean = package.strip().upper()
+        if pkg_clean not in PACKAGES:
+            raise AdminServiceError(
+                "INVALID_PACKAGE",
+                f"Paquete '{package}' inválido. Opciones: {', '.join(PACKAGES)}",
+                status_code=422,
+            )
+        target_package = pkg_clean
+    elif vat_responsible is not None:
+        target_package = PACKAGE_CON_IVA if vat_responsible else PACKAGE_SIN_IVA
+    else:
         raise AdminServiceError(
-            "INVALID_INCOME_SOURCE",
-            f"Origen de ingresos '{income_source}' inválido.",
-            status_code=422,
-        )
-
-    tx_raw = None
-    if person_type:
-        pt_clean = person_type.strip().upper()
-        if pt_clean == "PERSONA":
-            tx_raw = TAXPAYER_TYPE_PERSONA_NATURAL
-        elif pt_clean == "EMPRESA":
-            tx_raw = TAXPAYER_TYPE_PERSONA_JURIDICA
-    elif taxpayer_type:
-        tt_clean = taxpayer_type.strip().upper()
-        if tt_clean in TAXPAYER_TYPES:
-            tx_raw = tt_clean
-        elif tt_clean == "PERSONA":
-            tx_raw = TAXPAYER_TYPE_PERSONA_NATURAL
-        elif tt_clean == "EMPRESA":
-            tx_raw = TAXPAYER_TYPE_PERSONA_JURIDICA
-
-    if not tx_raw or tx_raw not in TAXPAYER_TYPES:
-        raise AdminServiceError(
-            "INVALID_TAXPAYER_TYPE",
-            f"Tipo de contribuyente '{taxpayer_type or person_type}' inválido.",
+            "INVALID_PACKAGE",
+            "Debe especificar 'package' (CON_IVA o SIN_IVA) o 'vat_responsible'.",
             status_code=422,
         )
 
@@ -530,18 +467,16 @@ def get_quote(
         raise AdminServiceError("INVALID_PLAN", "El código del plan es obligatorio.", status_code=400)
 
     try:
-        quote = PricingService.quote_for_segment(
+        quote = PricingService.quote_for_package(
             db=db,
-            income_source=inc_raw,
-            taxpayer_type=tx_raw,
+            package=target_package,
             plan_code=plan_code,
         )
     except PricingError as pe:
         raise AdminServiceError(pe.code, pe.message, status_code=pe.status_code) from pe
 
     return PricingQuoteDetailResponse(
-        income_source=inc_raw,
-        taxpayer_type=tx_raw,
+        package=target_package,
         plan=quote.plan,
         months=quote.months,
         monthly_price=f"{quote.monthly_price:.2f}",

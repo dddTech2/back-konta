@@ -232,6 +232,7 @@ def create_client(
         business_id=created.business.id,
         user_id=created.user.id,
         activation_link=created.deep_link_url,
+        package=created.package or (created.subscription.package if created.subscription else None),
         final_price=f"{created.subscription.final_price:.2f}",
         monthly_price=f"{created.subscription.monthly_price:.2f}" if created.subscription.monthly_price is not None else None,
         discount_rate=f"{created.subscription.discount_rate:.2f}",

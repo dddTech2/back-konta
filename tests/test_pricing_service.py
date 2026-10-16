@@ -47,6 +47,11 @@ def db_session_factory():
         is_active=True,
     )
     db.add(admin_user)
+    # Tarifas de prueba por paquete ($50.000 desde 2026-01-01): con ellas ensure_default_pricing no siembra
+    # las reales y los montos de estas pruebas siguen siendo los de la Story 9.1 (Story 10.2).
+    for pkg in ("CON_IVA", "SIN_IVA"):
+        db.add(PricingRate(id=f"rate-test-{pkg}", package=pkg, monthly_price=Decimal("50000.00"),
+                           effective_from=date(2026, 1, 1)))
     db.commit()
     db.close()
 
@@ -62,6 +67,9 @@ def test_ensure_default_pricing_seeds_and_is_idempotent(db_session_factory):
     """Verifica que la semilla cree los 4 planes, 4 tarifas y 1 configuración de facturación."""
     db = db_session_factory()
     try:
+        db.query(PricingRate).delete()
+        db.commit()
+
         # Primera ejecución
         ensure_default_pricing(db)
 
@@ -80,11 +88,11 @@ def test_ensure_default_pricing_seeds_and_is_idempotent(db_session_factory):
         assert trimestral.months == 3
         assert trimestral.discount_rate == Decimal("5.00")
 
-        rates = db.query(PricingRate).all()
-        assert len(rates) == 4
-        for r in rates:
-            assert r.monthly_price == Decimal("50000.00")
-            assert r.effective_from == date(2026, 1, 1)
+        rates = {r.package: r for r in db.query(PricingRate).all()}
+        assert set(rates) == {"CON_IVA", "SIN_IVA"}  # Story 10.2: tarifa por paquete
+        assert rates["CON_IVA"].monthly_price == Decimal("349900.00")
+        assert rates["SIN_IVA"].monthly_price == Decimal("249900.00")
+        assert all(r.effective_from == date(2026, 10, 15) for r in rates.values())
 
         settings = db.query(BillingSetting).filter(BillingSetting.id == 1).first()
         assert settings is not None
@@ -93,7 +101,7 @@ def test_ensure_default_pricing_seeds_and_is_idempotent(db_session_factory):
         # Segunda ejecución (idempotente: no duplica ni falla)
         ensure_default_pricing(db)
         assert db.query(PricingPlan).count() == 4
-        assert db.query(PricingRate).count() == 4
+        assert db.query(PricingRate).count() == 2
         assert db.query(BillingSetting).count() == 1
     finally:
         db.close()
@@ -112,15 +120,14 @@ def test_current_rate_picks_latest_effective_rate_and_handles_no_rate(db_session
 
         # Tarifa semilla vigente para 2026-03-01
         rate_march = PricingService.current_rate(
-            db, "DIAN", "PERSONA_NATURAL", on=date(2026, 3, 1)
+            db, "CON_IVA", on=date(2026, 3, 1)
         )
         assert rate_march.monthly_price == Decimal("50000.00")
 
         # Insertar nueva tarifa a partir de 2026-07-01 ($60,000)
         new_rate = PricingRate(
             id="rate-future",
-            income_source="DIAN",
-            taxpayer_type="PERSONA_NATURAL",
+            package="CON_IVA",
             monthly_price=Decimal("60000.00"),
             effective_from=date(2026, 7, 1),
         )
@@ -129,20 +136,20 @@ def test_current_rate_picks_latest_effective_rate_and_handles_no_rate(db_session
 
         # En junio sigue rigiendo la de $50,000
         rate_june = PricingService.current_rate(
-            db, "DIAN", "PERSONA_NATURAL", on=date(2026, 6, 30)
+            db, "CON_IVA", on=date(2026, 6, 30)
         )
         assert rate_june.monthly_price == Decimal("50000.00")
 
         # En julio ya rige la de $60,000
         rate_july = PricingService.current_rate(
-            db, "DIAN", "PERSONA_NATURAL", on=date(2026, 7, 1)
+            db, "CON_IVA", on=date(2026, 7, 1)
         )
         assert rate_july.monthly_price == Decimal("60000.00")
 
         # Antes de 2026-01-01 no hay tarifa -> NO_RATE (409)
         with pytest.raises(PricingError) as exc_info:
             PricingService.current_rate(
-                db, "DIAN", "PERSONA_NATURAL", on=date(2025, 12, 31)
+                db, "CON_IVA", on=date(2025, 12, 31)
             )
         assert exc_info.value.code == "NO_RATE"
         assert exc_info.value.status_code == 409
@@ -413,8 +420,7 @@ def test_create_client_and_confirm_payment_rate_freeze_and_grace_days(db_session
         # Ahora el gobierno o Katerinn sube la tarifa oficial a $70,000 para nuevos contratos
         new_rate = PricingRate(
             id="rate-increase",
-            income_source="DIAN",
-            taxpayer_type="PERSONA_NATURAL",
+            package="CON_IVA",
             monthly_price=Decimal("70000.00"),
             effective_from=date.today(),
         )

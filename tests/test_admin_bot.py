@@ -99,7 +99,7 @@ def test_crear_cliente_empresa_trimestral_success(db_session_factory):
         assert res["nit"] == "901008579-7"
         assert res["legal_rep_doc"] == "10000002"
         assert res["plan"] == "TRIMESTRAL"
-        assert res["final_price"] == 142500.0
+        assert res["final_price"] == 997215.0  # paquete Con IVA: $349.900 × 3 − 5%
         assert "https://t.me/KontableTestBot?start=" in res["deep_link_url"]
 
         # Verificar User en DB (el contacto, no la empresa)
@@ -126,8 +126,9 @@ def test_crear_cliente_empresa_trimestral_success(db_session_factory):
         assert sub is not None
         assert sub.plan == "TRIMESTRAL"
         assert float(sub.discount_rate) == 5.00
-        assert float(sub.base_price) == 150000.0
-        assert float(sub.final_price) == 142500.0
+        assert float(sub.base_price) == 1049700.0
+        assert float(sub.final_price) == 997215.0
+        assert sub.package == "CON_IVA"
         assert sub.cutoff_date == add_months_to_date(date.today(), 3)
         assert sub.grace_period_end == sub.cutoff_date + timedelta(days=3)
         assert sub.status == "ACTIVO"
@@ -142,7 +143,7 @@ def test_crear_cliente_empresa_trimestral_success(db_session_factory):
         assert "Cliente creado con éxito" in res["message"]
         assert "Andrea Torres" in res["message"]
         assert "901008579-7" in res["message"]
-        assert "$142,500" in res["message"]
+        assert "$997,215" in res["message"]
         assert res["deep_link_url"] in res["message"]
     finally:
         db.close()
@@ -188,7 +189,7 @@ def test_crear_cliente_semestral_and_anual_pricing(db_session_factory):
             db=db,
         )
         assert res_sem["success"] is True
-        assert res_sem["final_price"] == 276000.0  # 300k - 8% (24k)
+        assert res_sem["final_price"] == 1931448.0  # $349.900 × 6 − 8%
 
         sub_sem = db.query(Subscription).filter(Subscription.client_id == res_sem["user_id"]).first()
         assert float(sub_sem.discount_rate) == 8.00
@@ -201,7 +202,7 @@ def test_crear_cliente_semestral_and_anual_pricing(db_session_factory):
             db=db,
         )
         assert res_anu["success"] is True
-        assert res_anu["final_price"] == 540000.0  # 600k - 10% (60k)
+        assert res_anu["final_price"] == 3778920.0  # $349.900 × 12 − 10%
 
         sub_anu = db.query(Subscription).filter(Subscription.client_id == res_anu["user_id"]).first()
         assert float(sub_anu.discount_rate) == 10.00
