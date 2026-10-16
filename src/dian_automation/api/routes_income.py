@@ -20,8 +20,10 @@ router = APIRouter(prefix="/api/income-summary", tags=["Ingresos"])
 _BOGOTA_TZ = ZoneInfo("America/Bogota")
 
 
-def _format_decimal(val: Any) -> str:
-    """Convierte Decimal ya cuantizado o valor numérico a cadena con 2 decimales."""
+def _format_decimal(val: Any) -> Optional[str]:
+    """Convierte Decimal ya cuantizado o valor numérico a cadena con 2 decimales (None se conserva)."""
+    if val is None:
+        return None
     if isinstance(val, Decimal):
         return format(val, "f")
     return format(Decimal(str(val)), ".2f")
@@ -58,8 +60,6 @@ def get_income_summary(
         emitido=_format_decimal(curr.get("emitido", Decimal("0.00"))),
         ventas=_format_decimal(curr.get("ventas", Decimal("0.00"))),
         diferencia=_format_decimal(curr.get("diferencia", Decimal("0.00"))),
-        emitido_pct=_format_decimal(curr.get("emitido_pct", Decimal("0.00"))),
-        ventas_pct=_format_decimal(curr.get("ventas_pct", Decimal("0.00"))),
         emitido_count=int(curr.get("emitido_count", 0)),
         ventas_count=int(curr.get("ventas_count", 0)),
         clientes_count=int(curr.get("clientes_count", 0)),

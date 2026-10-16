@@ -3,7 +3,7 @@
 import re
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 from sqlalchemy.orm import Session
 
@@ -50,15 +50,16 @@ def _month_range(year: int, month_num: int) -> tuple[date, date, datetime, datet
     return start_date, end_date, start_dt, end_dt
 
 
-def _ingresos_por_perfil(business: Any, emitido: Decimal, ventas: Decimal) -> Decimal:
+def _ingresos_por_perfil(business: Any, emitido: Decimal, ventas: Decimal) -> Optional[Decimal]:
     """Calcula los ingresos según el perfil de ingresos del negocio (Story 10.4, Q-10b).
 
     - MANUAL_SALES: ventas (emitido se calcula pero no se suma).
-    - MIXED: emitido + ventas (supuesto Q-10b: las ventas registradas son las no facturadas).
+    - MIXED: None; lo facturado y las ventas se muestran independientes y no se suman
+      (Q-10b resuelta 2026-10-16), así que no hay ingresos totales ni utilidad.
     - DIAN: emitido.
     """
     if has_einvoicing(business) and has_manual_sales(business):
-        return emitido + ventas
+        return None
     if has_einvoicing(business):
         return emitido
     return ventas
@@ -70,12 +71,11 @@ def summary(db: Session, business: Union[Business, Any], month: str) -> Dict[str
     - month: string 'YYYY-MM' (01-12).
     - emitido: suma de Invoice.total con group_type == 'Emitido' del mes (notas crédito restan).
     - ventas: suma de Sale.total_amount con sale_date en el mes (solo ventas no anuladas).
-    - ingresos: calculado por _ingresos_por_perfil según perfil (MANUAL_SALES, MIXED o DIAN).
+    - ingresos: calculado por _ingresos_por_perfil según perfil (None para MIXED).
     - egresos: suma de Invoice.total con group_type == 'Recibido' e issue_date en el mes,
       multiplicando por -1 las notas de crédito.
-    - utilidad: ingresos - egresos.
+    - utilidad: ingresos - egresos (None para MIXED).
     - diferencia: emitido - ventas.
-    - emitido_pct y ventas_pct: participación sobre ingresos (2 decimales, Decimal('0.00') si ingresos es 0).
     - emitido_count: facturas emitidas del mes sin notas crédito.
     - ventas_count: ventas no anuladas del mes.
     - clientes_count: receiver_nit distintos de facturas emitidas del mes sin notas crédito.
@@ -154,18 +154,15 @@ def summary(db: Session, business: Union[Business, Any], month: str) -> Dict[str
     egresos = egresos.quantize(_TWO_DECIMALS)
 
     # Ingresos y utilidad según perfil de negocio
-    ingresos = _ingresos_por_perfil(business_obj, emitido, ventas).quantize(_TWO_DECIMALS)
-    utilidad = (ingresos - egresos).quantize(_TWO_DECIMALS)
-
-    # Métricas de contraste y participación
-    diferencia = (emitido - ventas).quantize(_TWO_DECIMALS)
-
-    if ingresos <= Decimal("0.00"):
-        emitido_pct = Decimal("0.00")
-        ventas_pct = Decimal("0.00")
+    ingresos = _ingresos_por_perfil(business_obj, emitido, ventas)
+    if ingresos is None:
+        utilidad = None
     else:
-        emitido_pct = ((emitido / ingresos) * Decimal("100")).quantize(_TWO_DECIMALS)
-        ventas_pct = ((ventas / ingresos) * Decimal("100")).quantize(_TWO_DECIMALS)
+        ingresos = ingresos.quantize(_TWO_DECIMALS)
+        utilidad = (ingresos - egresos).quantize(_TWO_DECIMALS)
+
+    # Contraste entre lo facturado y lo vendido
+    diferencia = (emitido - ventas).quantize(_TWO_DECIMALS)
 
     return {
         "month": month,
@@ -175,8 +172,6 @@ def summary(db: Session, business: Union[Business, Any], month: str) -> Dict[str
         "emitido": emitido,
         "ventas": ventas,
         "diferencia": diferencia,
-        "emitido_pct": emitido_pct,
-        "ventas_pct": ventas_pct,
         "emitido_count": emitido_count,
         "ventas_count": ventas_count,
         "clientes_count": clientes_count,

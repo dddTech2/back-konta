@@ -236,7 +236,6 @@ def test_summary_empty_month_returns_zeros_without_error(db, business_a):
     }
     # Story 10.4: los campos de contraste también quedan en cero
     assert res["emitido"] == res["ventas"] == res["diferencia"] == Decimal("0.00")
-    assert res["emitido_pct"] == res["ventas_pct"] == Decimal("0.00")
     assert res["emitido_count"] == res["ventas_count"] == res["clientes_count"] == 0
     assert isinstance(res["ingresos"], Decimal)
     assert isinstance(res["egresos"], Decimal)
@@ -438,16 +437,16 @@ def test_mixed_summary_contrasts_emitted_and_sales(db, mixed):
 
     assert res["emitido"] == Decimal("950000.00")  # 600k + 300k + 100k − nota crédito 50k
     assert res["ventas"] == Decimal("350000.00")  # sin la anulada
-    assert res["ingresos"] == Decimal("1300000.00")
+    # Q-10b: facturado y ventas son independientes; no hay ingresos totales ni utilidad
+    assert res["ingresos"] is None and res["utilidad"] is None
     assert res["egresos"] == Decimal("400000.00")
-    assert res["utilidad"] == Decimal("900000.00")
     assert res["diferencia"] == Decimal("600000.00")
-    assert res["emitido_pct"] == Decimal("73.08") and res["ventas_pct"] == Decimal("26.92")
+    assert "emitido_pct" not in res and "ventas_pct" not in res
     assert (res["emitido_count"], res["ventas_count"], res["clientes_count"]) == (3, 2, 2)
 
 
 def test_summary_accepts_the_business_id(db, mixed):
-    assert summary(db, "biz-m", "2026-09")["ingresos"] == Decimal("1300000.00")
+    assert summary(db, "biz-m", "2026-09")["ventas"] == Decimal("350000.00")
 
 
 def test_manual_sales_income_ignores_emitted_invoices(db, business_a):
@@ -457,7 +456,6 @@ def test_manual_sales_income_ignores_emitted_invoices(db, business_a):
     res = summary(db, business_a, "2026-09")
 
     assert res["ingresos"] == Decimal("100000.00") and res["emitido"] == Decimal("500000.00")
-    assert res["ventas_pct"] == Decimal("100.00")
 
 
 def test_mixed_history_includes_emitted_and_sales(db, mixed):
@@ -467,3 +465,4 @@ def test_mixed_history_includes_emitted_and_sales(db, mixed):
         ("2026-09", Decimal("950000.00"), Decimal("350000.00")),
         ("2026-10", Decimal("999999.00"), Decimal("0.00")),
     ]
+    assert all(h["ingresos"] is None and h["utilidad"] is None for h in hist)

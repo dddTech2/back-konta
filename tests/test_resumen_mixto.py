@@ -65,12 +65,14 @@ def test_income_summary_route_for_mixed_profile(db, bearer):
 
     assert res.status_code == 200
     body = res.json()
-    assert (body["emitido"], body["ventas"], body["ingresos"]) == ("800000.00", "200000.00", "1000000.00")
-    assert (body["egresos"], body["utilidad"], body["diferencia"]) == ("250000.00", "750000.00", "600000.00")
-    assert (body["emitido_pct"], body["ventas_pct"]) == ("80.00", "20.00")
+    assert (body["emitido"], body["ventas"], body["diferencia"]) == ("800000.00", "200000.00", "600000.00")
+    # Q-10b: no se suman; sin ingresos totales ni utilidad
+    assert (body["ingresos"], body["utilidad"], body["egresos"]) == (None, None, "250000.00")
+    assert "emitido_pct" not in body and "ventas_pct" not in body
     assert (body["emitido_count"], body["ventas_count"], body["clientes_count"]) == (2, 1, 2)
     september = next(h for h in body["historial"] if h["month"] == MONTH)
     assert (september["emitido"], september["ventas"]) == ("800000.00", "200000.00")
+    assert september["ingresos"] is None and september["utilidad"] is None
 
 
 def test_bot_resumen_for_mixed_profile(db):
@@ -81,5 +83,5 @@ def test_bot_resumen_for_mixed_profile(db):
     assert "*Facturado:* $800,000" in msg and "(2 facturas)" in msg
     assert "*Ventas:* $200,000" in msg and "(1)" in msg
     assert "*Facturado − Ventas:* $600,000" in msg
-    assert "*Ingresos:* $1,000,000" in msg
-    assert "*Utilidad estimada:* $750,000" in msg
+    assert "*Egresos:* $250,000" in msg
+    assert "Ingresos" not in msg and "Utilidad" not in msg

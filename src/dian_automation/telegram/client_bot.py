@@ -159,9 +159,9 @@ class ClientTelegramBot:
                     emitido == Decimal("0.00")
                     and ventas == Decimal("0.00")
                     and egresos == Decimal("0.00")
-                    and utilidad == Decimal("0.00")
                 )
 
+                # Facturado y ventas se muestran independientes, sin ingresos totales ni utilidad (Q-10b).
                 message = (
                     f"📊 *Resumen del mes - {business.commercial_name}*\n"
                     f"🏢 NIT: `{business.nit}-{business.dv}`\n"
@@ -171,11 +171,10 @@ class ClientTelegramBot:
                     f"🛒 *Ventas:* {_format_cop(ventas)} ({ventas_count})\n"
                     f"↔️ *Facturado − Ventas:* {_format_cop(diferencia)}\n"
                     "───────────────────────────────\n"
-                    f"💵 *Ingresos:* {_format_cop(ingresos)}\n"
                     f"💸 *Egresos:* {_format_cop(egresos)}\n"
-                    f"📈 *Utilidad estimada:* {_format_cop(utilidad)}\n"
                     "───────────────────────────────\n"
-                    "ℹ️ _Los egresos corresponden al total de tus facturas recibidas._"
+                    "ℹ️ _Lo facturado y las ventas se muestran por separado; no se suman. "
+                    "Los egresos corresponden al total de tus facturas recibidas._"
                 )
 
                 return {
@@ -705,7 +704,7 @@ class ClientTelegramBot:
                 f"_{BRAND_TAGLINE}_\n"
                 f"Asistente contable inteligente para *{biz_name}*.\n\n"
                 "Puedes consultar tu información en cualquier momento con estos comandos:\n\n"
-                "📊 */resumen* — Ingresos, egresos y utilidad del mes.\n"
+                "📊 */resumen* — Lo facturado, lo vendido y los egresos del mes.\n"
                 "🧾 */facturas* — Últimas 4 facturas electrónicas emitidas con clientes y montos.\n"
                 "🗓️ */vencimientos* — Fechas límite de tus obligaciones tributarias según tu NIT.\n"
                 "📝 */venta* — Registra una venta sin factura: `/venta 150000 | descripción opcional`.\n"

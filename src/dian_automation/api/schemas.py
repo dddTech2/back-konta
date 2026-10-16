@@ -217,11 +217,14 @@ class SaleVoidResponse(BaseModel):
 
 
 class IncomeSummaryItem(BaseModel):
-    """Resumen mensual de ingresos, egresos y utilidad (como cadenas decimales con 2 decimales)."""
+    """Resumen mensual de ingresos, egresos y utilidad (como cadenas decimales con 2 decimales).
+
+    En el perfil mixto ingresos y utilidad van en null: facturado y ventas no se suman.
+    """
     month: str
-    ingresos: str
+    ingresos: Optional[str]
     egresos: str
-    utilidad: str
+    utilidad: Optional[str]
     emitido: str = "0.00"
     ventas: str = "0.00"
 
@@ -229,15 +232,13 @@ class IncomeSummaryItem(BaseModel):
 class IncomeSummaryResponse(BaseModel):
     """Respuesta del endpoint de resumen de ingresos e historial de 6 meses."""
     month: str
-    ingresos: str
+    ingresos: Optional[str]
     egresos: str
-    utilidad: str
+    utilidad: Optional[str]
     historial: List[IncomeSummaryItem]
     emitido: str = "0.00"
     ventas: str = "0.00"
     diferencia: str = "0.00"
-    emitido_pct: str = "0.00"
-    ventas_pct: str = "0.00"
     emitido_count: int = 0
     ventas_count: int = 0
     clientes_count: int = 0
