@@ -98,6 +98,7 @@ def list_clients(
     q: Optional[str] = Query(None, description="Término de búsqueda (contacto, razón social, comercial, NIT, celular)"),
     income_source: Optional[str] = Query(None, description="Filtrar por origen de ingresos (DIAN o MANUAL_SALES)"),
     status: Optional[str] = Query(None, description="Filtrar por estado de suscripción (ACTIVO, EN_MORA, BLOQUEADO, CANCELADO)"),
+    package: Optional[str] = Query(None, description="Filtrar por paquete (CON_IVA o SIN_IVA)"),
     page: int = Query(1, ge=1, description="Número de página"),
     page_size: int = Query(25, ge=1, le=100, description="Tamaño de página (máximo 100)"),
     admin: User = Depends(get_current_admin),
@@ -112,6 +113,7 @@ def list_clients(
         status=status,
         page=page,
         page_size=page_size,
+        package=package,
     )
 
 

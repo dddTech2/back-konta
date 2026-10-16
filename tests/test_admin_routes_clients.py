@@ -826,3 +826,22 @@ def test_patch_profile_story_10_1(client_app, admin_headers, db_session):
     summary = client_app.get("/api/admin/summary", headers=admin_headers).json()
     assert summary["clients_by_package"]["SIN_IVA"] >= 1
     assert summary["clients_by_income_source"]["MIXED"] >= 1
+
+
+def test_list_clients_filters_by_package(client_app, admin_headers, db_session):
+    """Story 10.6: la lista filtra por paquete (responsabilidad de IVA del negocio)."""
+    for suffix, nit, source, vat in (("con", "901555001", "DIAN", True), ("sin", "901555002", "MIXED", False)):
+        user = User(id=f"usr-pkg-{suffix}", email=f"pkg-{suffix}@test.co", full_name=f"Pkg {suffix}",
+                    phone=f"30099900{len(suffix)}{suffix[0] == 'c'}", role="CLIENT")
+        db_session.add_all([user, Business(id=f"biz-pkg-{suffix}", client_id=user.id, legal_name=f"Pkg {suffix}",
+                                           commercial_name=f"Pkg {suffix}", nit=nit, dv="1", income_source=source,
+                                           vat_responsible=vat)])
+    db_session.commit()
+
+    con = client_app.get("/api/admin/clients?package=con_iva", headers=admin_headers).json()["items"]
+    sin = client_app.get("/api/admin/clients?package=SIN_IVA", headers=admin_headers).json()["items"]
+    bad = client_app.get("/api/admin/clients?package=DIAN", headers=admin_headers)
+
+    assert {i["business_id"] for i in con} >= {"biz-pkg-con"} and all(i["package"] == "CON_IVA" for i in con)
+    assert {i["business_id"] for i in sin} >= {"biz-pkg-sin"} and all(i["package"] == "SIN_IVA" for i in sin)
+    assert bad.status_code == 422 and bad.json()["code"] == "INVALID_PACKAGE"

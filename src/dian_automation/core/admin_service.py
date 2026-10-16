@@ -847,8 +847,9 @@ def list_clients_paged(
     status: Optional[str] = None,
     page: int = 1,
     page_size: int = 25,
+    package: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Lista clientes de forma paginada con filtros por texto, origen de ingresos y estado de suscripción (AC #1).
+    """Lista clientes de forma paginada con filtros por texto, origen de ingresos, paquete y estado de suscripción (AC #1).
 
     Ordenado alfabéticamente por nombre comercial.
     """
@@ -894,6 +895,13 @@ def list_clients_paged(
         if inc_clean in INCOME_SOURCE_BY_TIPO:
             inc_clean = INCOME_SOURCE_BY_TIPO[inc_clean]
         query = query.filter(Business.income_source == inc_clean)
+
+    if package and package.strip():
+        pkg_clean = package.upper().strip()
+        if pkg_clean not in PACKAGES:
+            raise AdminServiceError("INVALID_PACKAGE", f"Paquete '{package}' no válido. Opciones: {', '.join(PACKAGES)}", 422)
+        # Paquete = responsabilidad de IVA del negocio (Story 10.1)
+        query = query.filter(Business.vat_responsible.is_(pkg_clean == PACKAGE_CON_IVA))
 
     if status and status.strip():
         st_clean = status.upper().strip()
