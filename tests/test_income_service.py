@@ -228,12 +228,16 @@ def test_summary_emitido_invoices_do_not_count_as_egresos(db, business_a):
 def test_summary_empty_month_returns_zeros_without_error(db, business_a):
     res = summary(db, business_a, "2026-08")
 
-    assert res == {
+    assert {k: res[k] for k in ("month", "ingresos", "egresos", "utilidad")} == {
         "month": "2026-08",
         "ingresos": Decimal("0.00"),
         "egresos": Decimal("0.00"),
         "utilidad": Decimal("0.00"),
     }
+    # Story 10.4: los campos de contraste también quedan en cero
+    assert res["emitido"] == res["ventas"] == res["diferencia"] == Decimal("0.00")
+    assert res["emitido_pct"] == res["ventas_pct"] == Decimal("0.00")
+    assert res["emitido_count"] == res["ventas_count"] == res["clientes_count"] == 0
     assert isinstance(res["ingresos"], Decimal)
     assert isinstance(res["egresos"], Decimal)
     assert isinstance(res["utilidad"], Decimal)
@@ -394,3 +398,72 @@ def test_voiding_previous_month_sale_recalculates_that_month_and_history(db, bus
     assert may_item["ingresos"] == Decimal("100000.00")
 
     assert db.get(Sale, sale_apr.id) is not None
+
+
+# ==============================================================================
+# Story 10.4: perfil mixto (facturado vs ventas)
+# ==============================================================================
+
+
+def _emitted(db, business, total, issue_date, receiver_nit, document_type="Factura electrónica de venta"):
+    db.add(Invoice(id=str(uuid.uuid4()), business_id=business.id, cufe=str(uuid.uuid4()),
+                   document_type=document_type, group_type="Emitido", issue_date=issue_date,
+                   issuer_nit=business.nit, issuer_name=business.legal_name, receiver_nit=receiver_nit,
+                   receiver_name=f"Cliente {receiver_nit}", total=total, iva=Decimal("0.00")))
+    db.commit()
+
+
+@pytest.fixture
+def mixed(db):
+    user = User(id="usr-m", email="m@test.co", full_name="User M", role="CLIENT", is_active=True)
+    biz = Business(id="biz-m", client_id=user.id, legal_name="Mixto SAS", commercial_name="Mixto",
+                   nit="900555666", dv="3", income_source="MIXED", vat_responsible=False, is_active=True)
+    db.add_all([user, biz])
+    db.commit()
+    _emitted(db, biz, Decimal("600000.00"), datetime(2026, 9, 3, 15), "800111")
+    _emitted(db, biz, Decimal("300000.00"), datetime(2026, 9, 10, 15), "800222")
+    _emitted(db, biz, Decimal("100000.00"), datetime(2026, 9, 12, 15), "800111")
+    _emitted(db, biz, Decimal("50000.00"), datetime(2026, 9, 20, 15), "800222", "Nota crédito electrónica")
+    _emitted(db, biz, Decimal("999999.00"), datetime(2026, 10, 1, 15), "800333")  # otro mes
+    _create_sale(db, biz, Decimal("200000.00"), date(2026, 9, 5), user_id="usr-m")
+    _create_sale(db, biz, Decimal("150000.00"), date(2026, 9, 6), user_id="usr-m")
+    voided = _create_sale(db, biz, Decimal("90000.00"), date(2026, 9, 7), user_id="usr-m")
+    voided.voided_at = datetime(2026, 9, 8)
+    _create_invoice(db, biz, Decimal("400000.00"), datetime(2026, 9, 15, 15))
+    return biz
+
+
+def test_mixed_summary_contrasts_emitted_and_sales(db, mixed):
+    res = summary(db, mixed, "2026-09")
+
+    assert res["emitido"] == Decimal("950000.00")  # 600k + 300k + 100k − nota crédito 50k
+    assert res["ventas"] == Decimal("350000.00")  # sin la anulada
+    assert res["ingresos"] == Decimal("1300000.00")
+    assert res["egresos"] == Decimal("400000.00")
+    assert res["utilidad"] == Decimal("900000.00")
+    assert res["diferencia"] == Decimal("600000.00")
+    assert res["emitido_pct"] == Decimal("73.08") and res["ventas_pct"] == Decimal("26.92")
+    assert (res["emitido_count"], res["ventas_count"], res["clientes_count"]) == (3, 2, 2)
+
+
+def test_summary_accepts_the_business_id(db, mixed):
+    assert summary(db, "biz-m", "2026-09")["ingresos"] == Decimal("1300000.00")
+
+
+def test_manual_sales_income_ignores_emitted_invoices(db, business_a):
+    _emitted(db, business_a, Decimal("500000.00"), datetime(2026, 9, 3, 15), "800111")
+    _create_sale(db, business_a, Decimal("100000.00"), date(2026, 9, 5))
+
+    res = summary(db, business_a, "2026-09")
+
+    assert res["ingresos"] == Decimal("100000.00") and res["emitido"] == Decimal("500000.00")
+    assert res["ventas_pct"] == Decimal("100.00")
+
+
+def test_mixed_history_includes_emitted_and_sales(db, mixed):
+    hist = history(db, mixed, "2026-10", months=2)
+
+    assert [(h["month"], h["emitido"], h["ventas"]) for h in hist] == [
+        ("2026-09", Decimal("950000.00"), Decimal("350000.00")),
+        ("2026-10", Decimal("999999.00"), Decimal("0.00")),
+    ]

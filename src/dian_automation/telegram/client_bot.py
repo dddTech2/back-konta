@@ -147,6 +147,50 @@ class ClientTelegramBot:
             egresos = data["egresos"]
             utilidad = data["utilidad"]
 
+            if has_einvoicing(business):
+                # Perfil MIXED (Story 10.4 AC #4)
+                emitido = data["emitido"]
+                ventas = data["ventas"]
+                diferencia = data["diferencia"]
+                emitido_count = data["emitido_count"]
+                ventas_count = data["ventas_count"]
+
+                has_data = not (
+                    emitido == Decimal("0.00")
+                    and ventas == Decimal("0.00")
+                    and egresos == Decimal("0.00")
+                    and utilidad == Decimal("0.00")
+                )
+
+                message = (
+                    f"📊 *Resumen del mes - {business.commercial_name}*\n"
+                    f"🏢 NIT: `{business.nit}-{business.dv}`\n"
+                    f"📅 *Mes:* {month}\n"
+                    "───────────────────────────────\n"
+                    f"🧾 *Facturado:* {_format_cop(emitido)} ({emitido_count} facturas)\n"
+                    f"🛒 *Ventas:* {_format_cop(ventas)} ({ventas_count})\n"
+                    f"↔️ *Facturado − Ventas:* {_format_cop(diferencia)}\n"
+                    "───────────────────────────────\n"
+                    f"💵 *Ingresos:* {_format_cop(ingresos)}\n"
+                    f"💸 *Egresos:* {_format_cop(egresos)}\n"
+                    f"📈 *Utilidad estimada:* {_format_cop(utilidad)}\n"
+                    "───────────────────────────────\n"
+                    "ℹ️ _Los egresos corresponden al total de tus facturas recibidas._"
+                )
+
+                return {
+                    "success": True,
+                    "has_data": has_data,
+                    "period": month,
+                    "ingresos": ingresos,
+                    "egresos": egresos,
+                    "utilidad": utilidad,
+                    "emitido": emitido,
+                    "ventas": ventas,
+                    "diferencia": diferencia,
+                    "message": message,
+                }
+
             has_data = not (ingresos == Decimal("0.00") and egresos == Decimal("0.00") and utilidad == Decimal("0.00"))
 
             message = (

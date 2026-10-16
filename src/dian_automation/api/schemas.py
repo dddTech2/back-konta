@@ -222,6 +222,8 @@ class IncomeSummaryItem(BaseModel):
     ingresos: str
     egresos: str
     utilidad: str
+    emitido: str = "0.00"
+    ventas: str = "0.00"
 
 
 class IncomeSummaryResponse(BaseModel):
@@ -231,6 +233,14 @@ class IncomeSummaryResponse(BaseModel):
     egresos: str
     utilidad: str
     historial: List[IncomeSummaryItem]
+    emitido: str = "0.00"
+    ventas: str = "0.00"
+    diferencia: str = "0.00"
+    emitido_pct: str = "0.00"
+    ventas_pct: str = "0.00"
+    emitido_count: int = 0
+    ventas_count: int = 0
+    clientes_count: int = 0
 
 
 

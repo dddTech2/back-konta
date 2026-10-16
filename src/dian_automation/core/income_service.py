@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Union
 
 from sqlalchemy.orm import Session
 
+from dian_automation.core.business_profile import has_einvoicing, has_manual_sales
 from dian_automation.db.models import Business, Invoice, Sale
 from dian_automation.extraction.xlsx_parser import is_credit_note
 
@@ -49,22 +50,50 @@ def _month_range(year: int, month_num: int) -> tuple[date, date, datetime, datet
     return start_date, end_date, start_dt, end_dt
 
 
+def _ingresos_por_perfil(business: Any, emitido: Decimal, ventas: Decimal) -> Decimal:
+    """Calcula los ingresos según el perfil de ingresos del negocio (Story 10.4, Q-10b).
+
+    - MANUAL_SALES: ventas (emitido se calcula pero no se suma).
+    - MIXED: emitido + ventas (supuesto Q-10b: las ventas registradas son las no facturadas).
+    - DIAN: emitido.
+    """
+    if has_einvoicing(business) and has_manual_sales(business):
+        return emitido + ventas
+    if has_einvoicing(business):
+        return emitido
+    return ventas
+
+
 def summary(db: Session, business: Union[Business, Any], month: str) -> Dict[str, Any]:
     """Calcula el resumen de ingresos, egresos y utilidad para un negocio en un mes específico.
 
     - month: string 'YYYY-MM' (01-12).
-    - ingresos: suma de Sale.total_amount con sale_date en el mes (solo ventas no anuladas).
+    - emitido: suma de Invoice.total con group_type == 'Emitido' del mes (notas crédito restan).
+    - ventas: suma de Sale.total_amount con sale_date en el mes (solo ventas no anuladas).
+    - ingresos: calculado por _ingresos_por_perfil según perfil (MANUAL_SALES, MIXED o DIAN).
     - egresos: suma de Invoice.total con group_type == 'Recibido' e issue_date en el mes,
-      multiplicando por -1 las notas de crédito. Las facturas Emitidas no cuentan.
+      multiplicando por -1 las notas de crédito.
     - utilidad: ingresos - egresos.
-    - Mes sin datos devuelve Decimal('0.00') en los tres valores.
+    - diferencia: emitido - ventas.
+    - emitido_pct y ventas_pct: participación sobre ingresos (2 decimales, Decimal('0.00') si ingresos es 0).
+    - emitido_count: facturas emitidas del mes sin notas crédito.
+    - ventas_count: ventas no anuladas del mes.
+    - clientes_count: receiver_nit distintos de facturas emitidas del mes sin notas crédito.
     """
     year, month_num = _parse_month(month)
     start_date, end_date, start_dt, end_dt = _month_range(year, month_num)
 
-    business_id = business.id if hasattr(business, "id") else business
+    if hasattr(business, "id"):
+        business_obj = business
+        business_id = business.id
+    elif isinstance(business, dict) and "id" in business:
+        business_obj = business
+        business_id = business["id"]
+    else:
+        business_id = business
+        business_obj = db.get(Business, business_id) if business_id else None
 
-    # Ingresos: ventas declaradas del mes (solo ventas no anuladas)
+    # Ventas declaradas del mes (solo ventas no anuladas)
     sales = (
         db.query(Sale.total_amount)
         .filter(
@@ -75,10 +104,39 @@ def summary(db: Session, business: Union[Business, Any], month: str) -> Dict[str
         )
         .all()
     )
-    ingresos = sum((row[0] for row in sales), Decimal("0.00")).quantize(_TWO_DECIMALS)
+    ventas = sum((row[0] for row in sales), Decimal("0.00")).quantize(_TWO_DECIMALS)
+    ventas_count = len(sales)
+
+    # Facturas emitidas del mes (las notas de crédito restan; sin notas de crédito para conteos)
+    emitted_invoices = (
+        db.query(Invoice.total, Invoice.document_type, Invoice.receiver_nit)
+        .filter(
+            Invoice.business_id == business_id,
+            Invoice.group_type == "Emitido",
+            Invoice.issue_date >= start_dt,
+            Invoice.issue_date < end_dt,
+        )
+        .all()
+    )
+
+    emitido = Decimal("0.00")
+    emitido_count = 0
+    clientes_set = set()
+
+    for inv_total, doc_type, receiver_nit in emitted_invoices:
+        if is_credit_note(doc_type):
+            emitido -= inv_total
+        else:
+            emitido += inv_total
+            emitido_count += 1
+            if receiver_nit:
+                clientes_set.add(receiver_nit)
+
+    emitido = emitido.quantize(_TWO_DECIMALS)
+    clientes_count = len(clientes_set)
 
     # Egresos: facturas recibidas del mes (las notas de crédito restan; Emitidas no cuentan)
-    invoices = (
+    received_invoices = (
         db.query(Invoice.total, Invoice.document_type)
         .filter(
             Invoice.business_id == business_id,
@@ -90,18 +148,38 @@ def summary(db: Session, business: Union[Business, Any], month: str) -> Dict[str
     )
 
     egresos = Decimal("0.00")
-    for inv_total, doc_type in invoices:
+    for inv_total, doc_type in received_invoices:
         multiplier = Decimal("-1.00") if is_credit_note(doc_type) else Decimal("1.00")
         egresos += inv_total * multiplier
     egresos = egresos.quantize(_TWO_DECIMALS)
 
+    # Ingresos y utilidad según perfil de negocio
+    ingresos = _ingresos_por_perfil(business_obj, emitido, ventas).quantize(_TWO_DECIMALS)
     utilidad = (ingresos - egresos).quantize(_TWO_DECIMALS)
+
+    # Métricas de contraste y participación
+    diferencia = (emitido - ventas).quantize(_TWO_DECIMALS)
+
+    if ingresos <= Decimal("0.00"):
+        emitido_pct = Decimal("0.00")
+        ventas_pct = Decimal("0.00")
+    else:
+        emitido_pct = ((emitido / ingresos) * Decimal("100")).quantize(_TWO_DECIMALS)
+        ventas_pct = ((ventas / ingresos) * Decimal("100")).quantize(_TWO_DECIMALS)
 
     return {
         "month": month,
         "ingresos": ingresos,
         "egresos": egresos,
         "utilidad": utilidad,
+        "emitido": emitido,
+        "ventas": ventas,
+        "diferencia": diferencia,
+        "emitido_pct": emitido_pct,
+        "ventas_pct": ventas_pct,
+        "emitido_count": emitido_count,
+        "ventas_count": ventas_count,
+        "clientes_count": clientes_count,
     }
 
 
@@ -119,6 +197,13 @@ def history(
     if months <= 0:
         return []
 
+    if hasattr(business, "id"):
+        business_obj = business
+    elif isinstance(business, dict) and "id" in business:
+        business_obj = business
+    else:
+        business_obj = db.get(Business, business) if business else None
+
     total_months = year * 12 + (month_num - 1)
     month_keys: List[str] = []
     for i in range(months - 1, -1, -1):
@@ -127,4 +212,5 @@ def history(
         m = (m_idx % 12) + 1
         month_keys.append(f"{y:04d}-{m:02d}")
 
-    return [summary(db, business, ym) for ym in month_keys]
+    target_business = business_obj if business_obj is not None else business
+    return [summary(db, target_business, ym) for ym in month_keys]

@@ -55,12 +55,22 @@ def get_income_summary(
         ingresos=_format_decimal(curr["ingresos"]),
         egresos=_format_decimal(curr["egresos"]),
         utilidad=_format_decimal(curr["utilidad"]),
+        emitido=_format_decimal(curr.get("emitido", Decimal("0.00"))),
+        ventas=_format_decimal(curr.get("ventas", Decimal("0.00"))),
+        diferencia=_format_decimal(curr.get("diferencia", Decimal("0.00"))),
+        emitido_pct=_format_decimal(curr.get("emitido_pct", Decimal("0.00"))),
+        ventas_pct=_format_decimal(curr.get("ventas_pct", Decimal("0.00"))),
+        emitido_count=int(curr.get("emitido_count", 0)),
+        ventas_count=int(curr.get("ventas_count", 0)),
+        clientes_count=int(curr.get("clientes_count", 0)),
         historial=[
             IncomeSummaryItem(
                 month=item["month"],
                 ingresos=_format_decimal(item["ingresos"]),
                 egresos=_format_decimal(item["egresos"]),
                 utilidad=_format_decimal(item["utilidad"]),
+                emitido=_format_decimal(item.get("emitido", Decimal("0.00"))),
+                ventas=_format_decimal(item.get("ventas", Decimal("0.00"))),
             )
             for item in hist
         ],
