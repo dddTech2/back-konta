@@ -214,7 +214,7 @@ def test_root_and_health_endpoints(client):
     r_root = client.get("/")
     assert r_root.status_code == 200
     assert r_root.json()["app"] == "Konta API"
-    assert r_root.json()["tagline"] == "Con K, contabilidad para emprendedores"
+    assert r_root.json()["tagline"] == "Contabilidad con K, para emprendedores"
 
     r_health = client.get("/health")
     assert r_health.status_code == 200

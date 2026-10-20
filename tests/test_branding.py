@@ -9,7 +9,7 @@ import dian_automation.api.app as api_app
 def test_branding_constants():
     """Verifica los valores oficiales de las constantes de marca."""
     assert BRAND_NAME == "Konta"
-    assert BRAND_TAGLINE == "Con K, contabilidad para emprendedores"
+    assert BRAND_TAGLINE == "Contabilidad con K, para emprendedores"
 
 
 def test_app_docstring_and_branding():
