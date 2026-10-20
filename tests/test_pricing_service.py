@@ -386,6 +386,47 @@ def test_apply_to_subscription_special_tariff_and_history_logging(db_session_fac
         db.close()
 
 
+def test_apply_to_subscription_plan_change_recalculates_cutoff(db_session_factory):
+    """Pasar a un plan de otra duración recalcula el corte desde el inicio del periodo en curso."""
+    db = db_session_factory()
+    try:
+        admin = db.query(User).filter(User.role == "ADMIN").first()
+        PricingService.get_plan(db, "MENSUAL").is_active = True  # la semilla lo trae inactivo
+        created = admin_service.create_client(
+            db,
+            admin,
+            NewClientData(
+                tipo_cliente="PERSONA", full_name="Cliente Mensual", phone="3009998866", nit="1000000077",
+                plan="TRIMESTRAL",
+            ),
+        )
+        sub = created.subscription
+        sub.cutoff_date = date(2027, 1, 19)  # trimestral iniciado el 19 oct 2026
+        db.commit()
+        grace_days = PricingService.get_grace_days(db)
+
+        PricingService.apply_to_subscription(db, sub, plan_code="MENSUAL", reason="Corrección de plan", admin=admin)
+        db.commit()
+        db.refresh(sub)
+        assert sub.plan == "MENSUAL"
+        assert sub.cutoff_date == date(2026, 11, 19)
+        assert sub.grace_period_end == date(2026, 11, 19) + timedelta(days=grace_days)
+
+        # Volver a un plan más largo extiende el corte desde el mismo inicio de periodo
+        PricingService.apply_to_subscription(db, sub, plan_code="SEMESTRAL", reason="Pasa a semestral", admin=admin)
+        db.commit()
+        db.refresh(sub)
+        assert sub.cutoff_date == date(2027, 4, 19)
+
+        # Un precio especial no mueve el corte
+        PricingService.apply_to_subscription(db, sub, monthly_price=Decimal("40000"), reason="Precio acordado")
+        db.commit()
+        db.refresh(sub)
+        assert sub.cutoff_date == date(2027, 4, 19)
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # 7. create_client y confirm_payment con congelamiento y aviso de diferencia
 # ---------------------------------------------------------------------------

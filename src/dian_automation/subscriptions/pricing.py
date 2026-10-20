@@ -405,8 +405,11 @@ class PricingService:
         reason: str,
         admin: Optional[User] = None,
     ) -> Subscription:
-        """Aplica un cambio de tarifa o plan a una suscripción existente sin alterar sus fechas de corte.
+        """Aplica un cambio de tarifa o plan a una suscripción existente.
 
+        Un precio especial o volver a la tarifa no tocan las fechas de corte. Pasar a un plan de otra
+        duración recalcula el corte desde el inicio del periodo en curso (corte actual menos los meses del
+        plan anterior) más los meses del plan nuevo, y el fin de gracia con los días de gracia vigentes.
         Escribe una fila en subscription_price_changes y no realiza commit (lo hace el llamador).
         """
         reason_clean = (reason or "").strip()
@@ -437,6 +440,7 @@ class PricingService:
                 raise PricingError("INVALID_DISCOUNT_RATE", "El descuento debe estar entre 0% y 50%.", 400)
 
         old_plan = sub.plan
+        old_months = cls.get_plan(db, old_plan).months if old_plan else None
         old_monthly_price = sub.monthly_price
         old_discount_rate = sub.discount_rate
         old_final_price = sub.final_price
@@ -487,6 +491,11 @@ class PricingService:
         )
         disc_raw = gross_total * (new_discount_rate / Decimal("100.00"))
         new_final_price = (gross_total - disc_raw).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+
+        if old_months and target_plan.months != old_months and sub.cutoff_date:
+            period_start = add_months_to_date(sub.cutoff_date, -old_months)
+            sub.cutoff_date = add_months_to_date(period_start, target_plan.months)
+            sub.grace_period_end = sub.cutoff_date + timedelta(days=cls.get_grace_days(db))
 
         sub.plan = target_plan.code
         sub.monthly_price = new_monthly_price
