@@ -44,6 +44,7 @@ from dian_automation.core.calendar_engine import (
     today_bogota,
 )
 from dian_automation.subscriptions.lockout_service import SubscriptionLockoutService
+from dian_automation.telegram.command_args import split_first
 
 logger = logging.getLogger("client_bot")
 
@@ -492,8 +493,8 @@ class ClientTelegramBot:
 
     REGISTRAR_VENTA_HELP = (
         "📝 *Registrar venta*\n\n"
-        "Formato: `/venta <total> | <descripción opcional>`\n"
-        "Ejemplo: `/venta 150000 | 3 tortas de chocolate`\n\n"
+        "Formato: `/venta <total> | <descripción opcional>` (también sirve `,` o `;` en lugar de `|`)\n"
+        "Ejemplo: `/venta 150000 | 3 tortas de chocolate` o `/venta 150000, 3 tortas de chocolate`\n\n"
         "El total va sin `$`, sin comas ni puntos de miles y con máximo 2 decimales (punto decimal)."
     )
 
@@ -501,12 +502,13 @@ class ClientTelegramBot:
     def parse_registrar_venta_command(text: str) -> Tuple[str, Optional[str]]:
         """Separa `/venta` o `/registrar_venta <total> [| <descripción>]` en (total crudo, descripción cruda).
 
-        El primer `|` separa total y descripción; todo lo posterior es descripción. Solo sintaxis:
+        El primer separador (`|`, `;` o `,`, ver command_args) separa total y descripción; todo lo posterior
+        es descripción. Solo sintaxis:
         la validación de ambos valores vive en core/sales_service.py.
         """
         body = re.sub(r"^\s*/(?:venta|registrar_venta)(?:@\w+)?(?=\s|$)", "", text.strip(), flags=re.IGNORECASE)
-        raw_total, separator, description = body.partition("|")
-        return raw_total.strip(), (description if separator else None)
+        raw_total, description = split_first(body)
+        return raw_total.strip(), description
 
     @staticmethod
     def _escape_markdown(text: str) -> str:

@@ -36,6 +36,7 @@ from dian_automation.db.models import (
 from dian_automation.db.database import SessionLocal
 from dian_automation.subscriptions.pricing import PricingService, PricingError
 from dian_automation.subscriptions.service import add_months_to_date
+from dian_automation.telegram.command_args import split_args
 from dian_automation.telegram.deep_linking import TelegramDeepLinkingService
 
 logger = logging.getLogger("admin_bot")
@@ -180,7 +181,7 @@ class AdminTelegramBot:
         if not payload:
             return False, None, cls.USAGE_MESSAGE
 
-        parts = [p.strip() for p in payload.split("|")]
+        parts = split_args(payload)
         if len(parts) < 2:
             return False, None, cls.USAGE_MESSAGE
 
@@ -203,7 +204,7 @@ class AdminTelegramBot:
                 return (
                     False,
                     None,
-                    "⚠️ *Faltan datos en la plantilla de Persona Natural.* Debes incluir al menos 5 campos separados por `|`:\n"
+                    "⚠️ *Faltan datos en la plantilla de Persona Natural.* Debes incluir al menos 5 campos separados por `|` (o por `,` o `;`):\n"
                     "`/crear_cliente PERSONA | Nombre | Celular | Cédula | Plan`\n\n"
                     "_Ejemplo:_ `/crear_cliente PERSONA | Andrea Torres | 3001234567 | 1000000001 | TRIMESTRAL`",
                 )
@@ -215,7 +216,7 @@ class AdminTelegramBot:
                 return (
                     False,
                     None,
-                    "⚠️ *Faltan datos en la plantilla de Empresa.* Debes incluir al menos 7 campos separados por `|`:\n"
+                    "⚠️ *Faltan datos en la plantilla de Empresa.* Debes incluir al menos 7 campos separados por `|` (o por `,` o `;`):\n"
                     "`/crear_cliente EMPRESA | Nombre Contacto | Celular | Nombre Empresa | NIT Empresa | "
                     "Cédula Representante | Plan`\n\n"
                     "_Ejemplo:_ `/crear_cliente EMPRESA | Andrea Torres | 3001234567 | Ferretería El Roble SAS | "
@@ -515,12 +516,12 @@ class AdminTelegramBot:
                 "_Ejemplo con DV:_ `/confirmar_pago 901008579-7 | <monto> | NEQUI-4411`",
             )
 
-        parts = [p.strip() for p in payload.split("|")]
+        parts = split_args(payload)
         if len(parts) < 3:
             return (
                 False,
                 None,
-                "⚠️ *Faltan datos en la plantilla.* Debes incluir los 3 campos separados por `|`:\n"
+                "⚠️ *Faltan datos en la plantilla.* Debes incluir los 3 campos separados por `|` (o por `,` o `;`):\n"
                 "`/confirmar_pago NIT | Monto | Referencia`\n\n"
                 "_Ejemplo:_ `/confirmar_pago 901008579 | <monto> | TR-998822`",
             )
@@ -707,7 +708,7 @@ class AdminTelegramBot:
                 "se usa el mes calendario anterior completo._",
             )
 
-        parts = [p.strip() for p in payload.split("|")]
+        parts = split_args(payload)
         nit_raw = parts[0]
         period_raw = parts[1] if len(parts) > 1 and parts[1].strip() else None
 
@@ -848,7 +849,7 @@ class AdminTelegramBot:
         if not match:
             return False, None, "Comando no reconocido."
 
-        parts = [p.strip() for p in match.group(1).strip().split("|")]
+        parts = split_args(match.group(1).strip())
         if len(parts) != 2 or not parts[0] or not parts[1]:
             return False, None, cls.CAMBIAR_TIPO_USAGE
 
@@ -941,7 +942,7 @@ class AdminTelegramBot:
         if not match:
             return False, None, "Comando no reconocido."
 
-        parts = [p.strip() for p in match.group(1).strip().split("|")]
+        parts = split_args(match.group(1).strip())
         if len(parts) != 2 or not parts[0] or not parts[1]:
             return False, None, cls.PAQUETE_USAGE
 
@@ -1044,7 +1045,7 @@ class AdminTelegramBot:
         if not match:
             return False, None, "Comando no reconocido."
 
-        parts = [p.strip() for p in match.group(1).strip().split("|")]
+        parts = split_args(match.group(1).strip())
         if len(parts) != 3 or not parts[0]:
             return False, None, cls.PERFIL_TRIBUTARIO_USAGE
 
@@ -1628,6 +1629,7 @@ class AdminTelegramBot:
         elif text_clean.startswith("/ayuda") or text_clean.startswith("/help"):
             return (
                 "💼 *COMANDOS DE ADMINISTRACIÓN COMERCIAL (Katerinn)*\n\n"
+                "_Separa los datos con `|`, `,` o `;`._\n\n"
                 "1️⃣ *Crear Cliente:* Da de alta a un usuario, negocio y suscripción con enlace mágico.\n"
                 "La plantilla depende del *Tipo de cliente* (primer campo: `PERSONA` o `EMPRESA`):\n\n"
                 "👤 *Persona Natural:*\n"
