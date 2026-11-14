@@ -1757,7 +1757,7 @@ def test_story_7_1_venta_no_arguments_shows_format_help(db_session_factory):
     """AC #2: /venta sin argumentos devuelve ayuda que muestra /venta en formato y ejemplo."""
     resp = _send(db_session_factory, "/venta")
 
-    assert "Formato: `/venta <total> | <descripción opcional>`" in resp
+    assert "Formato: `/venta <total> | <descripción opcional> | <fecha opcional>`" in resp
     assert "Ejemplo: `/venta 150000 | 3 tortas de chocolate`" in resp
     assert "/registrar_venta" not in resp
     assert _sales(db_session_factory) == []

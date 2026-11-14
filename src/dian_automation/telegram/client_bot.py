@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from dian_automation.branding import BRAND_NAME, BRAND_TAGLINE
 from dian_automation.config import config
-from dian_automation.core import income_service, sales_service
+from dian_automation.core import expense_service, income_service, sales_service
 from dian_automation.db.models import (
     User,
     Business,
@@ -40,11 +40,12 @@ from dian_automation.core.business_profile import (
 from dian_automation.core.calendar_engine import (
     CalendarNotLoadedError,
     TaxCalendarEngine,
+    format_limit_date,
     tax_type_label,
     today_bogota,
 )
 from dian_automation.subscriptions.lockout_service import SubscriptionLockoutService
-from dian_automation.telegram.command_args import split_first
+from dian_automation.telegram.command_args import split_first, split_trailing_date
 
 logger = logging.getLogger("client_bot")
 
@@ -147,6 +148,8 @@ class ClientTelegramBot:
             ingresos = data["ingresos"]
             egresos = data["egresos"]
             utilidad = data["utilidad"]
+            gastos = data.get("gastos", Decimal("0.00"))
+            gastos_count = data.get("gastos_count", 0)
 
             if has_einvoicing(business):
                 # Perfil MIXED (Story 10.4 AC #4)
@@ -160,6 +163,7 @@ class ClientTelegramBot:
                     emitido == Decimal("0.00")
                     and ventas == Decimal("0.00")
                     and egresos == Decimal("0.00")
+                    and gastos == Decimal("0.00")
                 )
 
                 # Facturado y ventas se muestran independientes, sin ingresos totales ni utilidad (Q-10b).
@@ -173,6 +177,7 @@ class ClientTelegramBot:
                     f"↔️ *Facturado − Ventas:* {_format_cop(diferencia)}\n"
                     "───────────────────────────────\n"
                     f"💸 *Egresos:* {_format_cop(egresos)}\n"
+                    f"💸 *Gastos:* {_format_cop(gastos)} ({gastos_count})\n"
                     "───────────────────────────────\n"
                     "ℹ️ _Lo facturado y las ventas se muestran por separado; no se suman. "
                     "Los egresos corresponden al total de tus facturas recibidas._"
@@ -185,13 +190,20 @@ class ClientTelegramBot:
                     "ingresos": ingresos,
                     "egresos": egresos,
                     "utilidad": utilidad,
+                    "gastos": gastos,
+                    "gastos_count": gastos_count,
                     "emitido": emitido,
                     "ventas": ventas,
                     "diferencia": diferencia,
                     "message": message,
                 }
 
-            has_data = not (ingresos == Decimal("0.00") and egresos == Decimal("0.00") and utilidad == Decimal("0.00"))
+            has_data = not (
+                ingresos == Decimal("0.00")
+                and egresos == Decimal("0.00")
+                and utilidad == Decimal("0.00")
+                and gastos == Decimal("0.00")
+            )
 
             message = (
                 f"📊 *Resumen del mes - {business.commercial_name}*\n"
@@ -200,9 +212,10 @@ class ClientTelegramBot:
                 "───────────────────────────────\n"
                 f"💵 *Ingresos:* {_format_cop(ingresos)}\n"
                 f"💸 *Egresos:* {_format_cop(egresos)}\n"
+                f"💸 *Gastos:* {_format_cop(gastos)} ({gastos_count})\n"
                 f"📈 *Utilidad estimada:* {_format_cop(utilidad)}\n"
                 "───────────────────────────────\n"
-                "ℹ️ _Los egresos corresponden al total de tus facturas recibidas._"
+                "ℹ️ _Los egresos corresponden al total de tus facturas recibidas. Los gastos no se restan de la utilidad._"
             )
 
             return {
@@ -212,6 +225,8 @@ class ClientTelegramBot:
                 "ingresos": ingresos,
                 "egresos": egresos,
                 "utilidad": utilidad,
+                "gastos": gastos,
+                "gastos_count": gastos_count,
                 "message": message,
             }
 
@@ -493,21 +508,48 @@ class ClientTelegramBot:
 
     REGISTRAR_VENTA_HELP = (
         "📝 *Registrar venta*\n\n"
-        "Formato: `/venta <total> | <descripción opcional>` (también sirve `,` o `;` en lugar de `|`)\n"
+        "Formato: `/venta <total> | <descripción opcional> | <fecha opcional>` (también sirve `,` o `;` en lugar de `|`)\n"
         "Ejemplo: `/venta 150000 | 3 tortas de chocolate` o `/venta 150000, 3 tortas de chocolate`\n\n"
+        "Puedes poner una fecha de este mes o del mes anterior al final: `/venta 150000 | tortas | 28/10`.\n\n"
+        "El total va sin `$`, sin comas ni puntos de miles y con máximo 2 decimales (punto decimal)."
+    )
+
+    REGISTRAR_GASTO_HELP = (
+        "📝 *Registrar gasto*\n\n"
+        "Formato: `/gasto <total> | <descripción opcional> | <fecha opcional>` (también sirve `,` o `;` en lugar de `|`)\n"
+        "Ejemplo: `/gasto 80000 | arriendo local` o `/gasto 80000, arriendo local`\n\n"
+        "Puedes poner una fecha de este mes o del mes anterior al final: `/gasto 80000 | arriendo local | 28/10`.\n\n"
         "El total va sin `$`, sin comas ni puntos de miles y con máximo 2 decimales (punto decimal)."
     )
 
     @staticmethod
     def parse_registrar_venta_command(text: str) -> Tuple[str, Optional[str]]:
-        """Separa `/venta` o `/registrar_venta <total> [| <descripción>]` en (total crudo, descripción cruda).
+        """Separa `/venta` o `/registrar_venta <total> [| <descripción>] [| <fecha>]` en (total crudo, descripción cruda).
 
-        El primer separador (`|`, `;` o `,`, ver command_args) separa total y descripción; todo lo posterior
-        es descripción. Solo sintaxis:
-        la validación de ambos valores vive en core/sales_service.py.
+        El primer separador (`|`, `;` o `,`) separa total y descripción. Si hay fecha final en el último segmento,
+        se quita de la descripción según AC #1.
         """
-        body = re.sub(r"^\s*/(?:venta|registrar_venta)(?:@\w+)?(?=\s|$)", "", text.strip(), flags=re.IGNORECASE)
-        raw_total, description = split_first(body)
+        body = re.sub(r"^\s*/(?:venta|registrar_venta)(?:@\w+)?(?=\s|$)", "", text.strip(), flags=re.IGNORECASE).strip()
+        try:
+            resto, _ = split_trailing_date(body)
+        except ValueError:
+            resto = body
+        raw_total, description = split_first(resto)
+        return raw_total.strip(), description
+
+    @staticmethod
+    def parse_registrar_gasto_command(text: str) -> Tuple[str, Optional[str]]:
+        """Separa `/gasto <total> [| <descripción>] [| <fecha>]` en (total crudo, descripción cruda).
+
+        El primer separador (`|`, `;` o `,`) separa total y descripción. Si hay fecha final en el último segmento,
+        se quita de la descripción según AC #1.
+        """
+        body = re.sub(r"^\s*/gasto(?:@\w+)?(?=\s|$)", "", text.strip(), flags=re.IGNORECASE).strip()
+        try:
+            resto, _ = split_trailing_date(body)
+        except ValueError:
+            resto = body
+        raw_total, description = split_first(resto)
         return raw_total.strip(), description
 
     @staticmethod
@@ -522,7 +564,18 @@ class ClientTelegramBot:
         if err_code:
             return {"success": False, "reason": err_code, "message": err_msg}
 
-        raw_total, raw_description = cls.parse_registrar_venta_command(text)
+        body = re.sub(r"^\s*/(?:venta|registrar_venta)(?:@\w+)?(?=\s|$)", "", text.strip(), flags=re.IGNORECASE).strip()
+        try:
+            resto, record_date = split_trailing_date(body)
+        except ValueError:
+            return {
+                "success": False,
+                "reason": "INVALID_FORMAT",
+                "message": cls.REGISTRAR_VENTA_HELP,
+            }
+
+        raw_total, raw_description = split_first(resto)
+        raw_total = raw_total.strip()
 
         try:
             sale = sales_service.register_sale(
@@ -532,12 +585,15 @@ class ClientTelegramBot:
                 total=raw_total,
                 description=raw_description,
                 recorded_via=sales_service.RECORDED_VIA_TELEGRAM,
+                record_date=record_date,
             )
         except sales_service.SalesError as exc:
             if exc.code == sales_service.SalesError.BUSINESS_BLOCKED:
                 message = SubscriptionLockoutService.BLOCKED_TELEGRAM_MESSAGE
             elif exc.code == sales_service.SalesError.NOT_MANUAL_SALES:
                 message = f"ℹ️ {exc.message}"
+            elif exc.code == sales_service.SalesError.DATE_OUT_OF_RANGE:
+                message = f"❌ {exc.message}"
             elif exc.code in (
                 sales_service.SalesError.NON_POSITIVE_TOTAL,
                 sales_service.SalesError.DESCRIPTION_TOO_LONG,
@@ -549,10 +605,81 @@ class ClientTelegramBot:
 
         amount = sale.total_amount
         amount_str = f"${amount:,.2f}" if amount % 1 else f"${amount:,.0f}"
-        message = f"✅ Venta registrada: {amount_str} COP"
-        if sale.description:
-            message += f" — {cls._escape_markdown(sale.description)}"
+        today_date = today_bogota()
+        if sale.sale_date != today_date:
+            date_str = format_limit_date(sale.sale_date)
+            if sale.description:
+                message = f"✅ Venta registrada: {amount_str} COP — {cls._escape_markdown(sale.description)} ({date_str})"
+            else:
+                message = f"✅ Venta registrada: {amount_str} COP ({date_str})"
+        else:
+            message = f"✅ Venta registrada: {amount_str} COP"
+            if sale.description:
+                message += f" — {cls._escape_markdown(sale.description)}"
+
         return {"success": True, "sale_id": sale.id, "message": message}
+
+    @classmethod
+    def handle_registrar_gasto(cls, sender_chat_id: int, db: Session, text: str) -> Dict[str, Any]:
+        """Procesa /gasto: guardia de cliente, luego servicio compartido de gastos (Story 11.2)."""
+        user, business, err_code, err_msg = cls.get_authenticated_client(sender_chat_id, db)
+        if err_code:
+            return {"success": False, "reason": err_code, "message": err_msg}
+
+        body = re.sub(r"^\s*/gasto(?:@\w+)?(?=\s|$)", "", text.strip(), flags=re.IGNORECASE).strip()
+        try:
+            resto, record_date = split_trailing_date(body)
+        except ValueError:
+            return {
+                "success": False,
+                "reason": "INVALID_FORMAT",
+                "message": cls.REGISTRAR_GASTO_HELP,
+            }
+
+        raw_total, raw_description = split_first(resto)
+        raw_total = raw_total.strip()
+
+        try:
+            expense = expense_service.register_expense(
+                db,
+                user=user,
+                business=business,
+                total=raw_total,
+                description=raw_description,
+                recorded_via=expense_service.RECORDED_VIA_TELEGRAM,
+                record_date=record_date,
+            )
+        except expense_service.ExpenseError as exc:
+            if exc.code == expense_service.ExpenseError.BUSINESS_BLOCKED:
+                message = SubscriptionLockoutService.BLOCKED_TELEGRAM_MESSAGE
+            elif exc.code == expense_service.ExpenseError.NOT_MANUAL_SALES:
+                message = f"ℹ️ {exc.message}"
+            elif exc.code == expense_service.ExpenseError.DATE_OUT_OF_RANGE:
+                message = f"❌ {exc.message}"
+            elif exc.code in (
+                expense_service.ExpenseError.NON_POSITIVE_TOTAL,
+                expense_service.ExpenseError.DESCRIPTION_TOO_LONG,
+            ):
+                message = f"❌ {exc.message}\n\n{cls.REGISTRAR_GASTO_HELP}"
+            else:
+                message = cls.REGISTRAR_GASTO_HELP
+            return {"success": False, "reason": exc.code, "message": message}
+
+        amount = expense.total_amount
+        amount_str = f"${amount:,.2f}" if amount % 1 else f"${amount:,.0f}"
+        today_date = today_bogota()
+        if expense.expense_date != today_date:
+            date_str = format_limit_date(expense.expense_date)
+            if expense.description:
+                message = f"✅ Gasto registrado: {amount_str} COP — {cls._escape_markdown(expense.description)} ({date_str})"
+            else:
+                message = f"✅ Gasto registrado: {amount_str} COP ({date_str})"
+        else:
+            message = f"✅ Gasto registrado: {amount_str} COP"
+            if expense.description:
+                message += f" — {cls._escape_markdown(expense.description)}"
+
+        return {"success": True, "expense_id": expense.id, "message": message}
 
     @classmethod
     def handle_mis_ventas(cls, sender_chat_id: int, db: Session) -> Dict[str, Any]:
@@ -676,6 +803,127 @@ class ClientTelegramBot:
         }
 
     @classmethod
+    def handle_mis_gastos(cls, sender_chat_id: int, db: Session) -> Dict[str, Any]:
+        """Procesa /mis_gastos: lista hasta 10 gastos recientes no anulados del negocio."""
+        user, business, err_code, err_msg = cls.get_authenticated_client(sender_chat_id, db)
+        if err_code:
+            return {"success": False, "reason": err_code, "message": err_msg}
+
+        if not has_manual_sales(business):
+            return {
+                "success": False,
+                "reason": "NOT_MANUAL_SALES",
+                "message": "ℹ️ Tu perfil no registra gastos.",
+            }
+
+        numbered_expenses = expense_service.list_recent_expenses_numbered(db, business, 10)
+        if not numbered_expenses:
+            return {
+                "success": True,
+                "count": 0,
+                "message": "ℹ️ Aún no tienes gastos registrados.",
+            }
+
+        lines = ["💸 *Tus últimos gastos*", ""]
+        for num, expense in numbered_expenses:
+            date_str = expense.expense_date.strftime("%d/%m/%Y")
+            amount_str = _format_cop(expense.total_amount)
+            if expense.description:
+                desc = cls._escape_markdown(expense.description)
+                lines.append(f"{num}. {date_str} — {amount_str} — {desc}")
+            else:
+                lines.append(f"{num}. {date_str} — {amount_str}")
+
+        first_num = numbered_expenses[0][0]
+        lines.append("")
+        lines.append(f"Para anular uno: `/anular_gasto {first_num}` (el número de cada gasto no cambia).")
+
+        return {
+            "success": True,
+            "count": len(numbered_expenses),
+            "message": "\n".join(lines),
+        }
+
+    @staticmethod
+    def parse_anular_gasto_command(text: str) -> Optional[int]:
+        """Quita /anular_gasto (con @bot opcional) y devuelve el entero positivo o None."""
+        if not re.match(r"^\s*/anular_gasto(?:@\w+)?(?:\s|$)", text.strip(), flags=re.IGNORECASE):
+            return None
+        body = re.sub(r"^\s*/anular_gasto(?:@\w+)?", "", text.strip(), flags=re.IGNORECASE)
+        cleaned = body.strip()
+        if not cleaned or not cleaned.isdigit():
+            return None
+        val = int(cleaned)
+        return val if val > 0 else None
+
+    @classmethod
+    def handle_anular_gasto(
+        cls, sender_chat_id: int, db: Session, text: str
+    ) -> Dict[str, Any]:
+        """Procesa /anular_gasto N: anula el gasto según su número estable."""
+        user, business, err_code, err_msg = cls.get_authenticated_client(sender_chat_id, db)
+        if err_code:
+            return {"success": False, "reason": err_code, "message": err_msg}
+
+        if not has_manual_sales(business):
+            return {
+                "success": False,
+                "reason": "NOT_MANUAL_SALES",
+                "message": "ℹ️ Tu perfil no registra gastos.",
+            }
+
+        num = cls.parse_anular_gasto_command(text)
+        if num is None:
+            return {
+                "success": False,
+                "reason": "INVALID_NUMBER",
+                "message": (
+                    "❌ Indica el número del gasto a anular, por ejemplo `/anular_gasto 2`. "
+                    "Mira tu lista con /mis_gastos."
+                ),
+            }
+
+        expense = expense_service.find_recent_expense_by_number(db, business, num, 10)
+        if expense is None:
+            return {
+                "success": False,
+                "reason": "NUMBER_OUT_OF_RANGE",
+                "message": "❌ Ese número no está en tu lista actual (o el gasto ya está anulado). Usa /mis_gastos para ver los gastos que puedes anular.",
+            }
+
+        try:
+            voided = expense_service.void_expense(
+                db, user=user, business=business, expense_id=expense.id
+            )
+        except expense_service.ExpenseError as exc:
+            if exc.code == expense_service.ExpenseError.BUSINESS_BLOCKED:
+                message = SubscriptionLockoutService.BLOCKED_TELEGRAM_MESSAGE
+            elif exc.code == expense_service.ExpenseError.NOT_MANUAL_SALES:
+                message = f"ℹ️ {exc.message}"
+            elif exc.code in (
+                expense_service.ExpenseError.EXPENSE_NOT_FOUND,
+                expense_service.ExpenseError.ALREADY_VOIDED,
+            ):
+                message = f"❌ {exc.message} Usa /mis_gastos para ver tu lista actual."
+            else:
+                message = f"❌ {exc.message}"
+            return {"success": False, "reason": exc.code, "message": message}
+
+        date_str = voided.expense_date.strftime("%d/%m/%Y")
+        amount_str = _format_cop(voided.total_amount)
+        if voided.description:
+            desc_escaped = cls._escape_markdown(voided.description)
+            msg = f"🗑️ Gasto anulado: {amount_str} — {desc_escaped} ({date_str})"
+        else:
+            msg = f"🗑️ Gasto anulado: {amount_str} ({date_str})"
+
+        return {
+            "success": True,
+            "expense_id": voided.id,
+            "message": msg,
+        }
+
+    @classmethod
     def handle_help(cls, sender_chat_id: int, db: Session) -> str:
         """Devuelve el menú de ayuda y bienvenida para el cliente."""
         user, business, err_code, err_msg = cls.get_authenticated_client(sender_chat_id, db)
@@ -695,7 +943,11 @@ class ClientTelegramBot:
                 "📝 */venta* — Registra una venta: `/venta 150000 | descripción opcional`.\n"
                 "🧾 */mis_ventas* — Tus últimas 10 ventas, cada una con su número para anular.\n"
                 "🗑️ */anular_venta* — Anula una venta mal registrada: `/anular_venta 2`.\n"
+                "💸 */gasto* — Registra un gasto: `/gasto 80000 | descripción opcional`.\n"
+                "🧾 */mis_gastos* — Tus últimos 10 gastos, cada uno con su número para anular.\n"
+                "🗑️ */anular_gasto* — Anula un gasto mal registrado: `/anular_gasto 2`.\n"
                 "ℹ️ */ayuda* — Muestra este menú de opciones.\n\n"
+                "💡 _Puedes poner una fecha de este mes o del mes anterior al final: `/venta 150000 | tortas | 28/10`._\n\n"
                 "🔒 _Tus cifras de ingresos se basan en las ventas registradas por el cliente y los egresos en tus facturas electrónicas recibidas._"
             )
 
@@ -712,8 +964,12 @@ class ClientTelegramBot:
                 "📝 */venta* — Registra una venta sin factura: `/venta 150000 | descripción opcional`.\n"
                 "🧾 */mis_ventas* — Tus últimas 10 ventas, cada una con su número para anular.\n"
                 "🗑️ */anular_venta* — Anula una venta mal registrada: `/anular_venta 2`.\n"
+                "💸 */gasto* — Registra un gasto: `/gasto 80000 | descripción opcional`.\n"
+                "🧾 */mis_gastos* — Tus últimos 10 gastos, cada uno con su número para anular.\n"
+                "🗑️ */anular_gasto* — Anula un gasto mal registrado: `/anular_gasto 2`.\n"
                 "📱 */dashboard* — Enlace a tu panel web/móvil con gráficos e historial completo.\n"
                 "ℹ️ */ayuda* — Muestra este menú de opciones.\n\n"
+                "💡 _Puedes poner una fecha de este mes o del mes anterior al final: `/venta 150000 | tortas | 28/10`._\n\n"
                 "🔒 _Tus facturas provienen de la DIAN; tus ventas, de lo que registras aquí o en la web._"
             )
 
@@ -772,6 +1028,18 @@ class ClientTelegramBot:
             res = cls.handle_anular_venta(sender_chat_id, db, text)
             return res["message"]
 
+        elif re.match(r"^\s*/gasto(?:@\w+)?(?=\s|$)", text_clean):
+            res = cls.handle_registrar_gasto(sender_chat_id, db, text)
+            return res["message"]
+
+        elif re.match(r"^/mis_gastos(?:@\w+)?(?:\s|$)", text_clean):
+            res = cls.handle_mis_gastos(sender_chat_id, db)
+            return res["message"]
+
+        elif re.match(r"^/anular_gasto(?:@\w+)?(?:\s|$)", text_clean):
+            res = cls.handle_anular_gasto(sender_chat_id, db, text)
+            return res["message"]
+
         elif text_clean.startswith("/ayuda") or text_clean.startswith("/help") or text_clean == "/start":
             return cls.handle_help(sender_chat_id, db)
 
@@ -784,6 +1052,9 @@ class ClientTelegramBot:
                 "• /venta — Registra una venta (total y descripción opcional)\n"
                 "• /mis_ventas — Tus últimas 10 ventas\n"
                 "• /anular_venta — Anula una venta mal registrada\n"
+                "• /gasto — Registra un gasto (total y descripción opcional)\n"
+                "• /mis_gastos — Tus últimos 10 gastos\n"
+                "• /anular_gasto — Anula un gasto mal registrado\n"
                 "• /ayuda — Menú de ayuda"
             )
 
