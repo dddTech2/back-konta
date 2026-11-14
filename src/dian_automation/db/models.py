@@ -466,6 +466,30 @@ class Sale(Base):
     )
 
 
+class Expense(Base):
+    """Gasto declarado por el cliente (total y descripción opcional), desde Telegram o Web (Story 11.1)."""
+
+    __tablename__ = "expenses"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    business_id = Column(String(36), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False)
+    total_amount = Column(Numeric(14, 2), nullable=False)
+    description = Column(String(500), nullable=True)
+    recorded_via = Column(String(20), nullable=False)  # TELEGRAM, WEB
+    recorded_by_user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
+    expense_date = Column(Date, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    # La anulación conserva la fila para auditoría (Story 6.5, 11.1)
+    voided_at = Column(DateTime, nullable=True)
+    voided_by_user_id = Column(String(36), ForeignKey("users.id"), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("total_amount > 0", name="ck_expenses_total_positive"),
+        Index("idx_expenses_business_created", "business_id", "created_at"),
+        Index("idx_expenses_business_expense_date", "business_id", "expense_date"),
+    )
+
+
 # Tipos de documentos de clientes (Story 7.4a)
 DOC_TYPE_RUT = "RUT"
 DOC_TYPE_CAMARA_COMERCIO = "CAMARA_COMERCIO"

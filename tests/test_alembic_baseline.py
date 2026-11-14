@@ -32,7 +32,7 @@ BASELINE_TABLES = {
     "payment_records",
     "dian_tax_calendar",
 }
-EXPECTED_TABLES = BASELINE_TABLES | {"sales", "otp_codes", "worker_heartbeats", "business_documents", "tax_deadline_alerts", "pricing_plans", "pricing_rates", "billing_settings", "subscription_price_changes", "revenue_split_settings"}  # esquema en head: base + revisiones posteriores
+EXPECTED_TABLES = BASELINE_TABLES | {"sales", "otp_codes", "worker_heartbeats", "business_documents", "tax_deadline_alerts", "pricing_plans", "pricing_rates", "billing_settings", "subscription_price_changes", "revenue_split_settings", "expenses"}  # esquema en head: base + revisiones posteriores
 
 
 @pytest.fixture

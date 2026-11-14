@@ -6,7 +6,7 @@ autenticado; el canal de origen se distingue con `recorded_via`.
 """
 
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import List, Optional, Tuple, Union
 from zoneinfo import ZoneInfo
@@ -50,11 +50,99 @@ class SalesError(Exception):
     NOT_MANUAL_SALES = "NOT_MANUAL_SALES"
     SALE_NOT_FOUND = "SALE_NOT_FOUND"
     ALREADY_VOIDED = "ALREADY_VOIDED"
+    DATE_OUT_OF_RANGE = "DATE_OUT_OF_RANGE"
+    INVALID_DATE = "INVALID_DATE"
 
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+_SPANISH_MONTH_NAMES = {
+    1: "enero",
+    2: "febrero",
+    3: "marzo",
+    4: "abril",
+    5: "mayo",
+    6: "junio",
+    7: "julio",
+    8: "agosto",
+    9: "septiembre",
+    10: "octubre",
+    11: "noviembre",
+    12: "diciembre",
+}
+
+_DATE_ISO_PATTERN = re.compile(r"^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$")
+
+
+def resolve_record_date(raw: Union[date, str, None], now: Optional[datetime] = None) -> date:
+    """Resuelve y valida la fecha de registro para ventas o gastos (Story 11.1).
+
+    - None: devuelve la fecha actual en hora de Bogotá.
+    - date: se valida contra el rango permitido.
+    - str: debe tener formato ISO 'AAAA-MM-DD'. Si el formato no es válido o la fecha
+      no existe (ej. 2026-02-30), lanza SalesError(INVALID_DATE).
+    - Rango permitido: entre el día 1 del mes anterior y hoy (en hora de Bogotá), ambos incluidos.
+      Fuera del rango (incluyendo fechas futuras): lanza SalesError(DATE_OUT_OF_RANGE).
+    """
+    if now is None:
+        now = datetime.utcnow()
+
+    if now.tzinfo is None:
+        bogota_dt = now.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("America/Bogota"))
+    else:
+        bogota_dt = now.astimezone(ZoneInfo("America/Bogota"))
+    today_bogota = bogota_dt.date()
+
+    if raw is None:
+        return today_bogota
+
+    target_date: date
+    if isinstance(raw, datetime):
+        target_date = raw.date()
+    elif isinstance(raw, date):
+        target_date = raw
+    elif isinstance(raw, str):
+        text = raw.strip()
+        if not _DATE_ISO_PATTERN.fullmatch(text):
+            raise SalesError(
+                SalesError.INVALID_DATE,
+                "Formato de fecha inválido. Se espera AAAA-MM-DD.",
+            )
+        try:
+            target_date = date.fromisoformat(text)
+        except ValueError:
+            raise SalesError(
+                SalesError.INVALID_DATE,
+                "Formato de fecha inválido. Se espera AAAA-MM-DD.",
+            )
+    else:
+        raise SalesError(
+            SalesError.INVALID_DATE,
+            "Formato de fecha inválido. Se espera AAAA-MM-DD.",
+        )
+
+    # Cálculo del día 1 del mes anterior
+    if today_bogota.month == 1:
+        min_year = today_bogota.year - 1
+        min_month = 12
+    else:
+        min_year = today_bogota.year
+        min_month = today_bogota.month - 1
+
+    min_date = date(min_year, min_month, 1)
+    max_date = today_bogota
+
+    if target_date < min_date or target_date > max_date:
+        mes_nombre = _SPANISH_MONTH_NAMES[min_month]
+        raise SalesError(
+            SalesError.DATE_OUT_OF_RANGE,
+            f"Solo puedes registrar con fecha de este mes o del mes anterior (desde el 1 de {mes_nombre} de {min_year}).",
+        )
+
+    return target_date
 
 
 def parse_total(raw_total: Union[str, int, Decimal, None]) -> Decimal:
@@ -100,6 +188,7 @@ def register_sale(
     total: Union[str, int, Decimal, None],
     description: Optional[str] = None,
     recorded_via: str,
+    record_date: Optional[Union[date, str]] = None,
     now: Optional[datetime] = None,
 ) -> Sale:
     """Valida y persiste una venta del cliente autenticado.
@@ -126,7 +215,7 @@ def register_sale(
     if now is None:
         now = datetime.utcnow()
 
-    sale_date = now.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("America/Bogota")).date()
+    sale_date = resolve_record_date(record_date, now=now)
 
     sale = Sale(
         business_id=business.id,

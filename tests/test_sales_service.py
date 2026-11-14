@@ -16,6 +16,7 @@ from dian_automation.core.sales_service import (
     list_recent_sales,
     list_recent_sales_numbered,
     register_sale,
+    resolve_record_date,
     void_sale,
 )
 from dian_automation.db.models import (
@@ -715,4 +716,80 @@ def test_find_recent_sale_by_number(db):
     found_other = find_recent_sale_by_number(db, biz_other, 1, limit=10)
     assert found_other is not None
     assert found_other.id == "sale-find-other"
+
+
+# ==============================================================================
+# Story 11.1: Pruebas de la Regla de Fecha (resolve_record_date) y record_date
+# ==============================================================================
+
+
+def test_resolve_record_date_none_returns_today_bogota():
+    fixed_now = datetime(2026, 11, 14, 15, 0, 0)  # 10:00 en Bogotá
+    resolved = resolve_record_date(None, now=fixed_now)
+    assert resolved == date(2026, 11, 14)
+
+
+def test_resolve_record_date_day_one_previous_month_accepted():
+    fixed_now = datetime(2026, 11, 14, 15, 0, 0)
+    # Día 1 del mes anterior (octubre 2026)
+    assert resolve_record_date(date(2026, 10, 1), now=fixed_now) == date(2026, 10, 1)
+    assert resolve_record_date("2026-10-01", now=fixed_now) == date(2026, 10, 1)
+    # Hoy en Bogotá
+    assert resolve_record_date(date(2026, 11, 14), now=fixed_now) == date(2026, 11, 14)
+    assert resolve_record_date("2026-11-14", now=fixed_now) == date(2026, 11, 14)
+
+
+def test_resolve_record_date_last_day_two_months_ago_rejected():
+    fixed_now = datetime(2026, 11, 14, 15, 0, 0)
+    # 30 de septiembre de 2026 (hace dos meses)
+    with pytest.raises(SalesError) as exc:
+        resolve_record_date(date(2026, 9, 30), now=fixed_now)
+    assert exc.value.code == SalesError.DATE_OUT_OF_RANGE
+    assert exc.value.message == "Solo puedes registrar con fecha de este mes o del mes anterior (desde el 1 de octubre de 2026)."
+
+    with pytest.raises(SalesError) as exc2:
+        resolve_record_date("2026-09-30", now=fixed_now)
+    assert exc2.value.code == SalesError.DATE_OUT_OF_RANGE
+
+
+def test_resolve_record_date_tomorrow_rejected():
+    fixed_now = datetime(2026, 11, 14, 15, 0, 0)
+    # 15 de noviembre de 2026 (mañana)
+    with pytest.raises(SalesError) as exc:
+        resolve_record_date(date(2026, 11, 15), now=fixed_now)
+    assert exc.value.code == SalesError.DATE_OUT_OF_RANGE
+    assert exc.value.message == "Solo puedes registrar con fecha de este mes o del mes anterior (desde el 1 de octubre de 2026)."
+
+
+def test_resolve_record_date_year_boundary_december_january():
+    fixed_now = datetime(2027, 1, 3, 15, 0, 0)  # 3 de enero de 2027 en Bogotá
+    # Día 1 del mes anterior (1 dic 2026) aceptado
+    assert resolve_record_date(date(2026, 12, 1), now=fixed_now) == date(2026, 12, 1)
+    assert resolve_record_date(date(2027, 1, 3), now=fixed_now) == date(2027, 1, 3)
+
+    # 30 nov 2026 (dos meses atrás) rechazado
+    with pytest.raises(SalesError) as exc:
+        resolve_record_date(date(2026, 11, 30), now=fixed_now)
+    assert exc.value.code == SalesError.DATE_OUT_OF_RANGE
+    assert exc.value.message == "Solo puedes registrar con fecha de este mes o del mes anterior (desde el 1 de diciembre de 2026)."
+
+    # 4 ene 2027 (mañana) rechazado
+    with pytest.raises(SalesError) as exc2:
+        resolve_record_date(date(2027, 1, 4), now=fixed_now)
+    assert exc2.value.code == SalesError.DATE_OUT_OF_RANGE
+
+
+@pytest.mark.parametrize("invalid", ["2026-13-01", "abc", "2026-02-30", "2026/10/15", "14-11-2026", 12345, True, []])
+def test_resolve_record_date_invalid_format_raises_invalid_date(invalid):
+    with pytest.raises(SalesError) as exc:
+        resolve_record_date(invalid)
+    assert exc.value.code == SalesError.INVALID_DATE
+
+
+def test_register_sale_with_record_date_persists_exact_date(db):
+    fixed_now = datetime(2026, 11, 14, 15, 0, 0)
+    sale = _register(db, total="200000", record_date="2026-10-20", now=fixed_now)
+    assert sale.sale_date == date(2026, 10, 20)
+    assert sale.total_amount == Decimal("200000.00")
+
 

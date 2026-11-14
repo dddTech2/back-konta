@@ -77,10 +77,11 @@ def test_valid_sale_returns_201_and_persists_as_web(client, seeded):
 
     assert response.status_code == 201
     body = response.json()
-    assert set(body) == {"id", "total_amount", "description", "recorded_via", "created_at"}
+    assert set(body) == {"id", "total_amount", "description", "recorded_via", "sale_date", "created_at"}
     assert body["total_amount"] == "150000.00"  # cadena Decimal, nunca float
     assert body["description"] == "3 tortas"
     assert body["recorded_via"] == "WEB"
+    assert body["sale_date"]
     assert body["created_at"]
 
     sale = seeded.query(Sale).one()
@@ -214,7 +215,7 @@ def test_late_block_detected_by_the_service_is_403(client, seeded, monkeypatch):
 def test_router_delegates_to_service_with_web_channel_and_jwt_user(client, seeded, monkeypatch):
     fake_sale = SimpleNamespace(
         id="sale-1", total_amount=Decimal("150000.00"), description="3 tortas",
-        recorded_via="WEB", created_at=datetime(2026, 9, 18, 10, 0),
+        recorded_via="WEB", sale_date=date(2026, 9, 18), created_at=datetime(2026, 9, 18, 10, 0),
     )
     register = MagicMock(return_value=fake_sale)
     monkeypatch.setattr(routes_sales.sales_service, "register_sale", register)
@@ -229,6 +230,7 @@ def test_router_delegates_to_service_with_web_channel_and_jwt_user(client, seede
     assert kwargs["business"].id == "biz-ana"
     assert kwargs["total"] == Decimal("150000.00")
     assert kwargs["description"] == "3 tortas"
+    assert kwargs["record_date"] is None
     assert _rows(seeded) == 0  # el router no persiste por su cuenta
 
 
@@ -526,4 +528,56 @@ def test_get_sales_list_without_month_defaults_to_current_bogota_month(client, s
     assert response.status_code == 200
     expected_month = datetime.now(ZoneInfo("America/Bogota")).strftime("%Y-%m")
     assert response.json()["month"] == expected_month
+
+
+# ==============================================================================
+# Story 11.1: Pruebas de sale_date en POST /api/sales/{business_id}
+# ==============================================================================
+
+
+def test_post_sale_with_previous_month_date_appears_in_month_and_summary(client, seeded):
+    today = datetime.now(ZoneInfo("America/Bogota")).date()
+    prev_year = today.year - 1 if today.month == 1 else today.year
+    prev_month = 12 if today.month == 1 else today.month - 1
+    prev_date = date(prev_year, prev_month, 1)
+    prev_month_str = f"{prev_year:04d}-{prev_month:02d}"
+
+    response = client.post(
+        "/api/sales/biz-ana",
+        json={"total_amount": "80000.00", "description": "Venta mes pasado", "sale_date": prev_date.isoformat()},
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["sale_date"] == prev_date.isoformat()
+    assert body["total_amount"] == "80000.00"
+
+    # Aparece en el listado de ventas del mes anterior
+    list_res = client.get(f"/api/sales/biz-ana?month={prev_month_str}")
+    assert list_res.status_code == 200
+    sales_in_month = list_res.json()["sales"]
+    assert any(s["id"] == body["id"] for s in sales_in_month)
+
+    # Aparece en el resumen de ingresos del mes anterior
+    summary_res = client.get(f"/api/income-summary/biz-ana?month={prev_month_str}")
+    assert summary_res.status_code == 200
+    assert Decimal(summary_res.json()["ventas"]) >= Decimal("80000.00")
+
+
+def test_post_sale_with_sale_date_out_of_range_returns_422(client, seeded):
+    response = client.post(
+        "/api/sales/biz-ana",
+        json={"total_amount": "50000.00", "sale_date": "2020-01-01"},
+    )
+    assert response.status_code == 422
+    assert "Solo puedes registrar con fecha de este mes o del mes anterior" in response.json()["detail"]
+
+
+def test_post_sale_with_invalid_date_format_returns_422(client, seeded):
+    response = client.post(
+        "/api/sales/biz-ana",
+        json={"total_amount": "50000.00", "sale_date": "fecha-invalida"},
+    )
+    assert response.status_code == 422
+    assert "Formato de fecha inválido" in response.json()["detail"]
+
 

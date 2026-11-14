@@ -16,8 +16,10 @@ from dian_automation.core import income_service
 from dian_automation.db.database import Base, get_db
 from dian_automation.db.models import (
     Business,
+    Expense,
     INCOME_SOURCE_DIAN,
     INCOME_SOURCE_MANUAL_SALES,
+    INCOME_SOURCE_MIXED,
     Invoice,
     Sale,
     Subscription,
@@ -311,3 +313,80 @@ def test_income_summary_delegates_to_income_service_without_own_calculation(clie
     assert len(body["historial"]) == 6
     assert body["historial"][0]["ingresos"] == "100.00"
     assert body["historial"][-1]["utilidad"] == "540.00"
+
+
+# ==============================================================================
+# Story 11.1: Gastos en GET /api/income-summary/{business_id}
+# ==============================================================================
+
+
+def test_income_summary_route_includes_gastos_and_gastos_count(client, seeded):
+    expense1 = Expense(
+        id="exp-route-1", business_id="biz-ana", total_amount=Decimal("120000.00"),
+        description="Materiales", recorded_via="WEB", recorded_by_user_id="usr-ana",
+        expense_date=date(2026, 5, 8), created_at=datetime(2026, 5, 8, 10, 0),
+    )
+    expense2 = Expense(
+        id="exp-route-2", business_id="biz-ana", total_amount=Decimal("35000.00"),
+        description="Flete", recorded_via="WEB", recorded_by_user_id="usr-ana",
+        expense_date=date(2026, 5, 14), created_at=datetime(2026, 5, 14, 11, 0),
+    )
+    # Gasto anulado no debe sumar
+    expense_voided = Expense(
+        id="exp-route-voided", business_id="biz-ana", total_amount=Decimal("90000.00"),
+        description="Anulado", recorded_via="WEB", recorded_by_user_id="usr-ana",
+        expense_date=date(2026, 5, 12), created_at=datetime(2026, 5, 12, 10, 0),
+        voided_at=datetime(2026, 5, 12, 12, 0), voided_by_user_id="usr-ana",
+    )
+    seeded.add_all([expense1, expense2, expense_voided])
+    seeded.commit()
+
+    response = client.get("/api/income-summary/biz-ana?month=2026-05")
+    assert response.status_code == 200
+
+    data = response.json()
+    assert data["gastos"] == "155000.00"
+    assert data["gastos_count"] == 2
+    assert isinstance(data["historial"], list)
+    for h in data["historial"]:
+        assert "gastos" in h
+
+
+def test_income_summary_expenses_do_not_alter_ingresos_egresos_utilidad(client, seeded):
+    sale = Sale(
+        business_id="biz-ana", total_amount=Decimal("300000.00"),
+        recorded_via="WEB", recorded_by_user_id="usr-ana",
+        sale_date=date(2026, 5, 10), created_at=datetime(2026, 5, 10, 10, 0),
+    )
+    invoice = Invoice(
+        id=str(uuid.uuid4()), business_id="biz-ana", cufe=str(uuid.uuid4()),
+        document_type="Factura electrónica de venta", group_type="Recibido",
+        issue_date=datetime(2026, 5, 12, 10, 0), issuer_nit="800111222",
+        issuer_name="Proveedor A", receiver_nit="901111111", receiver_name="Empresa ana SAS",
+        total=Decimal("100000.00"), iva=Decimal("19000.00"),
+    )
+    seeded.add_all([sale, invoice])
+    seeded.commit()
+
+    before = client.get("/api/income-summary/biz-ana?month=2026-05").json()
+
+    # Agregar gasto
+    expense = Expense(
+        id="exp-neutral-1", business_id="biz-ana", total_amount=Decimal("50000.00"),
+        description="Gasto neutro", recorded_via="WEB", recorded_by_user_id="usr-ana",
+        expense_date=date(2026, 5, 15), created_at=datetime(2026, 5, 15, 10, 0),
+    )
+    seeded.add(expense)
+    seeded.commit()
+
+    after = client.get("/api/income-summary/biz-ana?month=2026-05").json()
+
+    assert after["gastos"] == "50000.00"
+    assert after["gastos_count"] == 1
+    assert after["ingresos"] == before["ingresos"]
+    assert after["egresos"] == before["egresos"]
+    assert after["utilidad"] == before["utilidad"]
+    assert after["emitido"] == before["emitido"]
+    assert after["ventas"] == before["ventas"]
+    assert after["diferencia"] == before["diferencia"]
+

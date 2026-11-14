@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 from dian_automation.core.income_service import IncomeError, history, summary
 from dian_automation.core.sales_service import RECORDED_VIA_TELEGRAM, register_sale
-from dian_automation.db.models import Base, Business, INCOME_SOURCE_MANUAL_SALES, Invoice, Sale, User
+from dian_automation.db.models import Base, Business, Expense, INCOME_SOURCE_MANUAL_SALES, Invoice, Sale, User
 
 
 @pytest.fixture
@@ -466,3 +466,95 @@ def test_mixed_history_includes_emitted_and_sales(db, mixed):
         ("2026-10", Decimal("999999.00"), Decimal("0.00")),
     ]
     assert all(h["ingresos"] is None and h["utilidad"] is None for h in hist)
+
+
+# ==============================================================================
+# Story 11.1: Gastos en el resumen y su neutralidad sobre ingresos y egresos
+# ==============================================================================
+
+
+def _create_expense(
+    db, business, total: Decimal, expense_date: date, user_id: str = "usr-a", voided_at: datetime = None
+) -> Expense:
+    expense = Expense(
+        business_id=business.id,
+        total_amount=total,
+        recorded_via="WEB",
+        recorded_by_user_id=user_id,
+        expense_date=expense_date,
+        created_at=datetime.utcnow(),
+        voided_at=voided_at,
+    )
+    db.add(expense)
+    db.commit()
+    return expense
+
+
+def test_summary_includes_gastos_and_gastos_count(db, business_a):
+    _create_sale(db, business_a, Decimal("200000.00"), date(2026, 7, 10))
+    _create_expense(db, business_a, Decimal("50000.00"), date(2026, 7, 5))
+    _create_expense(db, business_a, Decimal("30000.00"), date(2026, 7, 20))
+    # Gasto en otro mes no suma
+    _create_expense(db, business_a, Decimal("10000.00"), date(2026, 8, 1))
+    # Gasto anulado no suma
+    _create_expense(
+        db, business_a, Decimal("40000.00"), date(2026, 7, 15),
+        voided_at=datetime(2026, 7, 16, 10, 0, 0),
+    )
+
+    res = summary(db, business_a, "2026-07")
+    assert res["gastos"] == Decimal("80000.00")
+    assert res["gastos_count"] == 2
+
+
+def test_gastos_do_not_alter_ingresos_egresos_utilidad_emitido_ventas_diferencia(db, business_a):
+    _create_sale(db, business_a, Decimal("500000.00"), date(2026, 7, 10))
+    _create_invoice(db, business_a, Decimal("150000.00"), datetime(2026, 7, 12, 10, 0))
+
+    before = summary(db, business_a, "2026-07")
+    assert before["gastos"] == Decimal("0.00")
+    assert before["gastos_count"] == 0
+
+    # Agregar gastos no anulados
+    _create_expense(db, business_a, Decimal("80000.00"), date(2026, 7, 15))
+    _create_expense(db, business_a, Decimal("45000.00"), date(2026, 7, 20))
+
+    after = summary(db, business_a, "2026-07")
+    assert after["gastos"] == Decimal("125000.00")
+    assert after["gastos_count"] == 2
+
+    # Invariabilidad estricta de las métricas clave
+    assert after["ingresos"] == before["ingresos"]
+    assert after["egresos"] == before["egresos"]
+    assert after["utilidad"] == before["utilidad"]
+    assert after["emitido"] == before["emitido"]
+    assert after["ventas"] == before["ventas"]
+    assert after["diferencia"] == before["diferencia"]
+
+
+def test_gastos_in_mixed_profile_are_reported_without_altering_metrics(db, mixed):
+    before = summary(db, mixed, "2026-09")
+    _create_expense(db, mixed, Decimal("70000.00"), date(2026, 9, 10), user_id="usr-m")
+
+    after = summary(db, mixed, "2026-09")
+    assert after["gastos"] == Decimal("70000.00")
+    assert after["gastos_count"] == 1
+    assert after["ingresos"] is None
+    assert after["utilidad"] is None
+    assert after["emitido"] == before["emitido"]
+    assert after["ventas"] == before["ventas"]
+    assert after["egresos"] == before["egresos"]
+    assert after["diferencia"] == before["diferencia"]
+
+
+def test_history_includes_gastos_in_all_items(db, business_a):
+    _create_expense(db, business_a, Decimal("25000.00"), date(2026, 6, 15))
+    _create_expense(db, business_a, Decimal("35000.00"), date(2026, 7, 20))
+
+    hist = history(db, business_a, "2026-07", months=2)
+    assert len(hist) == 2
+    assert hist[0]["month"] == "2026-06"
+    assert hist[0]["gastos"] == Decimal("25000.00")
+    assert hist[1]["month"] == "2026-07"
+    assert hist[1]["gastos"] == Decimal("35000.00")
+

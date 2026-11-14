@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Union
 from sqlalchemy.orm import Session
 
 from dian_automation.core.business_profile import has_einvoicing, has_manual_sales
-from dian_automation.db.models import Business, Invoice, Sale
+from dian_automation.db.models import Business, Expense, Invoice, Sale
 from dian_automation.extraction.xlsx_parser import is_credit_note
 
 _MONTH_PATTERN = re.compile(r"^([0-9]{4})-(0[1-9]|1[0-2])$")
@@ -107,6 +107,20 @@ def summary(db: Session, business: Union[Business, Any], month: str) -> Dict[str
     ventas = sum((row[0] for row in sales), Decimal("0.00")).quantize(_TWO_DECIMALS)
     ventas_count = len(sales)
 
+    # Gastos declarados del mes (solo gastos no anulados con expense_date en el mes, Story 11.1)
+    expenses = (
+        db.query(Expense.total_amount)
+        .filter(
+            Expense.business_id == business_id,
+            Expense.expense_date >= start_date,
+            Expense.expense_date < end_date,
+            Expense.voided_at.is_(None),
+        )
+        .all()
+    )
+    gastos = sum((row[0] for row in expenses), Decimal("0.00")).quantize(_TWO_DECIMALS)
+    gastos_count = len(expenses)
+
     # Facturas emitidas del mes (las notas de crédito restan; sin notas de crédito para conteos)
     emitted_invoices = (
         db.query(Invoice.total, Invoice.document_type, Invoice.receiver_nit)
@@ -171,9 +185,11 @@ def summary(db: Session, business: Union[Business, Any], month: str) -> Dict[str
         "utilidad": utilidad,
         "emitido": emitido,
         "ventas": ventas,
+        "gastos": gastos,
         "diferencia": diferencia,
         "emitido_count": emitido_count,
         "ventas_count": ventas_count,
+        "gastos_count": gastos_count,
         "clientes_count": clientes_count,
     }
 

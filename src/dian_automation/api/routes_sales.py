@@ -73,6 +73,7 @@ def create_sale(
             total=payload.total_amount,
             description=payload.description,
             recorded_via=sales_service.RECORDED_VIA_WEB,
+            record_date=payload.sale_date,
         )
     except sales_service.SalesError as exc:
         if exc.code == sales_service.SalesError.BUSINESS_BLOCKED:

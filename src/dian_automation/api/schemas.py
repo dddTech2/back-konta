@@ -2,7 +2,7 @@
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -179,19 +179,21 @@ class MeResponse(BaseModel):
 
 class SaleCreateRequest(BaseModel):
     """Venta a registrar desde la web. Solo tipa los campos: la regla del total (> 0, 2 decimales) y el
-    largo de la descripción son del servicio compartido `core/sales_service.py`."""
+    largo de la descripción son del servicio compartido `core/sales_service.py` (Story 11.1: sale_date opcional)."""
     total_amount: Decimal
     description: Optional[str] = None
+    sale_date: Optional[Union[date, str]] = None
 
 
 class SaleResponse(BaseModel):
-    """Venta registrada; `total_amount` viaja como Decimal (cadena en JSON), nunca como float."""
+    """Venta registrada; `total_amount` viaja como Decimal (cadena en JSON), nunca como float (Story 11.1: sale_date)."""
     model_config = ConfigDict(from_attributes=True)
 
     id: str
     total_amount: Decimal
     description: Optional[str] = None
     recorded_via: str
+    sale_date: date
     created_at: datetime
 
 
@@ -216,10 +218,61 @@ class SaleVoidResponse(BaseModel):
     voided_at: datetime
 
 
+# ==============================================================================
+# Story 11.1: Esquemas de Gastos Manuales (Expense)
+# ==============================================================================
+
+
+class ExpenseCreateRequest(BaseModel):
+    """Gasto a registrar desde la web (Story 11.1)."""
+    total_amount: Decimal
+    description: Optional[str] = None
+    expense_date: Optional[Union[date, str]] = None
+
+
+class ExpenseResponse(BaseModel):
+    """Gasto registrado; `total_amount` viaja como Decimal (cadena en JSON), nunca como float (Story 11.1)."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    total_amount: Decimal
+    description: Optional[str] = None
+    recorded_via: str
+    expense_date: date
+    created_at: datetime
+
+
+class ExpenseListItem(BaseModel):
+    """Ítem de gasto para el listado mensual (Story 11.1)."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    total_amount: Decimal
+    description: Optional[str] = None
+    recorded_via: str
+    expense_date: date
+    created_at: datetime
+
+
+class ExpenseListResponse(BaseModel):
+    """Listado mensual de gastos (Story 11.1)."""
+    month: str            # 'YYYY-MM'
+    expenses: List[ExpenseListItem]
+
+
+class ExpenseVoidResponse(BaseModel):
+    """Respuesta de anulación de gasto (Story 11.1)."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    voided_at: datetime
+
+
 class IncomeSummaryItem(BaseModel):
     """Resumen mensual de ingresos, egresos y utilidad (como cadenas decimales con 2 decimales).
 
     En el perfil mixto ingresos y utilidad van en null: facturado y ventas no se suman.
+    Story 11.1: agrega `gastos`.
     """
     month: str
     ingresos: Optional[str]
@@ -227,10 +280,11 @@ class IncomeSummaryItem(BaseModel):
     utilidad: Optional[str]
     emitido: str = "0.00"
     ventas: str = "0.00"
+    gastos: str = "0.00"
 
 
 class IncomeSummaryResponse(BaseModel):
-    """Respuesta del endpoint de resumen de ingresos e historial de 6 meses."""
+    """Respuesta del endpoint de resumen de ingresos e historial de 6 meses (Story 11.1: gastos y gastos_count)."""
     month: str
     ingresos: Optional[str]
     egresos: str
@@ -238,9 +292,11 @@ class IncomeSummaryResponse(BaseModel):
     historial: List[IncomeSummaryItem]
     emitido: str = "0.00"
     ventas: str = "0.00"
+    gastos: str = "0.00"
     diferencia: str = "0.00"
     emitido_count: int = 0
     ventas_count: int = 0
+    gastos_count: int = 0
     clientes_count: int = 0
 
 
